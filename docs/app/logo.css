@@ -1,0 +1,23 @@
+.onprest-logo {
+  align-items: center;
+  display: inline-flex;
+  height: 24px;
+}
+
+.onprest-logo__image {
+  display: block;
+  height: 24px;
+  width: auto;
+}
+
+.onprest-logo__image--dark {
+  display: none;
+}
+
+.dark .onprest-logo__image--light {
+  display: none;
+}
+
+.dark .onprest-logo__image--dark {
+  display: block;
+}
