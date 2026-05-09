@@ -1,0 +1,12 @@
+# Gateway
+
+`onprest-gateway` is the public-facing OSS binary. It authenticates callers, authorizes capabilities, exposes REST / MCP / OpenAPI / healthz, and accepts the agent WebSocket connection.
+
+gateway does not hold SQL text or database credentials. It routes capability names and params to the connected agent.
+
+## Topics
+
+- [Configuration](/gateway/configuration)
+- [API Keys](/gateway/api-keys)
+- [Reverse Proxy](/gateway/reverse-proxy)
+- [Logs](/gateway/logs)

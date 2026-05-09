@@ -1,0 +1,37 @@
+# Agent Local Logs
+
+Agent detail logs live next to the `onprest-agent` binary.
+
+```text
+onprest-agent.log
+onprest-agent.log.1
+onprest-agent.log.2
+onprest-agent.log.3
+```
+
+The local log is the place for DB-specific and SQL execution detail. gateway stdout and HTTP responses intentionally omit those details.
+
+## When Detail Is Logged
+
+Agent writes local detail when:
+
+- DB ping fails at startup.
+- SQL EXPLAIN fails at startup.
+- Runtime capability execution fails.
+- DB permissions, syntax, timeout, or connectivity errors occur.
+
+## Rotation
+
+`capability.yaml` controls log rotation.
+
+```yaml
+logging:
+  max_size: 10MB
+  max_files: 3
+```
+
+When `onprest-agent.log` exceeds `logging.max_size`, agent rotates the file by size. `logging.max_files` controls how many rotated files are retained; the default is `3`.
+
+## Operational Guidance
+
+Treat agent local logs as sensitive operational artifacts. They may contain DB-specific detail required for debugging. Keep them on the on-prem side and avoid forwarding them to gateway or managed dashboard pipelines.

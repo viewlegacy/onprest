@@ -1,0 +1,223 @@
+# Quick Start
+
+This guide starts the gateway and agent as separate processes and verifies REST API, MCP, OpenAPI, and healthz.
+
+## 1. Build Binaries
+
+Build from the repository root.
+
+```bash
+make build
+```
+
+This produces two deployable units.
+
+```text
+dist/onprest-gateway
+dist/onprest-agent
+```
+
+Docker is optional. The Onprest OSS core runs from the generated binaries and does not depend on the source tree or Node.js / Nextra.
+
+## Repository Example Files
+
+The repository includes matching example files for local evaluation:
+
+- `examples/gateway.env`
+- `examples/capability.postgres.yaml`
+
+Those files contain a matching agent key pair and API key hash. If you use them, set the example plaintext API key and skip the key/config creation steps below.
+
+```bash
+export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+```
+
+The example capability expects a PostgreSQL database matching `examples/capability.postgres.yaml`. For real deployments, generate fresh keys and edit your own `capability.yaml`.
+
+## 2. Generate Agent Keys
+
+The agent holds an Ed25519 private key. The gateway holds only the public key.
+
+```bash
+./dist/onprest-gateway create-agent-secret
+```
+
+Put the generated private key in `gateway.agent_private_key` in `capability.yaml`, and put the public key in `GATEWAY_AGENT_PUBLIC_KEY` in `gateway.env`.
+
+The following compatibility command is also available.
+
+```bash
+./dist/onprest-gateway create-agent
+```
+
+## 3. Generate API Key
+
+Create API keys for API users or MCP clients.
+
+```bash
+./dist/onprest-gateway create-key --name internal --capabilities "*"
+./dist/onprest-gateway create-key --name partner-a --capabilities "get_customer,get_orders"
+```
+
+`"*"` grants all capabilities. Omitted or empty capabilities mean zero permissions.
+
+## 4. Create `gateway.env`
+
+`gateway.env` configures the gateway process.
+
+```env
+GATEWAY_ADDR=:8080
+GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
+GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]}]'
+GATEWAY_IP_ALLOW_LIST=
+GATEWAY_TRUSTED_PROXY_CIDRS=
+GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
+GATEWAY_RATE_LIMIT_BURST=20
+```
+
+The `key_hash` value in `GATEWAY_API_KEYS_JSON` is a bcrypt hash, so it contains `$`. Single-quote the whole JSON value when loading it through a shell.
+
+## 5. Create `capability.yaml`
+
+The agent treats `capability.yaml` as the only capability definition.
+
+```yaml
+service:
+  title: Example CRM Capabilities
+  version: 0.1.0
+  description: Example agent-defined capabilities for a legacy CRM database.
+
+gateway:
+  url: ws://localhost:8080/ws/agent
+  agent_private_key: base64url-ed25519-private-key
+
+database:
+  driver: postgres
+  host: localhost
+  port: 5432
+  name: legacy
+  user: readonly_user
+  password: change-me-db-password
+
+logging:
+  max_size: 10MB
+  max_files: 3
+
+defaults:
+  readonly: true
+  timeout: 30s
+  max_rows: 1000
+  max_bytes: 1MB
+
+capabilities:
+  get_customer:
+    description: Fetch one customer by id.
+    sql: select id, name, email from customers where id = :customer_id
+    params:
+      customer_id:
+        type: integer
+        required: true
+        minimum: 1
+        description: Customer ID.
+    policy:
+      timeout: 3s
+      max_rows: 1
+      max_bytes: 256KB
+      expose_in_openapi: true
+    result:
+      id:
+        type: integer
+        description: Customer ID.
+      name:
+        type: string
+        description: Customer name.
+      email:
+        type: string
+        description: Customer email address.
+```
+
+At startup, the agent runs YAML lint, DB ping, and SQL EXPLAIN verification. If startup validation fails, DB-specific detail and SQL text are not written to stderr; detail is written to `onprest-agent.log` next to the agent binary.
+
+## 6. Start Gateway And Agent
+
+Start the gateway.
+
+```bash
+set -a
+. ./gateway.env
+set +a
+./dist/onprest-gateway
+```
+
+Start the agent in another terminal.
+
+```bash
+AGENT_CAPABILITY_FILE=./capability.yaml ./dist/onprest-agent
+```
+
+If `AGENT_CAPABILITY_FILE` is omitted, the agent reads `capability.yaml` from the current directory.
+
+The agent connects outbound to `/ws/agent`. During connection, the gateway verifies the signature with the agent public key. After connection, the gateway calls the `meta` capability and caches OpenAPI in memory.
+
+## 7. Verify Health
+
+```bash
+curl -s http://localhost:8080/healthz
+```
+
+`/healthz` can be called without an API key. It monitors the gateway process and agent connection state.
+
+```json
+{
+  "ok": true,
+  "agent_connected": true
+}
+```
+
+## 8. Verify REST
+
+Set the plaintext API key returned by `create-key`.
+
+```bash
+export ONPREST_API_KEY=onp_xxxxx
+```
+
+```bash
+curl -s \
+  -X POST http://localhost:8080/api/v1/capabilities/get_customer \
+  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1}'
+```
+
+The REST request body is the capability params object directly. Do not wrap it in `{"params": {...}}`.
+
+## 9. Verify OpenAPI
+
+```bash
+curl -s \
+  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
+  http://localhost:8080/openapi.json
+```
+
+OpenAPI is fetched from agent metadata, cached by the gateway, and filtered by the API key's allowed capabilities. It does not include SQL text or DB connection information.
+
+## 10. Verify MCP
+
+```bash
+curl -s \
+  -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+```bash
+curl -s \
+  -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_customer","arguments":{"customer_id":1}}}'
+```
+
+MCP `tools/list` is generated from the OpenAPI cache and filtered by the API key's allowed capabilities.

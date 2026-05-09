@@ -1,0 +1,37 @@
+# SQL Server
+
+Use `database.driver: sqlserver`.
+
+```yaml
+database:
+  driver: sqlserver
+  host: localhost
+  port: 1433
+  name: legacy
+  user: readonly_user
+  password: change-me
+```
+
+## SQL Parameters
+
+Capabilities use named params like `:customer_id`. The agent converts them to SQL Server placeholders such as `@p1`.
+
+```yaml
+sql: select id, name from customers where id = :customer_id
+```
+
+## Startup SHOWPLAN
+
+SQL Server startup validation uses `SHOWPLAN_TEXT` behavior for plan validation.
+
+This can have permission implications. Confirm the DB user has the permissions required for read capabilities and plan validation. If plan validation fails, the agent stops before connecting to gateway and writes detail locally.
+
+## Connection Note
+
+The current agent-generated SQL Server DSN includes `encrypt=disable`.
+
+## Integration Test
+
+```bash
+go test -tags=integration ./it/... -args -onprest-it-db=sqlserver
+```

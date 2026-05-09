@@ -1,0 +1,45 @@
+# Environment Variables
+
+## Gateway
+
+| Variable | Default | Description |
+|---|---|---|
+| `GATEWAY_ADDR` | `:8080` | Gateway listen address |
+| `GATEWAY_AGENT_PUBLIC_KEY` | none | Required Ed25519 public key for agent auth |
+| `GATEWAY_API_KEYS_JSON` | none | Required API key JSON array |
+| `GATEWAY_IP_ALLOW_LIST` | empty | Empty means no IP allow restriction |
+| `GATEWAY_TRUSTED_PROXY_CIDRS` | empty | Empty means forwarded headers are ignored |
+| `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` | `10` | Per-source request rate |
+| `GATEWAY_RATE_LIMIT_BURST` | `20` | Per-source burst |
+
+## Example
+
+```env
+GATEWAY_ADDR=:8080
+GATEWAY_AGENT_PUBLIC_KEY=TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8
+GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$INgs32pPDl8EQAOTcQ1NN.eZUpNkDtyTKXh2luqxE32vNBmaLpy7m","capabilities":["*"]}]'
+GATEWAY_IP_ALLOW_LIST=
+GATEWAY_TRUSTED_PROXY_CIDRS=
+GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
+GATEWAY_RATE_LIMIT_BURST=20
+```
+
+## Agent
+
+Most agent runtime settings are in `capability.yaml`. The file path itself can be selected with an environment variable.
+
+| Variable | Default | Description |
+|---|---|---|
+| `AGENT_CAPABILITY_FILE` | `capability.yaml` | Path to the agent capability YAML file |
+
+Important fields:
+
+- `gateway.url`
+- `gateway.agent_private_key`
+- `database.driver`
+- `database.host`
+- `database.port`
+- `database.name`
+- `database.user`
+- `database.password`
+- `logging.max_size`

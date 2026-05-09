@@ -1,0 +1,27 @@
+# Healthz
+
+`/healthz` is the gateway health endpoint. It is intentionally unauthenticated so process managers, load balancers, and monitors can check gateway liveness.
+
+## Endpoint
+
+```http
+GET /healthz
+```
+
+## Response
+
+`/healthz` always returns HTTP 200 while the gateway process is healthy.
+
+```json
+{
+  "ok": true,
+  "agent_connected": false
+}
+```
+
+| Field | Description |
+|---|---|
+| `ok` | Gateway process is running |
+| `agent_connected` | Whether one agent is currently connected |
+
+Use `ok` for gateway process liveness. Use `agent_connected` to alert when the on-prem agent is disconnected and REST / MCP capability calls may return `GATEWAY_AGENT_OFFLINE`.

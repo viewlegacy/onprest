@@ -1,0 +1,39 @@
+# Gateway Logs
+
+gateway writes JSON Lines to stdout. Logs are designed for collection by a process manager, container runtime, log drain, or managed dashboard pipeline.
+
+## Request Event
+
+```json
+{
+  "request_id": "01J5ABCDEF1234567890ABCDEF",
+  "timestamp": "2026-04-11T10:30:00.000Z",
+  "event": "request",
+  "capability": "get_customer",
+  "api_key_name": "partner-a",
+  "http_status": 200,
+  "error_code": null,
+  "duration_ms": 123
+}
+```
+
+The request log is intentionally small. It is useful for observability without turning gateway into a sensitive data sink.
+
+## Control Events
+
+When gateway receives OpenAPI metadata from the agent, it logs a control event with counts or status, not the full spec.
+
+OpenAPI cache contents are held in memory and filtered per API key on request.
+
+## Not Logged
+
+gateway stdout must not contain:
+
+- request params
+- agent error detail
+- SQL text
+- DB host, user, password, or DSN
+- plaintext API keys
+- agent private keys
+
+If runtime detail is needed, check the agent local log on the on-prem side.

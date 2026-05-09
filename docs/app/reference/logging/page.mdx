@@ -1,0 +1,38 @@
+# Logging Reference
+
+## Gateway
+
+gateway writes JSON Lines to stdout.
+
+Request event fields:
+
+| Field | Description |
+|---|---|
+| `request_id` | ULID request identifier |
+| `timestamp` | event time |
+| `event` | `request` or control event name |
+| `capability` | capability name when available |
+| `api_key_name` | API key name from config |
+| `http_status` | response status |
+| `error_code` | stable error code or null |
+| `duration_ms` | request duration |
+
+gateway stdout excludes params, SQL, DB credentials, agent detail, plaintext API keys, and agent private keys.
+
+## Agent
+
+Agent local detail log:
+
+```text
+onprest-agent.log
+```
+
+Rotation is controlled by:
+
+```yaml
+logging:
+  max_size: 10MB
+  max_files: 3
+```
+
+`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the local detail log.

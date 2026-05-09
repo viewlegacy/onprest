@@ -1,0 +1,35 @@
+# Oracle
+
+Use `database.driver: oracle`.
+
+Oracle support uses `godror`, so the agent environment must satisfy the Oracle runtime prerequisites required by that driver.
+
+```yaml
+database:
+  driver: oracle
+  host: localhost
+  port: 1521
+  name: legacy
+  user: readonly_user
+  password: change-me
+```
+
+## SQL Parameters
+
+Capabilities use named params like `:customer_id`. The agent maps them safely for Oracle execution.
+
+```yaml
+sql: select id, name from customers where id = :customer_id
+```
+
+## Startup EXPLAIN PLAN
+
+Oracle capabilities are checked with `EXPLAIN PLAN FOR` during agent startup.
+
+If EXPLAIN PLAN fails, the agent stops before connecting to gateway. Detail stays in the agent local log.
+
+## Integration Test
+
+```bash
+go test -tags=integration ./it/... -args -onprest-it-db=oracle
+```

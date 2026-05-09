@@ -1,0 +1,45 @@
+# Test Commands
+
+Test commands require a Go toolchain compatible with the version declared in `go.mod`.
+
+## Unit
+
+```bash
+go test ./...
+```
+
+## Integration
+
+```bash
+go test -tags=integration ./it/...
+```
+
+## DB Selection
+
+```bash
+go test -tags=integration ./it/... -args -onprest-it-db=postgres
+go test -tags=integration ./it/... -args -onprest-it-db=mysql
+go test -tags=integration ./it/... -args -onprest-it-db=sqlserver
+go test -tags=integration ./it/... -args -onprest-it-db=oracle
+go test -tags=integration ./it/... -args -onprest-it-db=all
+```
+
+## Make Targets
+
+```bash
+make test
+make test-it
+make test-it-postgres-ci
+make test-it-postgres-stability
+make test-it-all-db
+make test-it-docker-ops
+make test-it-release-gate
+```
+
+## Required Containers
+
+```bash
+ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/...
+```
+
+Use this when Docker/Testcontainers availability must be treated as required instead of skipped.

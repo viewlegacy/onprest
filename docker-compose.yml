@@ -1,0 +1,10 @@
+services:
+  gateway:
+    build:
+      context: .
+      args:
+        TARGET: gateway
+    env_file:
+      - ./examples/gateway.env
+    ports:
+      - "8080:8080"

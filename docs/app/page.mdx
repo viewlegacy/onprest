@@ -1,0 +1,52 @@
+# Onprest
+
+Onprest is an OSS core for safely exposing existing databases in on-premises or private-network environments through REST API and MCP.
+
+It does not expose the database itself. Only capabilities defined on the on-prem side in `capability.yaml` can be called through the gateway.
+
+> Expose capabilities, not your database.
+
+## Why Onprest
+
+Many legacy systems still hold valuable business data inside internal databases. Connecting that data to new APIs or AI agents often pushes teams toward direct database exposure, VPN dependencies, or per-environment firewall changes, which increases operational and security burden.
+
+Onprest narrows that boundary.
+
+- The gateway handles only routing, identity, and observability.
+- The agent, running on the on-prem side, owns each capability's meaning, SQL, and DB connection settings.
+- API users and MCP clients can call only explicitly allowed capabilities.
+- The gateway does not hold SQL text or DB credentials.
+- The agent connects to the gateway over outbound WebSocket, so Onprest does not require inbound access to the on-prem network.
+
+This structure lets legacy databases serve external services and AI tools while keeping "what can be executed" explicit in an on-prem configuration file.
+
+## What Onprest Is Not
+
+Onprest is not a SQL-over-HTTP proxy, database browser, schema-wide CRUD generator, ETL pipeline, cloud replica, general-purpose iPaaS replacement, or a way to give AI agents broad database access.
+
+It is a narrow capability tunnel for approved business operations, defined on-prem and callable through REST and MCP.
+
+## AI And MCP
+
+MCP is a first-class surface in Onprest, not an afterthought. AI agents should receive named business tools, not a DSN, raw SQL executor, or schema-wide database surface.
+
+Onprest's capability model fits AI/MCP because the cloud-facing side is intentionally not trusted with business meaning. The gateway can authenticate callers and route capability calls, but the on-prem agent owns SQL, parameter validation, execution policy, and output filtering. AI agents and MCP clients see only the capabilities their API key is allowed to list and call.
+
+## OSS Core
+
+The OSS core consists of two independent Go single binaries.
+
+| Binary | Role |
+|---|---|
+| `onprest-gateway` | API key authentication, capability authorization, REST/MCP/OpenAPI, and agent WebSocket handling |
+| `onprest-agent` | `capability.yaml` loading, DB ping, EXPLAIN, param/policy/result validation, and SQL execution |
+
+This `/docs` site is a public documentation project built with Nextra / Next.js. Node.js, Nextra, and Next.js are not required to run or distribute the OSS core.
+
+## Start Here
+
+- [Quick Start](/quick-start): Start the gateway and agent, then verify REST / MCP / OpenAPI / healthz.
+- [Architecture](/architecture): Understand Onprest's trust boundaries and gateway / agent responsibilities.
+- [Security](/security): Review the compromise model, key rotation, and detail redaction policy.
+- [Capability YAML](/agent/capability-yaml): Define capability inputs, policy, and output allow-lists.
+- [Release Gate](/operations/release-gate): Review the commands to run before operating the OSS core.

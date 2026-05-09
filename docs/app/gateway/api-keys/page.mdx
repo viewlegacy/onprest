@@ -1,0 +1,64 @@
+# API Keys
+
+API keys authenticate REST, MCP, and OpenAPI requests. They also define which capabilities the caller can use.
+
+## Create A Key
+
+```bash
+./onprest-gateway create-key --name partner-a --capabilities "get_customer,get_orders"
+```
+
+For an internal key that can call every capability:
+
+```bash
+./onprest-gateway create-key --name internal --capabilities "*"
+```
+
+## Authorization Model
+
+API key authorization is explicit.
+
+| `capabilities` | Meaning |
+|---|---|
+| `["get_customer"]` | Can call only `get_customer` |
+| `["get_customer", "get_orders"]` | Can call only the listed capabilities |
+| `["*"]` | Can call all capabilities |
+| `[]` or omitted | Can call no capabilities |
+
+This same authorization is applied to:
+
+- `POST /api/v1/capabilities/{name}`
+- `POST /mcp` `tools/call`
+- `POST /mcp` `tools/list`
+- `GET /openapi.json`
+
+For `tools/list` and `/openapi.json`, gateway filters the visible tools or paths by API key.
+
+## Authentication Headers
+
+Use either bearer auth or `X-API-Key`.
+
+```http
+Authorization: Bearer onp_...
+```
+
+```http
+X-API-Key: onp_...
+```
+
+Bearer auth is recommended for general clients. `X-API-Key` is available for environments where bearer headers are inconvenient.
+
+## Log Identity
+
+gateway logs the key `name`, not the plaintext API key.
+
+```json
+{
+  "event": "request",
+  "api_key_name": "partner-a",
+  "capability": "get_customer",
+  "http_status": 200
+}
+```
+
+Choose stable names that identify the integration, team, or tenant using the key.

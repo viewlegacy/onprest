@@ -1,0 +1,64 @@
+# REST API
+
+REST calls execute one capability by name.
+
+## Endpoint
+
+```http
+POST /api/v1/capabilities/{name}
+Authorization: Bearer {api_key}
+Content-Type: application/json
+```
+
+You may also authenticate with:
+
+```http
+X-API-Key: {api_key}
+```
+
+## Request Body
+
+The request body is the params object directly.
+
+```json
+{
+  "customer_id": 1
+}
+```
+
+Do not wrap params in a `params` field.
+
+## Success Response
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+```
+
+```json
+{
+  "rows": [
+    {
+      "id": 1,
+      "name": "Ada",
+      "email": "ada@example.com"
+    }
+  ],
+  "count": 1
+}
+```
+
+The exact result shape comes from the agent capability execution. Row fields are limited by the capability `result` allow-list.
+
+## Failure Response
+
+```json
+{
+  "error": {
+    "code": "GATEWAY_AGENT_OFFLINE",
+    "message": "agent is not connected"
+  }
+}
+```
+
+The `message` is generic and public. Agent raw detail is not included in external responses.

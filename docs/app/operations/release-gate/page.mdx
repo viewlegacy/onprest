@@ -1,0 +1,77 @@
+# Release Gate
+
+Use the release gate before treating an OSS core change as operationally ready.
+
+## Unit Tests
+
+```bash
+go test ./...
+```
+
+## Integration Tests
+
+```bash
+go test -tags=integration ./it/...
+```
+
+DB-specific selection:
+
+```bash
+go test -tags=integration ./it/... -args -onprest-it-db=postgres
+go test -tags=integration ./it/... -args -onprest-it-db=mysql
+go test -tags=integration ./it/... -args -onprest-it-db=sqlserver
+go test -tags=integration ./it/... -args -onprest-it-db=oracle
+go test -tags=integration ./it/... -args -onprest-it-db=all
+```
+
+## Make Targets
+
+```bash
+make test
+make test-it
+make test-it-postgres-ci
+make test-it-postgres-stability
+make test-it-all-db
+make test-it-docker-ops
+make test-it-release-gate
+```
+
+## Release Gate Command
+
+```bash
+make test-it-release-gate
+```
+
+This gate verifies:
+
+- unit tests
+- PostgreSQL integration tests 3 consecutive times
+- PostgreSQL DB interruption stability 5 consecutive times
+- all-DB smoke path
+- Docker image operational tests
+- Docker Compose env-file operational tests
+- skip count is zero in required mode
+- testcontainers residue is zero
+
+## Requirements
+
+Release gate commands require a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
+
+Container-backed tests require Docker daemon access. To make container availability mandatory, use:
+
+```bash
+ONPREST_IT_REQUIRE_CONTAINERS=1
+```
+
+If Docker is unavailable and mandatory mode is not enabled, container-backed tests may skip. Required release gates should run with no skipped integration or operational cases.
+
+## Acceptance Criteria
+
+A release candidate should pass the release gate and preserve the architecture boundaries:
+
+- two deployable binaries: `onprest-gateway` and `onprest-agent`
+- no gateway SQL construction
+- no gateway DB credentials
+- no Caddy-specific implementation dependency
+- direct and reverse-proxy deployment both remain valid
+- error detail redaction remains intact
