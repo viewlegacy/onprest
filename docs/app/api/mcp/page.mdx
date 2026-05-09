@@ -1,0 +1,60 @@
+# MCP
+
+MCP is a first-class API surface in Onprest. It exposes agent-defined capabilities as tools, so AI agents call named business operations instead of receiving raw database access.
+
+The MCP endpoint is JSON-RPC over HTTP.
+
+Onprest's gateway does not know SQL, DB credentials, or business meaning. It builds `tools/list` from agent-owned OpenAPI metadata and filters it by API key capability authorization. `tools/call` still runs through the on-prem agent, where params, policy, SQL execution, and result allow-lists are enforced.
+
+## Endpoint
+
+```http
+POST /mcp
+Authorization: Bearer {api_key}
+Content-Type: application/json
+```
+
+`POST` is the only allowed HTTP method. Other methods return `GATEWAY_METHOD_NOT_ALLOWED`.
+
+## Methods
+
+| Method | Purpose |
+|---|---|
+| `initialize` | MCP initialization response |
+| `ping` | Liveness check |
+| `tools/list` | Return visible capabilities as MCP tools |
+| `tools/call` | Execute a capability |
+
+## `tools/list`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/list"
+}
+```
+
+gateway builds the tool list from cached OpenAPI metadata and filters it by the caller's API key capabilities.
+
+## `tools/call`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "get_customer",
+    "arguments": {
+      "customer_id": 1
+    }
+  }
+}
+```
+
+The tool name maps to a capability name. `arguments` maps to capability params.
+
+## Errors
+
+JSON parse and JSON-RPC structure errors are returned as MCP JSON-RPC errors with HTTP 200. Gateway auth, IP, rate limit, offline agent, and capability authorization failures use HTTP errors.

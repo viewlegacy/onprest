@@ -1,0 +1,12 @@
+# Agent
+
+`onprest-agent` runs in the on-prem or DB-adjacent environment. It reads `capability.yaml`, validates startup safety, executes SQL with prepared params, and keeps DB-specific detail local.
+
+The agent connects outbound to gateway over WebSocket. It does not require inbound access to the on-prem network.
+
+## Topics
+
+- [Overview](/agent/overview)
+- [Capability YAML](/agent/capability-yaml)
+- [Local Logs](/agent/local-logs)
+- [Key Rotation](/agent/key-rotation)

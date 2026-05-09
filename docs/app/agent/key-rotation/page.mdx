@@ -1,0 +1,41 @@
+# Agent Key Rotation
+
+Rotate the agent key when the private key may have leaked, during scheduled credential rotation, or when moving a customer to a new gateway process.
+
+## Steps
+
+1. Generate a new key pair.
+
+```bash
+./onprest-gateway create-agent-secret
+```
+
+2. Update gateway env.
+
+```env
+GATEWAY_AGENT_PUBLIC_KEY=new-base64url-ed25519-public-key
+```
+
+3. Update agent YAML.
+
+```yaml
+gateway:
+  agent_private_key: new-base64url-ed25519-private-key
+```
+
+4. Restart gateway.
+5. Restart agent.
+6. Confirm `/healthz`, `/openapi.json`, REST, and MCP.
+
+## Expected Behavior
+
+After rotation:
+
+- Old private key connections are rejected.
+- New private key connections pass Ed25519 verification.
+- gateway fetches fresh OpenAPI metadata from the reconnected agent.
+- Existing API key capability authorization remains independent from the agent key.
+
+## Compromise Response
+
+If a suspicious agent is already connected, gateway's one-agent connection limit prevents a second simultaneous agent from replacing it silently. Rotate the key and restart both sides to restore trust in the metadata source.

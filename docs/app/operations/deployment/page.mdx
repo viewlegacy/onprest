@@ -1,0 +1,86 @@
+# Deployment
+
+Onprest OSS deployment is the gateway binary plus the agent binary.
+
+## Deployment Units
+
+| Unit | Where it runs | Required files |
+|---|---|---|
+| `onprest-gateway` | public or private server reachable by clients and agent | gateway env |
+| `onprest-agent` | on-prem or DB-adjacent environment | `capability.yaml` |
+
+The repository does not need to be deployed from source. Build artifacts can be copied to another directory or host.
+
+## New Customer Setup
+
+1. Generate an agent key pair with `onprest-gateway create-agent-secret`.
+2. Generate one or more API keys with `onprest-gateway create-key`.
+3. Create a customer-specific `gateway.env`.
+4. Start a dedicated gateway process for the customer.
+5. Deliver `onprest-agent` and a `capability.yaml` template to the on-prem environment.
+6. Fill in gateway URL, agent private key, DB credentials, and capabilities.
+7. Start the agent.
+8. Verify `/healthz`, `/openapi.json`, REST, and MCP.
+
+## Binary-Only Environments
+
+For legacy environments without Docker:
+
+```bash
+set -a
+. ./gateway.env
+set +a
+./onprest-gateway
+```
+
+```bash
+AGENT_CAPABILITY_FILE=./capability.yaml ./onprest-agent
+```
+
+Keep the agent binary and `capability.yaml` together. Agent local logs are written next to the agent binary.
+
+## Self-Hosted Minimal Settings
+
+For a self-hosted gateway, configure at least:
+
+```env
+GATEWAY_ADDR=:8080
+GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
+GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]}]'
+```
+
+Then decide whether to set:
+
+- `GATEWAY_IP_ALLOW_LIST` for caller IP restrictions.
+- `GATEWAY_TRUSTED_PROXY_CIDRS` when running behind a reverse proxy or load balancer.
+- `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` and `GATEWAY_RATE_LIMIT_BURST` for per-source rate limiting.
+
+For the agent, configure `capability.yaml` and optionally set:
+
+```env
+AGENT_CAPABILITY_FILE=/path/to/capability.yaml
+```
+
+## Docker Optional Usage
+
+Docker images and Docker Compose are supported operational paths, but Docker is not required by the OSS core. Container env-file handling must preserve `GATEWAY_API_KEYS_JSON` and bcrypt `$` characters.
+
+```bash
+docker build --build-arg TARGET=gateway -t onprest-gateway .
+docker build --build-arg TARGET=agent -t onprest-agent .
+```
+
+`docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
+
+## Reverse Proxy Optionality
+
+TLS termination and reverse proxy selection are outside the OSS implementation boundary. gateway works directly exposed or behind a compatible reverse proxy / LB.
+
+## OSS And Managed
+
+Onprest is dual-distributed:
+
+- OSS: self-host the gateway and agent on your own infrastructure.
+- Managed: Onprest operates the customer-dedicated gateway, monitors agent connectivity, handles patching, retains operational logs, and takes responsibility for the connection layer.
+
+Both use the same OSS core. You can move from managed to self-hosted with the same binaries and `capability.yaml`. Your database, SQL, credentials, and capability definitions stay under your control.

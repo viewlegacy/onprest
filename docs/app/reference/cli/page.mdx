@@ -1,0 +1,65 @@
+# CLI Reference
+
+Provisioning commands are exposed by `onprest-gateway`.
+
+## Generate Agent Secret
+
+```bash
+./onprest-gateway create-agent-secret
+```
+
+Outputs an Ed25519 private key and public key.
+
+- private key: `capability.yaml` `gateway.agent_private_key`
+- public key: `gateway.env` `GATEWAY_AGENT_PUBLIC_KEY`
+
+Compatible alias:
+
+```bash
+./onprest-gateway create-agent
+```
+
+## Generate API Key
+
+```bash
+./onprest-gateway create-key --name internal --capabilities "*"
+./onprest-gateway create-key --name partner-a --capabilities "get_customer,get_orders"
+```
+
+The command outputs a plaintext API key and bcrypt `key_hash`. Store only the hash in `GATEWAY_API_KEYS_JSON`. Give the plaintext key to the caller once.
+
+## Build
+
+```bash
+make build
+```
+
+Expected outputs:
+
+```text
+dist/onprest-gateway
+dist/onprest-agent
+```
+
+## Cross Build
+
+```bash
+make build-cross
+```
+
+This writes OS-specific artifacts under `dist/<os>-<arch>/`, for example:
+
+```text
+dist/linux-amd64/onprest-gateway
+dist/linux-amd64/onprest-agent
+dist/linux-arm64/onprest-gateway
+dist/linux-arm64/onprest-agent
+dist/darwin-amd64/onprest-gateway
+dist/darwin-amd64/onprest-agent
+dist/darwin-arm64/onprest-gateway
+dist/darwin-arm64/onprest-agent
+dist/windows-amd64/onprest-gateway.exe
+dist/windows-amd64/onprest-agent.exe
+```
+
+The binaries are built with `CGO_ENABLED=0`, so they are suitable for copying to legacy environments without installing Docker or native database client libraries.

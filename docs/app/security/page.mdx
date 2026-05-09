@@ -1,0 +1,100 @@
+# Security
+
+Onprest is designed to reduce the boundary under the assumption that every component can be compromised. The core idea is that the gateway must not hold secrets or business meaning.
+
+## Trust Model
+
+| Boundary | Holds secrets | Holds SQL | External role |
+|---|---:|---:|---|
+| gateway | agent public key, API key hashes | No | routing, identity, observability |
+| agent | agent private key, DB credentials | Yes | capability execution |
+| dashboard | masked/read-only managed view | No | managed-only observation |
+
+The gateway forwards capability names and params. DB connection information, SQL text, and agent error detail are never written to gateway HTTP responses or stdout logs. HTTP errors return only a stable `code` and a generic `message`.
+
+## Gateway Compromise
+
+Even if the gateway is compromised, the attacker cannot make the agent run operations that do not exist in `capability.yaml`.
+
+- SQL text does not exist in the gateway.
+- DB credentials do not exist in the gateway.
+- The OpenAPI cache does not include SQL or DB connection information.
+- The agent rejects unknown capabilities.
+- The agent rejects inputs outside the params contract with `AGENT_VALIDATION_FAILED`.
+- Columns not included in the result allow-list are not returned externally.
+
+The gateway only knows which API key can call which capability. The attack surface is reduced to the explicit capability contract.
+
+## API Key Authorization
+
+API keys use explicit capability-level authorization.
+
+```json
+[
+  {
+    "name": "partner-a",
+    "key_hash": "$2a$10$...",
+    "capabilities": ["get_customer", "get_orders"]
+  },
+  {
+    "name": "internal",
+    "key_hash": "$2a$10$...",
+    "capabilities": ["*"]
+  }
+]
+```
+
+- Omitted or empty capabilities mean zero permissions.
+- All capabilities are allowed only when `"*"` is explicitly set.
+- REST, MCP, and OpenAPI use the same API key authentication and capability authorization.
+
+## Agent Validation Boundary
+
+The agent is the only OSS core component that owns capability meaning.
+
+At startup:
+
+- It lints the YAML structure and required fields.
+- It verifies SQL with each DB's EXPLAIN mechanism.
+- It stops startup if DB ping fails.
+
+At runtime:
+
+- It checks whether the capability is defined.
+- It rejects unknown params, invalid types, enum violations, out-of-range values, and invalid formats.
+- It applies policy timeout, max_rows, and max_bytes.
+- It passes parameters through prepared statements.
+- It limits returned columns with the result allow-list.
+
+## Agent Secret Leakage
+
+If the agent private key leaks, rotate the key.
+
+During the WebSocket handshake, the gateway verifies the agent's Ed25519 signature over `path + timestamp + nonce` with the public key. Timestamp tolerance and nonce reuse rejection reduce replay risk.
+
+Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `GATEWAY_AGENT_ALREADY_CONNECTED`.
+
+## Dashboard Compromise
+
+The managed dashboard is outside the OSS core and is read-only.
+
+- API keys are not stored in plaintext.
+- Display is limited to masked information.
+- Logs do not display params or agent detail.
+- It has no create, update, or delete operations.
+- The backend admin UI is not exposed publicly in the managed environment.
+
+## Sensitive Detail Handling
+
+External HTTP responses and gateway stdout never include raw detail. The HTTP response `message` is a generic public contract field.
+
+```json
+{
+  "error": {
+    "code": "AGENT_QUERY_FAILED",
+    "message": "database query failed"
+  }
+}
+```
+
+DB-specific errors, SQL execution detail, DB credentials, and input param details stay in the agent local log. The agent local log is `onprest-agent.log` next to the agent binary.

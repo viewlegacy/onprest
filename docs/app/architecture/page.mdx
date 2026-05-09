@@ -1,0 +1,162 @@
+# Architecture
+
+Onprest is designed to expose only agent-defined capabilities, not the database itself.
+
+```text
+[API user / MCP client]
+  |
+  | HTTPS
+  v
+[reverse proxy or LB]
+  | /api/v1/capabilities/*
+  | /mcp
+  | /openapi.json
+  | /healthz
+  | /ws/agent
+  v
+[onprest-gateway]
+  |
+  | outbound WebSocket from agent
+  v
+[onprest-agent + capability.yaml]
+  |
+  v
+[legacy database]
+```
+
+## Mental Model
+
+1. Define a capability on the on-prem side.
+2. Define its input contract, execution policy, and output contract.
+3. Start the agent inside the customer network.
+4. The agent connects outbound to the gateway.
+5. REST and MCP clients call only capabilities their API key can access.
+6. The agent validates input, applies policy, executes prepared SQL, filters output, and returns the result.
+
+The gateway does not know the schema, SQL, DSN, DB credentials, or business meaning. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations.
+
+## Design Principle
+
+The gateway handles only "who can call what." The agent owns "what each capability means."
+
+This separation is the core of Onprest.
+
+- The gateway does not store SQL text.
+- The gateway does not store DB host, user, or password.
+- The gateway forwards only the capability name and params.
+- The agent validates params, policy, and result according to `capability.yaml`.
+- OpenAPI / MCP tools are generated from the agent definition.
+
+Even if the gateway is compromised, the attacker can learn only the public schema and capability names. The gateway has no place to create unknown SQL and holds no DB credentials.
+
+## Responsibility Split
+
+| Concern | Gateway | Agent |
+|---|---:|---:|
+| Public REST/MCP endpoint | Yes | No |
+| WebSocket edge | Yes | Outbound client |
+| API key authentication | Yes | No |
+| Capability authorization | Yes | Yes |
+| Rate limiting | Yes | No |
+| Request observability | Yes | No |
+| OpenAPI/MCP filtering by API key | Yes | No |
+| SQL text | No | Yes |
+| Database credentials | No | Yes |
+| Database schema knowledge | No | Yes |
+| Business meaning | No | Yes |
+| Parameter validation | No | Yes |
+| Execution policy | No | Yes |
+| Prepared SQL execution | No | Yes |
+| Output allow-list | No | Yes |
+| Detailed DB errors | No | Local only |
+| Agent private key | No | Yes |
+| Agent public key | Yes | No |
+
+## AI / MCP Fit
+
+This design is a natural fit for AI and MCP clients because it does not ask the cloud-facing caller or gateway to be trusted with database power. AI agents call explicit tools generated from approved capabilities, while the on-prem agent enforces the actual contract.
+
+In practice, an AI agent receives a narrow tool such as `get_customer` or `search_orders`. It does not receive a DSN, unrestricted SQL executor, DB credentials, or raw schema access. The gateway can be compromised or misused and still cannot invent operations outside `capability.yaml`.
+
+## OSS Deployment Boundary
+
+The OSS core is two independent binaries.
+
+| Component | Deployment unit | Responsibility |
+|---|---|---|
+| gateway | `onprest-gateway` | REST / MCP / OpenAPI / healthz / WebSocket / API key auth / capability auth |
+| agent | `onprest-agent` | YAML lint / DB ping / EXPLAIN / params validation / SQL execution / local detail logs |
+
+Nextra docs, the managed dashboard, Caddy, and any specific reverse proxy are not OSS core implementation dependencies.
+
+## Gateway Responsibilities
+
+The gateway is a Go single binary. It has no persistent state and holds only the in-memory cache needed for OpenAPI / MCP.
+
+- API key authentication
+- Per-API-key capability-level authorization
+- IP allow list
+- trusted proxy handling
+- rate limiting
+- REST endpoint
+- MCP endpoint
+- `/openapi.json`
+- `/healthz`
+- agent WebSocket endpoint
+- stdout JSON logging
+- graceful shutdown
+
+Agent connections are limited to one active connection. If another agent tries to connect while one is already connected, the gateway rejects it and writes a warning log.
+
+## Agent Responsibilities
+
+The agent is also a Go single binary. It is deployed on the on-prem side together with `capability.yaml`.
+
+- outbound WebSocket connection to the gateway
+- Connection signing with an Ed25519 private key
+- `capability.yaml` lint
+- DB ping
+- SQL EXPLAIN verification
+- params validation
+- policy enforcement
+- prepared statement execution
+- result allow-list
+- OpenAPI spec generation
+- runtime detail output to the local log
+- reconnect every 30 seconds
+
+`capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
+
+## Capability Tunnel
+
+A normal gateway-to-agent request contains only a capability name and params.
+
+```json
+{
+  "id": "01J5ABCDEF1234567890ABCDEF",
+  "capability": "get_customer",
+  "params": {
+    "customer_id": 1
+  }
+}
+```
+
+The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB.
+
+## Dedicated Gateway Model
+
+Onprest assumes a dedicated gateway process per customer.
+
+In this model, API keys, the agent public key, OpenAPI cache, and stdout logs are not shared across customers. Because the gateway has no persistent DB and is separated by process and environment variables, the operational unit matches the trust boundary.
+
+## Reverse Proxy And TLS
+
+TLS termination and reverse proxy / load balancer choice are owned by the operating environment.
+
+The gateway works when directly exposed or when placed behind any compatible reverse proxy / LB. Forwarded headers are trusted only when they arrive from a source included in `GATEWAY_TRUSTED_PROXY_CIDRS`.
+
+## Managed Dashboard
+
+The managed dashboard is not part of the OSS core. In managed environments, gateway stdout is collected through a log drain and displayed as read-only data.
+
+The dashboard does not issue API keys, register agents, or edit capabilities. Administrative operations are performed with server-side CLI commands.

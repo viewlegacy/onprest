@@ -1,0 +1,52 @@
+service:
+  title: Example CRM Capabilities
+  version: 0.1.0
+  description: Example agent-defined capabilities for a legacy CRM database.
+
+gateway:
+  url: ws://localhost:8080/ws/agent
+  agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+
+database:
+  driver: postgres
+  host: localhost
+  port: 5432
+  name: legacy
+  user: readonly_user
+  password: change-me-db-password
+
+logging:
+  max_size: 10MB
+  max_files: 3
+
+defaults:
+  readonly: true
+  timeout: 30s
+  max_rows: 1000
+  max_bytes: 1MB
+
+capabilities:
+  get_customer:
+    description: Fetch one customer by id.
+    sql: select id, name, email from customers where id = :customer_id
+    params:
+      customer_id:
+        type: integer
+        required: true
+        minimum: 1
+        description: Customer ID.
+    policy:
+      timeout: 3s
+      max_rows: 1
+      max_bytes: 256KB
+      expose_in_openapi: true
+    result:
+      id:
+        type: integer
+        description: Customer ID.
+      name:
+        type: string
+        description: Customer name.
+      email:
+        type: string
+        description: Customer email address.

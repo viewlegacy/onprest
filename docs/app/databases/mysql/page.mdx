@@ -1,0 +1,33 @@
+# MySQL
+
+Use `database.driver: mysql`.
+
+```yaml
+database:
+  driver: mysql
+  host: localhost
+  port: 3306
+  name: legacy
+  user: readonly_user
+  password: change-me
+```
+
+## SQL Parameters
+
+Capabilities use named params like `:customer_id`. The agent converts them to MySQL placeholders.
+
+```yaml
+sql: select id, name from customers where id = :customer_id
+```
+
+## Startup EXPLAIN
+
+MySQL capabilities are checked with `EXPLAIN` during agent startup.
+
+Use least-privilege read users for read capabilities and verify that the user can run the required read and EXPLAIN operations.
+
+## Integration Test
+
+```bash
+go test -tags=integration ./it/... -args -onprest-it-db=mysql
+```

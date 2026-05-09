@@ -1,0 +1,12 @@
+.DS_Store
+bin/
+dist/
+*.log
+.env
+.env.*
+!examples/*.env
+it/**/*.env
+it/**/*.local.yaml
+it/local/*
+!it/local/.gitignore
+coverage.out

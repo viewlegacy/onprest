@@ -1,0 +1,57 @@
+# Errors
+
+Onprest returns stable error codes with generic public messages, and keeps sensitive detail out of external responses.
+
+## REST / MCP Shared HTTP Errors
+
+| HTTP | Code | Meaning |
+|---:|---|---|
+| 401 | `GATEWAY_AUTH_FAILED` | API key is missing or invalid |
+| 403 | `GATEWAY_CAPABILITY_DENIED` | API key cannot call the capability |
+| 403 | `GATEWAY_IP_DENIED` | Source IP is not allowed |
+| 429 | `GATEWAY_RATE_LIMITED` | Rate limit exceeded |
+| 500 | `GATEWAY_INTERNAL_ERROR` | Unexpected gateway error |
+| 503 | `GATEWAY_AGENT_OFFLINE` | Agent is not connected |
+| 504 | `GATEWAY_TIMEOUT` | Agent response timed out |
+| 502 | `AGENT_VALIDATION_FAILED` | Agent rejected params |
+| 502 | `AGENT_QUERY_FAILED` | SQL execution failed |
+| 502 | `AGENT_QUERY_TIMEOUT` | Query exceeded timeout |
+| 502 | `AGENT_DB_UNREACHABLE` | Agent cannot reach the DB |
+| 502 | `AGENT_INTERNAL_ERROR` | Unexpected agent error |
+
+## Endpoint HTTP Errors
+
+| HTTP | Code | Applies to | Meaning |
+|---:|---|---|---|
+| 400 | `GATEWAY_INVALID_REQUEST` | REST | JSON parse failure or invalid content type |
+| 404 | `GATEWAY_CAPABILITY_NOT_FOUND` | REST | capability path does not exist |
+| 405 | `GATEWAY_METHOD_NOT_ALLOWED` | REST / MCP | HTTP method is not allowed |
+| 409 | `GATEWAY_AGENT_ALREADY_CONNECTED` | WebSocket | another agent is already connected |
+
+## MCP JSON-RPC Errors
+
+These are returned as JSON-RPC errors with HTTP 200.
+
+| JSON-RPC code | Code | Meaning |
+|---:|---|---|
+| -32700 | `PARSE_ERROR` | JSON cannot be parsed |
+| -32600 | `INVALID_REQUEST` | Invalid JSON-RPC shape |
+| -32601 | `METHOD_NOT_FOUND` | Unsupported method |
+| -32602 | `INVALID_PARAMS` | Invalid `tools/call` name or arguments |
+
+## Public Error Body
+
+REST and HTTP-level MCP errors include `error.code` and a generic `error.message`.
+
+```json
+{
+  "error": {
+    "code": "AGENT_QUERY_FAILED",
+    "message": "database query failed"
+  }
+}
+```
+
+`message` is part of the public API contract. It is safe for clients to display, but clients should branch on `code`.
+
+Agent-originated raw `detail`, SQL text, DB-specific error text, DB credentials, and request params are written only to `onprest-agent.log` when needed. They are not included in gateway stdout or HTTP responses.

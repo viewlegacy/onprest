@@ -1,0 +1,74 @@
+# Troubleshooting
+
+## Agent Cannot Connect
+
+Check:
+
+- `gateway.url` points to `/ws/agent`.
+- reverse proxy supports WebSocket upgrade.
+- `GATEWAY_AGENT_PUBLIC_KEY` matches `gateway.agent_private_key`.
+- agent host can make outbound connections to gateway.
+- timestamp skew is not outside the allowed signing window.
+
+gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when signature validation fails.
+
+## OpenAPI Returns 503
+
+`GATEWAY_AGENT_OFFLINE` means gateway has no connected agent or no usable OpenAPI cache.
+
+Check agent startup logs and `onprest-agent.log`. DB ping or EXPLAIN failure prevents the agent from connecting.
+
+## API Key Authentication Fails
+
+Check:
+
+- Header is `Authorization: Bearer ...` or `X-API-Key`.
+- `GATEWAY_API_KEYS_JSON` contains the bcrypt hash from `create-key`.
+- The JSON value was single-quoted when sourced by shell.
+- The key was not copied from the masked/logged form.
+
+## Capability Denied
+
+`GATEWAY_CAPABILITY_DENIED` means the API key is valid but not authorized for that capability.
+
+Update the key definition or use a key whose `capabilities` includes the requested capability or `"*"`.
+
+## DB Ping Or EXPLAIN Startup Failure
+
+Agent stops before connecting to gateway. Check `onprest-agent.log` next to the agent binary.
+
+Common causes:
+
+- DB host or port unreachable.
+- DB credentials are invalid.
+- DB user lacks required permissions.
+- SQL syntax is invalid for the configured driver.
+- SQL Server plan validation permissions are missing.
+
+## Runtime DB Permission Failure
+
+External callers receive a normalized agent error such as `AGENT_QUERY_FAILED`. The DB-specific detail is in `onprest-agent.log`.
+
+This is expected. Do not look for SQL detail in gateway stdout or HTTP responses.
+
+## Rate Limited
+
+`GATEWAY_RATE_LIMITED` means the source IP exceeded configured rate or burst limits.
+
+Review:
+
+- `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND`
+- `GATEWAY_RATE_LIMIT_BURST`
+- trusted proxy source IP detection
+
+## Docker Or Testcontainers Issues
+
+Container-backed integration tests require Docker daemon access.
+
+Use mandatory mode when skips should fail the gate:
+
+```bash
+ONPREST_IT_REQUIRE_CONTAINERS=1 make test-it-release-gate
+```
+
+If tests fail after interruption, check for leftover testcontainers resources and rerun the release gate.

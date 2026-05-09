@@ -1,0 +1,31 @@
+# Capability Changes
+
+Capabilities are owned by the agent-side `capability.yaml`. gateway does not define SQL, params, policy, or result schemas.
+
+## Add Or Change A Capability
+
+1. SSH or otherwise access the on-prem agent host.
+2. Edit `capability.yaml`.
+3. Restart `onprest-agent`.
+4. Confirm YAML lint, DB ping, and EXPLAIN pass.
+5. Confirm gateway receives fresh OpenAPI metadata.
+6. Verify REST, MCP `tools/list`, MCP `tools/call`, and `/openapi.json`.
+
+## Failure Behavior
+
+If lint, DB ping, or EXPLAIN fails:
+
+- agent startup is aborted.
+- gateway is not given the invalid definition.
+- detail is written to `onprest-agent.log`.
+- stderr remains generic.
+
+This makes capability changes fail closed.
+
+## Restart Requirement
+
+`capability.yaml` is read at startup. Changes are not hot-loaded. Restart the agent to apply additions, removals, or modifications.
+
+## Public Contract Changes
+
+When a public behavior, configuration, deployment procedure, security rule, API, error code, or operational workflow changes, update these docs together with `architecture.md`.

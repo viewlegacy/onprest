@@ -1,0 +1,39 @@
+# PostgreSQL
+
+Use `database.driver: postgres`.
+
+```yaml
+database:
+  driver: postgres
+  host: localhost
+  port: 5432
+  name: legacy
+  user: readonly_user
+  password: change-me
+```
+
+## SQL Parameters
+
+Capabilities use named params like `:customer_id`. The agent converts them to PostgreSQL placeholders such as `$1`.
+
+```yaml
+sql: select id, name from customers where id = :customer_id
+```
+
+## Startup EXPLAIN
+
+PostgreSQL capabilities are checked with `EXPLAIN` during agent startup.
+
+If EXPLAIN fails, the agent does not connect to gateway. Detail stays in `onprest-agent.log`.
+
+## Connection Note
+
+The current agent-generated PostgreSQL DSN includes `sslmode=disable`.
+
+## Integration Test
+
+```bash
+go test -tags=integration ./it/... -args -onprest-it-db=postgres
+```
+
+PostgreSQL is also the default target for `make test-it`.

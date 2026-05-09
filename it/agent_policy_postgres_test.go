@@ -1,0 +1,250 @@
+//go:build integration
+
+package it
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	agentpkg "github.com/viewlegacy/onprest/internal/agent"
+)
+
+func TestPostgresPolicyAndQueryFailures(t *testing.T) {
+	db := postgresContainerConfig(t)
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	tmp := t.TempDir()
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  limited_rows:
+    sql: select n::int as n from generate_series(1,5) as n
+    policy:
+      readonly: true
+      timeout: 2s
+      max_rows: 2
+      max_bytes: 128KB
+    result:
+      n:
+        type: integer
+  slow_query:
+    sql: select 'done'::text as slept from pg_sleep(1)
+    policy:
+      readonly: true
+      timeout: 200ms
+      max_rows: 1
+      max_bytes: 128KB
+    result:
+      slept:
+        type: string
+  failing_query:
+    sql: select (1 / :denominator::int)::int as value
+    params:
+      denominator:
+        type: integer
+        required: true
+    policy:
+      readonly: true
+      timeout: 2s
+      max_rows: 1
+      max_bytes: 128KB
+    result:
+      value:
+        type: integer
+  too_large:
+    sql: select repeat('x', 2048)::text as payload
+    policy:
+      readonly: true
+      timeout: 2s
+      max_rows: 1
+      max_bytes: 1KB
+    result:
+      payload:
+        type: string`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	baseURL := startInternalGateway(t, ctx, addr, secrets, 1500*time.Millisecond)
+	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- runner.Run(ctx) }()
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+
+	status, body := postCapability(t, baseURL, secrets.APIKey, "limited_rows", `{}`)
+	if status != http.StatusOK {
+		t.Fatalf("limited_rows status=%d body=%s", status, string(body))
+	}
+	var limited struct {
+		Rows  []map[string]any `json:"rows"`
+		Count int              `json:"count"`
+	}
+	if err := json.Unmarshal(body, &limited); err != nil {
+		t.Fatal(err)
+	}
+	if limited.Count != 2 || len(limited.Rows) != 2 {
+		t.Fatalf("limited_rows response = %s, want 2 rows", string(body))
+	}
+
+	status, body = postCapability(t, baseURL, secrets.APIKey, "slow_query", `{}`)
+	if status != http.StatusBadGateway {
+		t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+	}
+	requireAPIErrorCode(t, body, "AGENT_QUERY_TIMEOUT")
+
+	status, body = postCapability(t, baseURL, secrets.APIKey, "failing_query", `{"denominator":0}`)
+	if status != http.StatusBadGateway {
+		t.Fatalf("failing_query status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+	}
+	requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+
+	status, body = postCapability(t, baseURL, secrets.APIKey, "too_large", `{}`)
+	if status != http.StatusBadGateway {
+		t.Fatalf("too_large status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+	}
+	requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(12 * time.Second):
+		t.Fatal("agent runner did not stop")
+	}
+}
+
+func TestPostgresDBUnreachableDuringQuery(t *testing.T) {
+	db, stopDB := dedicatedPostgresContainer(t)
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	tmp := t.TempDir()
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  interrupted_sleep:
+    sql: /* onprest_it_interrupted_sleep */ select 'done'::text as slept from pg_sleep(10)
+    policy:
+      readonly: true
+      timeout: 15s
+      max_rows: 1
+      max_bytes: 128KB
+    result:
+      slept:
+        type: string`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	baseURL := startInternalGateway(t, ctx, addr, secrets, 8*time.Second)
+	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- runner.Run(ctx) }()
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+
+	type capabilityResult struct {
+		status int
+		body   []byte
+	}
+	resultCh := make(chan capabilityResult, 1)
+	go func() {
+		status, body := postCapability(t, baseURL, secrets.APIKey, "interrupted_sleep", `{}`)
+		resultCh <- capabilityResult{status: status, body: body}
+	}()
+	waitForPostgresActiveQuery(t, db, "onprest_it_interrupted_sleep")
+	stopDB()
+
+	var result capabilityResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(12 * time.Second):
+		t.Fatal("interrupted_sleep request did not return after stopping DB container")
+	}
+	status, body := result.status, result.body
+	if status != http.StatusBadGateway {
+		t.Fatalf("interrupted_sleep status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+	}
+	requireAPIErrorCode(t, body, "AGENT_DB_UNREACHABLE")
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent runner did not stop")
+	}
+}
+
+func dedicatedPostgresContainer(t *testing.T) (postgresConfig, func()) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout("postgres"))
+	defer cancel()
+	cfg, _, cleanup, err := startPostgresContainer(ctx)
+	if err != nil {
+		if os.Getenv("ONPREST_IT_REQUIRE_CONTAINERS") == "1" {
+			t.Fatalf("start dedicated postgres testcontainer: %v", err)
+		}
+		t.Skipf("skip dedicated postgres testcontainer integration: %v", err)
+	}
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = cleanup(ctx)
+		})
+	}
+	t.Cleanup(stop)
+	return cfg, stop
+}
+
+func waitForPostgresActiveQuery(t *testing.T, cfg postgresConfig, marker string) {
+	t.Helper()
+	db, err := sql.Open("postgres", postgresDSN(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		var count int
+		err := db.QueryRowContext(ctx, `
+select count(*)
+from pg_stat_activity
+where pid <> pg_backend_pid()
+  and state = 'active'
+  and query like '%' || $1 || '%'`, marker).Scan(&count)
+		cancel()
+		if err == nil && count > 0 {
+			return
+		}
+		if err != nil && isPostgresConnectionError(err) {
+			t.Fatalf("postgres became unreachable before interrupted query was active: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for active postgres query marker %q", marker)
+}
+
+func isPostgresConnectionError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, fragment := range []string{
+		"connection refused",
+		"connection reset",
+		"connection timed out",
+		"bad connection",
+		"server is not accepting",
+		"database system is shutting down",
+		"terminating connection",
+		"connection is closed",
+		"unexpected eof",
+	} {
+		if strings.Contains(msg, fragment) {
+			return true
+		}
+	}
+	return false
+}
