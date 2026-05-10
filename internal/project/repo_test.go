@@ -46,6 +46,10 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 	capabilityYAML := readText(t, filepath.Join(root, "examples", "capability.postgres.yaml"))
 	for _, want := range []string{
 		"driver: postgres",
+		"name: legacy",
+		"user: readonly_user",
+		"password: onprest-example-password",
+		"sql: select id, name, email from customers where id = :customer_id",
 		"max_size: 10MB",
 		"max_files: 3",
 		"readonly: true",
@@ -53,6 +57,31 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 	} {
 		if !strings.Contains(capabilityYAML, want) {
 			t.Fatalf("examples/capability.postgres.yaml missing %q", want)
+		}
+	}
+
+	composeYAML := readText(t, filepath.Join(root, "examples", "postgres.compose.yml"))
+	for _, want := range []string{
+		"POSTGRES_DB: legacy",
+		"POSTGRES_USER: onprest_admin",
+		"POSTGRES_PASSWORD: onprest-example-password",
+		`"127.0.0.1:5432:5432"`,
+		"./postgres-init.sql:/docker-entrypoint-initdb.d/001-onprest-example.sql:ro",
+	} {
+		if !strings.Contains(composeYAML, want) {
+			t.Fatalf("examples/postgres.compose.yml missing %q", want)
+		}
+	}
+
+	initSQL := readText(t, filepath.Join(root, "examples", "postgres-init.sql"))
+	for _, want := range []string{
+		"CREATE ROLE readonly_user LOGIN PASSWORD 'onprest-example-password'",
+		"CREATE TABLE customers",
+		"(1, 'Ada Lovelace', 'ada@example.com')",
+		"GRANT SELECT ON customers TO readonly_user",
+	} {
+		if !strings.Contains(initSQL, want) {
+			t.Fatalf("examples/postgres-init.sql missing %q", want)
 		}
 	}
 }

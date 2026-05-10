@@ -17,7 +17,7 @@ dist/onprest-gateway
 dist/onprest-agent
 ```
 
-Docker is optional. The Onprest OSS core runs from the generated binaries and does not depend on the source tree or Node.js / Nextra.
+Docker is optional for the Onprest OSS core. This guide uses Docker only to provide a disposable local PostgreSQL database for the repository example capability.
 
 ## Repository Example Files
 
@@ -25,14 +25,20 @@ The repository includes matching example files for local evaluation:
 
 - `examples/gateway.env`
 - `examples/capability.postgres.yaml`
+- `examples/postgres.compose.yml`
+- `examples/postgres-init.sql`
 
-Those files contain a matching agent key pair and API key hash. If you use them, set the example plaintext API key and skip the key/config creation steps below.
+Those files contain a matching agent key pair and API key hash. If you use them, use the example plaintext API key in the verification steps and skip the key/config creation steps below.
+
+Start the example PostgreSQL database.
 
 ```bash
-export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+make quickstart-db
 ```
 
-The example capability expects a PostgreSQL database matching `examples/capability.postgres.yaml`. For real deployments, generate fresh keys and edit your own `capability.yaml`.
+This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the `legacy` database, creates the `readonly_user` account used by `examples/capability.postgres.yaml`, and seeds the `customers` table. If `127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml` to use the same alternate port.
+
+For real deployments, generate fresh keys and edit your own `capability.yaml`.
 
 ## 2. Generate Agent Keys
 
@@ -97,7 +103,7 @@ database:
   port: 5432
   name: legacy
   user: readonly_user
-  password: change-me-db-password
+  password: onprest-example-password
 
 logging:
   max_size: 10MB
@@ -140,11 +146,13 @@ At startup, the agent runs YAML lint, DB ping, and SQL EXPLAIN verification. If 
 
 ## 6. Start Gateway And Agent
 
+The commands below use the repository example files. If you created your own files in steps 2-5, replace `./examples/gateway.env` with `./gateway.env` and `./examples/capability.postgres.yaml` with `./capability.yaml`.
+
 Start the gateway.
 
 ```bash
 set -a
-. ./gateway.env
+. ./examples/gateway.env
 set +a
 ./dist/onprest-gateway
 ```
@@ -152,7 +160,7 @@ set +a
 Start the agent in another terminal.
 
 ```bash
-AGENT_CAPABILITY_FILE=./capability.yaml ./dist/onprest-agent
+AGENT_CAPABILITY_FILE=./examples/capability.postgres.yaml ./dist/onprest-agent
 ```
 
 If `AGENT_CAPABILITY_FILE` is omitted, the agent reads `capability.yaml` from the current directory.
@@ -176,10 +184,10 @@ curl -s http://localhost:8080/healthz
 
 ## 8. Verify REST
 
-Set the plaintext API key returned by `create-key`.
+Set the plaintext API key in the shell that will call the gateway. If you are using the repository example files, use the example plaintext key.
 
 ```bash
-export ONPREST_API_KEY=onp_xxxxx
+export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
 ```
 
 ```bash
@@ -221,3 +229,9 @@ curl -s \
 ```
 
 MCP `tools/list` is generated from the OpenAPI cache and filtered by the API key's allowed capabilities.
+
+## 11. Stop Example Database
+
+```bash
+make quickstart-db-down
+```
