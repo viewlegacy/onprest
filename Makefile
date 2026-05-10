@@ -1,4 +1,4 @@
-.PHONY: build build-cross test test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
+.PHONY: build build-cross quickstart-db quickstart-db-down test test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
 
 build:
 	mkdir -p dist
@@ -7,6 +7,12 @@ build:
 
 build-cross:
 	bash scripts/cross_build.sh
+
+quickstart-db:
+	docker compose -f examples/postgres.compose.yml up -d
+
+quickstart-db-down:
+	docker compose -f examples/postgres.compose.yml down -v --remove-orphans
 
 test:
 	go test ./...
