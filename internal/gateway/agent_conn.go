@@ -123,5 +123,9 @@ func (s *Server) fetchMeta() {
 	s.agentMu.Lock()
 	s.openapi = doc
 	s.agentMu.Unlock()
-	s.log("openapi_cached", map[string]any{"paths": openAPIPathCount(doc)})
+	pathCount := openAPIPathCount(doc)
+	s.log("openapi_cached", map[string]any{"paths": pathCount})
+	if s.cfg.EmitOpenAPISnapshot {
+		s.log("openapi_snapshot", map[string]any{"paths": pathCount, "openapi": doc})
+	}
 }

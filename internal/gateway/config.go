@@ -15,13 +15,14 @@ import (
 )
 
 type Config struct {
-	Addr           string
-	AgentPublicKey string
-	APIKeys        []APIKey
-	IPAllowList    []*net.IPNet
-	TrustedProxies []*net.IPNet
-	RateLimit      RateLimitConfig
-	AgentTimeout   time.Duration
+	Addr                string
+	AgentPublicKey      string
+	APIKeys             []APIKey
+	IPAllowList         []*net.IPNet
+	TrustedProxies      []*net.IPNet
+	RateLimit           RateLimitConfig
+	AgentTimeout        time.Duration
+	EmitOpenAPISnapshot bool
 }
 
 type APIKey struct {
@@ -70,9 +71,14 @@ func LoadConfigFromEnv() (Config, error) {
 	if burst <= 0 {
 		return Config{}, errors.New("GATEWAY_RATE_LIMIT_BURST must be > 0")
 	}
+	emitOpenAPISnapshot, err := envBool("GATEWAY_EMIT_OPENAPI_SNAPSHOT", false)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
-		Addr:           env("GATEWAY_ADDR", ":8080"),
-		AgentPublicKey: os.Getenv("GATEWAY_AGENT_PUBLIC_KEY"),
+		Addr:                env("GATEWAY_ADDR", ":8080"),
+		AgentPublicKey:      os.Getenv("GATEWAY_AGENT_PUBLIC_KEY"),
+		EmitOpenAPISnapshot: emitOpenAPISnapshot,
 		RateLimit: RateLimitConfig{
 			RequestsPerSecond: rps,
 			Burst:             burst,
@@ -179,6 +185,17 @@ func envFloat(key string, fallback float64) (float64, error) {
 			return 0, fmt.Errorf("%s must be a number: %w", key, err)
 		}
 		return n, nil
+	}
+	return fallback, nil
+}
+
+func envBool(key string, fallback bool) (bool, error) {
+	if v := os.Getenv(key); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return false, fmt.Errorf("%s must be a boolean: %w", key, err)
+		}
+		return b, nil
 	}
 	return fallback, nil
 }

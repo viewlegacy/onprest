@@ -79,6 +79,7 @@ GATEWAY_IP_ALLOW_LIST=
 GATEWAY_TRUSTED_PROXY_CIDRS=
 GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
 GATEWAY_RATE_LIMIT_BURST=20
+GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
 ```
 
 The `key_hash` value in `GATEWAY_API_KEYS_JSON` is a bcrypt hash, so it contains `$`. Single-quote the whole JSON value when loading it through a shell.

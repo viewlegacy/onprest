@@ -642,6 +642,57 @@ func TestOpenAPIMetaWrapperAndControlLog(t *testing.T) {
 	if entry["event"] != "openapi_cached" || entry["paths"] != float64(1) {
 		t.Fatalf("unexpected control log: %#v", entry)
 	}
+	if _, ok := entry["openapi"]; ok {
+		t.Fatalf("openapi_cached included full OpenAPI document: %#v", entry)
+	}
+	if strings.Contains(logs.String(), "openapi_snapshot") {
+		t.Fatalf("unexpected OpenAPI snapshot log when disabled: %s", logs.String())
+	}
+}
+
+func TestOpenAPISnapshotLogWhenEnabled(t *testing.T) {
+	raw := []byte(`{"data":{"openapi":"3.1.0","info":{"title":"IT"},"paths":{"/api/v1/capabilities/get_customer":{"post":{"x-onprest-capability":"get_customer"}}}}}`)
+	s, logs, _, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		return agentResponse{ID: req.ID, Result: json.RawMessage(raw)}
+	})
+	defer cleanup()
+	s.cfg.EmitOpenAPISnapshot = true
+
+	s.fetchMeta()
+
+	entries := logEntries(t, logs)
+	if len(entries) != 2 {
+		t.Fatalf("log entries = %d, want exactly 2: %s", len(entries), logs.String())
+	}
+	cached := entries[0]
+	if cached["event"] != "openapi_cached" || cached["paths"] != float64(1) {
+		t.Fatalf("unexpected cached log before snapshot: %#v", cached)
+	}
+	if _, ok := cached["openapi"]; ok {
+		t.Fatalf("openapi_cached included full OpenAPI document: %#v", cached)
+	}
+	snapshot := entries[1]
+	if snapshot["event"] != "openapi_snapshot" || snapshot["paths"] != float64(1) {
+		t.Fatalf("unexpected snapshot log: %#v", snapshot)
+	}
+	openAPI, ok := snapshot["openapi"].(map[string]any)
+	if !ok {
+		t.Fatalf("openapi field missing from snapshot log: %#v", snapshot)
+	}
+	if openAPI["openapi"] != "3.1.0" {
+		t.Fatalf("snapshot OpenAPI version = %#v, want 3.1.0", openAPI["openapi"])
+	}
+	info, ok := openAPI["info"].(map[string]any)
+	if !ok || info["title"] != "IT" {
+		t.Fatalf("snapshot OpenAPI info = %#v, want title IT", openAPI["info"])
+	}
+	paths, ok := openAPI["paths"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot OpenAPI paths missing: %#v", openAPI)
+	}
+	if _, ok := paths["/api/v1/capabilities/get_customer"]; !ok {
+		t.Fatalf("snapshot OpenAPI full document missing capability path: %#v", paths)
+	}
 }
 
 func TestAgentErrorStatusMapping(t *testing.T) {
@@ -846,15 +897,25 @@ func canonicalHeader(key, value string) http.Header {
 
 func lastLogEntry(t *testing.T, logs *bytes.Buffer) map[string]any {
 	t.Helper()
-	lines := strings.Fields(strings.TrimSpace(logs.String()))
+	entries := logEntries(t, logs)
+	return entries[len(entries)-1]
+}
+
+func logEntries(t *testing.T, logs *bytes.Buffer) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
 	if len(lines) == 0 {
 		t.Fatal("no log entries")
 	}
-	var entry map[string]any
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
-		t.Fatalf("parse log entry: %v; logs=%s", err, logs.String())
+	entries := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("parse log entry: %v; logs=%s", err, logs.String())
+		}
+		entries = append(entries, entry)
 	}
-	return entry
+	return entries
 }
 
 func signedAgentRequest(t *testing.T, path string, ts time.Time, nonce string) *http.Request {
