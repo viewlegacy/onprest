@@ -12,6 +12,7 @@ GATEWAY_IP_ALLOW_LIST=203.0.113.0/24,198.51.100.0/24
 GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12
 GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
 GATEWAY_RATE_LIMIT_BURST=20
+GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
 ```
 
 ## Variables
@@ -25,8 +26,9 @@ GATEWAY_RATE_LIMIT_BURST=20
 | `GATEWAY_TRUSTED_PROXY_CIDRS` | No | CIDRs whose forwarded headers are trusted for source IP detection |
 | `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` | No | Per-source request rate, default `10` |
 | `GATEWAY_RATE_LIMIT_BURST` | No | Per-source burst size, default `20` |
+| `GATEWAY_EMIT_OPENAPI_SNAPSHOT` | No | Emit full cached OpenAPI metadata to stdout as `openapi_snapshot` when `true`; default `false` |
 
-Invalid rate limit values are startup errors. gateway does not silently fall back to defaults when a configured rate or burst value is invalid.
+Invalid rate limit and boolean values are startup errors. gateway does not silently fall back to defaults when a configured value is invalid.
 
 ## Listen Address
 

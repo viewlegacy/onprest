@@ -19,6 +19,15 @@ Request event fields:
 
 gateway stdout excludes params, SQL, DB credentials, agent detail, plaintext API keys, and agent private keys.
 
+OpenAPI metadata events:
+
+| Event | Fields | Description |
+|---|---|---|
+| `openapi_cached` | `paths` | Emitted after gateway caches agent metadata. This is always summary-only. |
+| `openapi_snapshot` | `paths`, `openapi` | Emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`. `openapi` contains the full cached OpenAPI document. |
+
+`openapi_snapshot` contains unfiltered OpenAPI metadata for the connected agent. It still must not contain SQL or DB credentials, but it may contain public descriptions, parameter names, and result schema names from `capability.yaml`.
+
 ## Agent
 
 Agent local detail log:

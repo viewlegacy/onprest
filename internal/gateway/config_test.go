@@ -29,6 +29,9 @@ func TestLoadConfigFromEnvAcceptsQuotedAPIKeysJSON(t *testing.T) {
 	if cfg.RateLimit.RequestsPerSecond != 5 || cfg.RateLimit.Burst != 7 {
 		t.Fatalf("RateLimit = %#v", cfg.RateLimit)
 	}
+	if cfg.EmitOpenAPISnapshot {
+		t.Fatal("EmitOpenAPISnapshot = true, want default false")
+	}
 }
 
 func TestLoadConfigFromEnvRejectsMissingAndInvalidRequiredValues(t *testing.T) {
@@ -128,6 +131,30 @@ func TestLoadConfigFromEnvRejectsNonPositiveRateLimit(t *testing.T) {
 				t.Fatalf("LoadConfigFromEnv() error = %v, want containing %q", err, tc.errMsg)
 			}
 		})
+	}
+}
+
+func TestLoadConfigFromEnvOpenAPISnapshotFlag(t *testing.T) {
+	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", "TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8")
+	t.Setenv("GATEWAY_API_KEYS_JSON", `[{"name":"dev","key_hash":"hash","capabilities":["*"]}]`)
+	t.Setenv("GATEWAY_EMIT_OPENAPI_SNAPSHOT", "true")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.EmitOpenAPISnapshot {
+		t.Fatal("EmitOpenAPISnapshot = false, want true")
+	}
+}
+
+func TestLoadConfigFromEnvRejectsInvalidOpenAPISnapshotFlag(t *testing.T) {
+	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", "TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8")
+	t.Setenv("GATEWAY_API_KEYS_JSON", `[{"name":"dev","key_hash":"hash","capabilities":["*"]}]`)
+	t.Setenv("GATEWAY_EMIT_OPENAPI_SNAPSHOT", "yes please")
+
+	if _, err := LoadConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "GATEWAY_EMIT_OPENAPI_SNAPSHOT must be a boolean") {
+		t.Fatalf("LoadConfigFromEnv() error = %v, want boolean error", err)
 	}
 }
 

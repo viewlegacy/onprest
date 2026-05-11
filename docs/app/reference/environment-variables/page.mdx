@@ -11,6 +11,7 @@
 | `GATEWAY_TRUSTED_PROXY_CIDRS` | empty | Empty means forwarded headers are ignored |
 | `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` | `10` | Per-source request rate |
 | `GATEWAY_RATE_LIMIT_BURST` | `20` | Per-source burst |
+| `GATEWAY_EMIT_OPENAPI_SNAPSHOT` | `false` | When `true`, gateway emits full cached OpenAPI metadata as an `openapi_snapshot` stdout event |
 
 ## Example
 
@@ -22,6 +23,7 @@ GATEWAY_IP_ALLOW_LIST=
 GATEWAY_TRUSTED_PROXY_CIDRS=
 GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
 GATEWAY_RATE_LIMIT_BURST=20
+GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
 ```
 
 ## Agent
