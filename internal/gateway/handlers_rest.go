@@ -13,26 +13,26 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	name := capabilityFromPath(r.URL.Path)
 	key, ok := s.authenticate(w, r)
 	if !ok {
-		s.accessLog(reqID, "", name, http.StatusUnauthorized, errGatewayAuthFailed, start)
+		s.accessLog(reqID, "", name, http.StatusUnauthorized, errGatewayAuthFailed, "invalid api key", start)
 		return
 	}
 	if name == "" || strings.Contains(name, "/") {
-		s.accessLog(reqID, key.Name, name, http.StatusNotFound, errGatewayCapabilityNotFound, start)
+		s.accessLog(reqID, key.Name, name, http.StatusNotFound, errGatewayCapabilityNotFound, "capability not found", start)
 		writeJSON(w, http.StatusNotFound, apiError(errGatewayCapabilityNotFound, "capability not found"))
 		return
 	}
 	if !allowed(key, name) {
-		s.accessLog(reqID, key.Name, name, http.StatusForbidden, errGatewayCapabilityDenied, start)
+		s.accessLog(reqID, key.Name, name, http.StatusForbidden, errGatewayCapabilityDenied, "capability not allowed", start)
 		writeJSON(w, http.StatusForbidden, apiError(errGatewayCapabilityDenied, "capability not allowed"))
 		return
 	}
 	if r.Method != http.MethodPost {
-		s.accessLog(reqID, key.Name, name, http.StatusMethodNotAllowed, errGatewayMethodNotAllowed, start)
+		s.accessLog(reqID, key.Name, name, http.StatusMethodNotAllowed, errGatewayMethodNotAllowed, "use POST", start)
 		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
 		return
 	}
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, start)
+		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "Content-Type must be application/json", start)
 		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "Content-Type must be application/json"))
 		return
 	}
@@ -40,12 +40,12 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	dec.UseNumber()
 	if err := dec.Decode(&params); err != nil {
-		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, start)
+		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "invalid json body", start)
 		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json body"))
 		return
 	}
 	result := s.callAgent(r.Context(), name, params)
-	s.accessLog(reqID, key.Name, name, result.Status, result.Code, start)
+	s.accessLog(reqID, key.Name, name, result.Status, result.Code, result.Detail, start)
 	if !result.OK() {
 		writeJSON(w, result.Status, apiError(result.Code, result.Detail))
 		return

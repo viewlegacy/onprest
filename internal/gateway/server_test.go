@@ -244,13 +244,14 @@ func TestCapabilityEndpointHTTPErrorCases(t *testing.T) {
 		body        string
 		wantStatus  int
 		wantCode    string
+		wantMessage string
 	}{
-		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest},
-		{name: "invalid-json", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest},
-		{name: "method", method: http.MethodGet, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed, wantCode: errGatewayMethodNotAllowed},
-		{name: "empty-name", method: http.MethodPost, path: "/api/v1/capabilities/", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound},
-		{name: "slash-name", method: http.MethodPost, path: "/api/v1/capabilities/get/customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound},
-		{name: "offline", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{"id":1}`, wantStatus: http.StatusServiceUnavailable, wantCode: errGatewayAgentOffline},
+		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest, wantMessage: "Content-Type must be application/json"},
+		{name: "invalid-json", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest, wantMessage: "invalid json body"},
+		{name: "method", method: http.MethodGet, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed, wantCode: errGatewayMethodNotAllowed, wantMessage: "use POST"},
+		{name: "empty-name", method: http.MethodPost, path: "/api/v1/capabilities/", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound, wantMessage: "capability not found"},
+		{name: "slash-name", method: http.MethodPost, path: "/api/v1/capabilities/get/customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound, wantMessage: "capability not found"},
+		{name: "offline", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{"id":1}`, wantStatus: http.StatusServiceUnavailable, wantCode: errGatewayAgentOffline, wantMessage: "agent is not connected"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,10 +264,13 @@ func TestCapabilityEndpointHTTPErrorCases(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
-			assertAPIError(t, rec.Body.Bytes(), tc.wantCode)
+			assertAPIErrorMessage(t, rec.Body.Bytes(), tc.wantCode, tc.wantMessage)
 			entry := lastLogEntry(t, logs)
 			if entry["event"] != "request" || entry["error_code"] != tc.wantCode {
 				t.Fatalf("unexpected access log: %#v", entry)
+			}
+			if entry["error_message"] != tc.wantMessage {
+				t.Fatalf("error_message = %#v, want %q", entry["error_message"], tc.wantMessage)
 			}
 		})
 	}
@@ -302,6 +306,9 @@ func TestCapabilityEndpointUsesDirectParamsBody(t *testing.T) {
 	entry := lastLogEntry(t, logs)
 	if entry["http_status"] != float64(http.StatusOK) || entry["error_code"] != nil {
 		t.Fatalf("unexpected success access log: %#v", entry)
+	}
+	if entry["error_message"] != nil {
+		t.Fatalf("success access log error_message = %#v, want nil", entry["error_message"])
 	}
 }
 
@@ -570,6 +577,9 @@ func TestCapabilityErrorsAreAccessLoggedWithoutSensitiveData(t *testing.T) {
 	if entry["http_status"] != float64(http.StatusBadRequest) || entry["error_code"] != errGatewayInvalidRequest {
 		t.Fatalf("unexpected access log status/code: %#v", entry)
 	}
+	if entry["error_message"] != "Content-Type must be application/json" {
+		t.Fatalf("error_message = %#v, want Content-Type must be application/json", entry["error_message"])
+	}
 	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "password") {
 		t.Fatalf("access log leaked request params: %s", logs.String())
 	}
@@ -590,6 +600,9 @@ func TestCapabilityAuthFailureIsAccessLogged(t *testing.T) {
 	entry := lastLogEntry(t, logs)
 	if entry["http_status"] != float64(http.StatusUnauthorized) || entry["error_code"] != errGatewayAuthFailed {
 		t.Fatalf("unexpected access log: %#v", entry)
+	}
+	if entry["error_message"] != "invalid api key" {
+		t.Fatalf("error_message = %#v, want invalid api key", entry["error_message"])
 	}
 	if entry["api_key_name"] != "" {
 		t.Fatalf("api_key_name = %#v, want empty", entry["api_key_name"])
