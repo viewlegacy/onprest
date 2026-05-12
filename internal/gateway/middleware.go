@@ -11,12 +11,12 @@ func (s *Server) withAccess(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		if len(s.cfg.IPAllowList) > 0 && !s.ipAllowed(r) {
-			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusForbidden, errGatewayIPDenied, start)
+			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed", start)
 			writeJSON(w, http.StatusForbidden, apiError(errGatewayIPDenied, "source ip is not allowed"))
 			return
 		}
 		if s.cfg.RateLimit.RequestsPerSecond > 0 && !s.take(s.clientIP(r)) {
-			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusTooManyRequests, errGatewayRateLimited, start)
+			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusTooManyRequests, errGatewayRateLimited, "too many requests", start)
 			writeJSON(w, http.StatusTooManyRequests, apiError(errGatewayRateLimited, "too many requests"))
 			return
 		}
