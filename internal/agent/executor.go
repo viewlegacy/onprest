@@ -12,6 +12,8 @@ import (
 	"github.com/viewlegacy/onprest/internal/protocol"
 )
 
+const queryTimeoutDetail = "query exceeded policy.timeout"
+
 func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.Response {
 	if req.Capability == "meta" {
 		return protocol.ResultResponse(req.ID, map[string]any{"data": BuildOpenAPI(r.cf)})
@@ -37,7 +39,7 @@ func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.R
 	rows, cols, err := queryRows(ctx, r.db, query, args, cap.Policy.MaxRows)
 	if err != nil {
 		if ctx.Err() != nil {
-			return r.errorResponse(req, "AGENT_QUERY_TIMEOUT", err.Error())
+			return r.errorResponse(req, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
 		}
 		if isDBUnreachable(err) || !r.dbReachable(parent) {
 			return r.errorResponse(req, "AGENT_DB_UNREACHABLE", err.Error())
