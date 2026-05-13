@@ -7,6 +7,7 @@
 ```env
 GATEWAY_ADDR=:8080
 GATEWAY_PUBLIC_URL=https://gateway.example.com
+GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
 GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
 GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]},{"name":"partner-a","key_hash":"$2a$10$xxxxx","capabilities":["get_customers","get_orders"]}]'
 GATEWAY_IP_ALLOW_LIST=203.0.113.0/24,198.51.100.0/24
@@ -22,6 +23,7 @@ GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
 |---|---:|---|
 | `GATEWAY_ADDR` | No | Listen address, default `:8080` |
 | `GATEWAY_PUBLIC_URL` | No | External HTTP(S) base URL used in OpenAPI `servers`; defaults to a URL derived from `GATEWAY_ADDR` |
+| `GATEWAY_CORS_ALLOWED_ORIGINS` | No | Comma-separated browser origins allowed to call Gateway with CORS |
 | `GATEWAY_AGENT_PUBLIC_KEY` | Yes | Ed25519 public key used to verify agent WebSocket signatures |
 | `GATEWAY_API_KEYS_JSON` | Yes | JSON array of API key names, bcrypt hashes, and allowed capabilities |
 | `GATEWAY_IP_ALLOW_LIST` | No | Comma-separated CIDRs or single IPs allowed to call protected endpoints |
@@ -51,6 +53,16 @@ GATEWAY_PUBLIC_URL=https://gateway.example.com
 ```
 
 When omitted, gateway derives a direct-access fallback from `GATEWAY_ADDR`, such as `http://localhost:8080`. For reverse proxy or load balancer deployments, set `GATEWAY_PUBLIC_URL` explicitly.
+
+## CORS
+
+Set `GATEWAY_CORS_ALLOWED_ORIGINS` when browser-based clients, such as Swagger UI hosted on another origin, need to call Gateway directly.
+
+```env
+GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
+```
+
+Gateway allows `GET`, `POST`, and `OPTIONS` with `Authorization`, `X-API-Key`, and `Content-Type` only for configured origins. When omitted, Gateway does not emit CORS headers.
 
 ## Agent Public Key
 

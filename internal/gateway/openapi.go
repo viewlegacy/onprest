@@ -100,6 +100,20 @@ func normalizePublicURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
+func normalizeOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", errors.New("GATEWAY_CORS_ALLOWED_ORIGINS must contain absolute http or https origins")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("GATEWAY_CORS_ALLOWED_ORIGINS must use http or https")
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("GATEWAY_CORS_ALLOWED_ORIGINS values must not include path, query, or fragment")
+	}
+	return u.String(), nil
+}
+
 func publicURLFromAddr(addr string) string {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {

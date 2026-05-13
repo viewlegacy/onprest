@@ -580,6 +580,65 @@ func TestOpenAPIEndpointWildcardReturnsAllCapabilities(t *testing.T) {
 	}
 }
 
+func TestCORSPreflightAllowsConfiguredOrigin(t *testing.T) {
+	s, _, _ := testServer(t)
+	s.cfg.CORSAllowedOrigins = []string{"http://localhost:8090"}
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/capabilities/get_customer", nil)
+	req.Header.Set("Origin", "http://localhost:8090")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:8090" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, X-API-Key, Content-Type" {
+		t.Fatalf("Access-Control-Allow-Headers = %q", got)
+	}
+}
+
+func TestCORSPreflightRejectsUnconfiguredOrigin(t *testing.T) {
+	s, _, _ := testServer(t)
+	s.cfg.CORSAllowedOrigins = []string{"https://dashboard.example.com"}
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/capabilities/get_customer", nil)
+	req.Header.Set("Origin", "http://localhost:8090")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
+func TestCORSHeadersOnAllowedOpenAPIRequest(t *testing.T) {
+	s, _, apiKey := testServer(t)
+	s.cfg.CORSAllowedOrigins = []string{"http://localhost:8090"}
+	s.openapi = s.finalizeOpenAPI(testOpenAPIDoc())
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Origin", "http://localhost:8090")
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:8090" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", got)
+	}
+}
+
 func TestCapabilityErrorsAreAccessLoggedWithoutSensitiveData(t *testing.T) {
 	s, logs, apiKey := testServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{"password":"secret"}`))
