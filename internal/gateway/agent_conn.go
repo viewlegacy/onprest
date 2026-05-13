@@ -120,6 +120,7 @@ func (s *Server) fetchMeta() {
 		s.log("openapi_parse_failed", map[string]any{"error": err.Error()})
 		return
 	}
+	doc = s.finalizeOpenAPI(doc)
 	s.agentMu.Lock()
 	s.openapi = doc
 	s.agentMu.Unlock()
