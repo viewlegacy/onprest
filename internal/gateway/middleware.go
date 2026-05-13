@@ -10,6 +10,15 @@ import (
 func (s *Server) withAccess(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		corsAllowed := s.applyCORS(w, r)
+		if r.Method == http.MethodOptions {
+			if !corsAllowed && r.Header.Get("Origin") != "" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if len(s.cfg.IPAllowList) > 0 && !s.ipAllowed(r) {
 			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed", start)
 			writeJSON(w, http.StatusForbidden, apiError(errGatewayIPDenied, "source ip is not allowed"))
@@ -22,6 +31,34 @@ func (s *Server) withAccess(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	if !s.corsOriginAllowed(origin) {
+		return false
+	}
+	headers := w.Header()
+	headers.Set("Access-Control-Allow-Origin", origin)
+	headers.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	headers.Set("Access-Control-Allow-Headers", "Authorization, X-API-Key, Content-Type")
+	headers.Set("Access-Control-Max-Age", "600")
+	headers.Add("Vary", "Origin")
+	headers.Add("Vary", "Access-Control-Request-Method")
+	headers.Add("Vary", "Access-Control-Request-Headers")
+	return true
+}
+
+func (s *Server) corsOriginAllowed(origin string) bool {
+	for _, allowed := range s.cfg.CORSAllowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) ipAllowed(r *http.Request) bool {

@@ -19,6 +19,7 @@ type Config struct {
 	PublicURL           string
 	AgentPublicKey      string
 	APIKeys             []APIKey
+	CORSAllowedOrigins  []string
 	IPAllowList         []*net.IPNet
 	TrustedProxies      []*net.IPNet
 	RateLimit           RateLimitConfig
@@ -91,6 +92,11 @@ func LoadConfigFromEnv() (Config, error) {
 		return cfg, err
 	}
 	cfg.PublicURL = publicURL
+	corsAllowedOrigins, err := parseCORSAllowedOrigins(os.Getenv("GATEWAY_CORS_ALLOWED_ORIGINS"))
+	if err != nil {
+		return cfg, err
+	}
+	cfg.CORSAllowedOrigins = corsAllowedOrigins
 	if cfg.AgentPublicKey == "" {
 		return cfg, errors.New("GATEWAY_AGENT_PUBLIC_KEY is required")
 	}
@@ -126,6 +132,27 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 	cfg.TrustedProxies = blocks
 	return cfg, nil
+}
+
+func parseCORSAllowedOrigins(raw string) ([]string, error) {
+	var origins []string
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(part)
+		if origin == "" {
+			continue
+		}
+		normalized, err := normalizeOrigin(origin)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		origins = append(origins, normalized)
+	}
+	return origins, nil
 }
 
 func parseIPBlocks(raw string) ([]*net.IPNet, error) {
