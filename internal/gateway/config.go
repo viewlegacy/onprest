@@ -16,6 +16,7 @@ import (
 
 type Config struct {
 	Addr                string
+	PublicURL           string
 	AgentPublicKey      string
 	APIKeys             []APIKey
 	IPAllowList         []*net.IPNet
@@ -85,6 +86,11 @@ func LoadConfigFromEnv() (Config, error) {
 		},
 		AgentTimeout: 30 * time.Second,
 	}
+	publicURL, err := normalizePublicURL(os.Getenv("GATEWAY_PUBLIC_URL"))
+	if err != nil {
+		return cfg, err
+	}
+	cfg.PublicURL = publicURL
 	if cfg.AgentPublicKey == "" {
 		return cfg, errors.New("GATEWAY_AGENT_PUBLIC_KEY is required")
 	}

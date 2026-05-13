@@ -39,6 +39,17 @@ The agent responds with:
 
 If an API key can call only `get_customer`, paths for other capabilities are removed from the returned spec. If a capability has `policy.expose_in_openapi: false`, it is not exposed through OpenAPI or MCP `tools/list`.
 
+## Gateway Metadata
+
+Gateway adds:
+
+- `servers` using `GATEWAY_PUBLIC_URL`, or a fallback derived from `GATEWAY_ADDR`
+- `components.securitySchemes.bearerAuth` for `Authorization: Bearer {api_key}`
+- `components.securitySchemes.apiKeyAuth` for `X-API-Key: {api_key}`
+- top-level `security` requiring either auth scheme
+
+The same completed document is used for `/openapi.json` and for the optional `openapi_snapshot` stdout event.
+
 ## Sensitive Data
 
 OpenAPI metadata must not include:

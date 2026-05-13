@@ -508,7 +508,7 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 
 func TestOpenAPIEndpointFiltersCapabilities(t *testing.T) {
 	s, _, apiKey := testServer(t)
-	s.openapi = testOpenAPIDoc()
+	s.openapi = s.finalizeOpenAPI(testOpenAPIDoc())
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	rec := httptest.NewRecorder()
@@ -527,6 +527,31 @@ func TestOpenAPIEndpointFiltersCapabilities(t *testing.T) {
 	if _, ok := paths["/api/v1/capabilities/search_orders"]; ok {
 		t.Fatalf("denied path present: %#v", paths)
 	}
+	assertOpenAPIGatewayMetadata(t, body, "http://localhost:8080")
+}
+
+func TestOpenAPIEndpointIncludesGatewayMetadataFromCachedMeta(t *testing.T) {
+	raw := []byte(`{"data":{"openapi":"3.1.0","info":{"title":"IT"},"paths":{"/api/v1/capabilities/get_customer":{"post":{"x-onprest-capability":"get_customer"}}}}}`)
+	s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		return agentResponse{ID: req.ID, Result: json.RawMessage(raw)}
+	})
+	defer cleanup()
+	s.cfg.PublicURL = "https://tenant.example.com"
+
+	s.fetchMeta()
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	assertOpenAPIGatewayMetadata(t, body, "https://tenant.example.com")
 }
 
 func TestOpenAPIEndpointWildcardReturnsAllCapabilities(t *testing.T) {
@@ -537,7 +562,7 @@ func TestOpenAPIEndpointWildcardReturnsAllCapabilities(t *testing.T) {
 	}
 	logs := &bytes.Buffer{}
 	s := NewServer(Config{APIKeys: []APIKey{{Name: "admin", KeyHash: hash, Capabilities: []string{"*"}}}, AgentTimeout: 200 * time.Millisecond}, logs)
-	s.openapi = testOpenAPIDoc()
+	s.openapi = s.finalizeOpenAPI(testOpenAPIDoc())
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	rec := httptest.NewRecorder()
@@ -670,6 +695,7 @@ func TestOpenAPISnapshotLogWhenEnabled(t *testing.T) {
 	})
 	defer cleanup()
 	s.cfg.EmitOpenAPISnapshot = true
+	s.cfg.PublicURL = "https://snapshot.example.com"
 
 	s.fetchMeta()
 
@@ -706,6 +732,7 @@ func TestOpenAPISnapshotLogWhenEnabled(t *testing.T) {
 	if _, ok := paths["/api/v1/capabilities/get_customer"]; !ok {
 		t.Fatalf("snapshot OpenAPI full document missing capability path: %#v", paths)
 	}
+	assertOpenAPIGatewayMetadata(t, openAPI, "https://snapshot.example.com")
 }
 
 func TestAgentErrorStatusMapping(t *testing.T) {
@@ -974,5 +1001,45 @@ func testOpenAPIDoc() map[string]any {
 				},
 			},
 		},
+	}
+}
+
+func assertOpenAPIGatewayMetadata(t *testing.T, doc map[string]any, wantServerURL string) {
+	t.Helper()
+	servers, ok := doc["servers"].([]any)
+	if !ok || len(servers) != 1 {
+		t.Fatalf("servers = %#v, want one server", doc["servers"])
+	}
+	server, ok := servers[0].(map[string]any)
+	if !ok || server["url"] != wantServerURL {
+		t.Fatalf("servers[0] = %#v, want url %q", servers[0], wantServerURL)
+	}
+
+	security, ok := doc["security"].([]any)
+	if !ok || len(security) != 2 {
+		t.Fatalf("security = %#v, want bearer and X-API-Key alternatives", doc["security"])
+	}
+	if _, ok := security[0].(map[string]any)["bearerAuth"]; !ok {
+		t.Fatalf("security missing bearerAuth alternative: %#v", security)
+	}
+	if _, ok := security[1].(map[string]any)["apiKeyAuth"]; !ok {
+		t.Fatalf("security missing apiKeyAuth alternative: %#v", security)
+	}
+
+	components, ok := doc["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("components = %#v", doc["components"])
+	}
+	schemes, ok := components["securitySchemes"].(map[string]any)
+	if !ok {
+		t.Fatalf("securitySchemes = %#v", components["securitySchemes"])
+	}
+	bearer, ok := schemes["bearerAuth"].(map[string]any)
+	if !ok || bearer["type"] != "http" || bearer["scheme"] != "bearer" {
+		t.Fatalf("bearerAuth = %#v", schemes["bearerAuth"])
+	}
+	apiKey, ok := schemes["apiKeyAuth"].(map[string]any)
+	if !ok || apiKey["type"] != "apiKey" || apiKey["in"] != "header" || apiKey["name"] != "X-API-Key" {
+		t.Fatalf("apiKeyAuth = %#v", schemes["apiKeyAuth"])
 	}
 }

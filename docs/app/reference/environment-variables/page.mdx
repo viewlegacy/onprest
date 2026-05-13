@@ -5,6 +5,7 @@
 | Variable | Default | Description |
 |---|---|---|
 | `GATEWAY_ADDR` | `:8080` | Gateway listen address |
+| `GATEWAY_PUBLIC_URL` | derived from `GATEWAY_ADDR` | External HTTP(S) base URL used in OpenAPI `servers` |
 | `GATEWAY_AGENT_PUBLIC_KEY` | none | Required Ed25519 public key for agent auth |
 | `GATEWAY_API_KEYS_JSON` | none | Required API key JSON array |
 | `GATEWAY_IP_ALLOW_LIST` | empty | Empty means no IP allow restriction |
@@ -17,6 +18,7 @@
 
 ```env
 GATEWAY_ADDR=:8080
+GATEWAY_PUBLIC_URL=https://gateway.example.com
 GATEWAY_AGENT_PUBLIC_KEY=TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8
 GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$INgs32pPDl8EQAOTcQ1NN.eZUpNkDtyTKXh2luqxE32vNBmaLpy7m","capabilities":["*"]}]'
 GATEWAY_IP_ALLOW_LIST=
