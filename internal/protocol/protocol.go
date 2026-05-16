@@ -21,7 +21,6 @@ type Response struct {
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message,omitempty"`
-	Detail  string `json:"detail,omitempty"`
 }
 
 func AgentAuthMessage(path, timestamp, nonce string) []byte {

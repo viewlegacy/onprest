@@ -15,10 +15,10 @@ Request event fields:
 | `api_key_name` | API key name from config |
 | `http_status` | response status |
 | `error_code` | stable error code or null |
-| `error_message` | same value as the API response `error.message`, or null |
+| `error_message` | same public value as the API response `error.message`, or null |
 | `duration_ms` | request duration |
 
-gateway stdout excludes params, SQL, DB credentials, agent raw detail, plaintext API keys, and agent private keys.
+gateway stdout excludes submitted param values, SQL, DB credentials, agent raw detail, plaintext API keys, and agent private keys.
 
 OpenAPI metadata events:
 

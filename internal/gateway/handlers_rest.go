@@ -45,9 +45,9 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := s.callAgent(r.Context(), name, params)
-	s.accessLog(reqID, key.Name, name, result.Status, result.Code, result.Detail, start)
+	s.accessLog(reqID, key.Name, name, result.Status, result.Code, result.Message, start)
 	if !result.OK() {
-		writeJSON(w, result.Status, apiError(result.Code, result.Detail))
+		writeJSON(w, result.Status, apiError(result.Code, result.Message))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

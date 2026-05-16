@@ -75,7 +75,7 @@ func TestRunnerWritesFixedTimeoutDetailToDetailLog(t *testing.T) {
 		}
 	}
 	for _, leaked := range []string{"customers", "email", "driver detail"} {
-		if strings.Contains(logs, leaked) || strings.Contains(resp.Error.Detail, leaked) {
+		if strings.Contains(logs, leaked) || strings.Contains(resp.Error.Message, leaked) {
 			t.Fatalf("timeout leaked driver detail %q: response=%#v logs=%s", leaked, resp.Error, logs)
 		}
 	}

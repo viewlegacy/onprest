@@ -61,4 +61,4 @@ The exact result shape comes from the agent capability execution. Row fields are
 }
 ```
 
-The `message` is generic and public. Agent raw detail is not included in external responses.
+The `message` is public client-facing text. Agent validation errors may name the invalid field and reason, but raw detail, SQL text, DB-specific error text, credentials, and submitted param values are not included in external responses.
