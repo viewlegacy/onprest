@@ -163,10 +163,10 @@ set +a
 Start the agent in another terminal.
 
 ```bash
-AGENT_CAPABILITY_FILE=./examples/capability.postgres.yaml ./dist/onprest-agent
+./dist/onprest-agent --config ./examples/capability.postgres.yaml
 ```
 
-If `AGENT_CAPABILITY_FILE` is omitted, the agent reads `capability.yaml` from the current directory.
+If `--config` and `AGENT_CAPABILITY_FILE` are both omitted, the agent reads `capability.yaml` next to the `onprest-agent` binary.
 
 The agent connects outbound to `/ws/agent`. During connection, the gateway verifies the signature with the agent public key. After connection, the gateway calls the `meta` capability and caches OpenAPI in memory.
 

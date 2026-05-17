@@ -272,7 +272,7 @@ set +a
 Start the agent in another shell:
 
 ```sh
-AGENT_CAPABILITY_FILE=examples/capability.postgres.yaml ./dist/onprest-agent
+./dist/onprest-agent --config examples/capability.postgres.yaml
 ```
 
 Set the example API key in the shell that will call the gateway:

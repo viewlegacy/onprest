@@ -45,4 +45,4 @@ logging:
   max_files: 3
 ```
 
-`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the local detail log.
+`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the local detail log. OS service managers may redirect agent stdout/stderr to separate process log files; those files do not replace `onprest-agent.log`.

@@ -45,7 +45,7 @@ capabilities:
       max_rows: 1
       max_bytes: 128KB
 `)
-	cmd := startProcess(t, context.Background(), agentBin, nil, []string{"AGENT_CAPABILITY_FILE=" + capabilityFile})
+	cmd := startProcess(t, context.Background(), agentBin, []string{"--config", capabilityFile}, nil)
 	if err := waitForExit(t, cmd, 5*time.Second); err == nil {
 		t.Fatal("agent exited successfully, want lint failure")
 	}
