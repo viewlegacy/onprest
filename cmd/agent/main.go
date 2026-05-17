@@ -11,7 +11,10 @@ import (
 )
 
 func main() {
-	cfg, err := agent.LoadConfigFromEnv()
+	if handled, code := agent.HandleCLI(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
+	cfg, err := agent.LoadConfig(os.Args[1:])
 	if err != nil {
 		log.Fatalf("agent config: %v", err)
 	}

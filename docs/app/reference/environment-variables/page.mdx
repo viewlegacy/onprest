@@ -32,11 +32,13 @@ GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
 
 ## Agent
 
-Most agent runtime settings are in `capability.yaml`. The file path itself can be selected with an environment variable.
+Most agent runtime settings are in `capability.yaml`. Prefer `onprest-agent --config /path/to/capability.yaml` when launching the binary directly. The file path can also be selected with an environment variable.
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENT_CAPABILITY_FILE` | `capability.yaml` | Path to the agent capability YAML file |
+| `AGENT_CAPABILITY_FILE` | binary-adjacent `capability.yaml` | Path to the agent capability YAML file |
+
+`--config` takes precedence over `AGENT_CAPABILITY_FILE`.
 
 Important fields:
 
