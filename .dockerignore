@@ -1,0 +1,12 @@
+.git
+dist
+
+docs/.next
+docs/node_modules
+docs/public/_pagefind
+
+it/local/*
+!it/local/.gitignore
+
+.DS_Store
+*.log
