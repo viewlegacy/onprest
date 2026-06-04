@@ -44,15 +44,15 @@ Keep the agent binary and `capability.yaml` together. Agent local logs are writt
 For a self-hosted gateway, configure at least:
 
 ```env
-GATEWAY_ADDR=:8080
-GATEWAY_PUBLIC_URL=https://gateway.example.com
-GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
 GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
 GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]}]'
 ```
 
 Then decide whether to set:
 
+- `GATEWAY_ADDR` when the default listen address `:8080` is not suitable.
+- `GATEWAY_PUBLIC_URL` for reverse proxy or load balancer deployments so OpenAPI `servers` points at the external URL.
+- `GATEWAY_CORS_ALLOWED_ORIGINS` when browser-based clients on another origin need to call gateway directly.
 - `GATEWAY_IP_ALLOW_LIST` for caller IP restrictions.
 - `GATEWAY_TRUSTED_PROXY_CIDRS` when running behind a reverse proxy or load balancer.
 - `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` and `GATEWAY_RATE_LIMIT_BURST` for per-source rate limiting.

@@ -34,7 +34,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "initialize":
 		writeMCP(w, req.ID, map[string]any{
 			"protocolVersion": "2025-03-26",
-			"serverInfo":      map[string]any{"name": "onprest-gateway", "version": "0.1.0"},
+			"serverInfo":      map[string]any{"name": "onprest-gateway", "version": "1.0.0"},
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 		}, nil)
 	case "ping":
