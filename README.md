@@ -247,11 +247,18 @@ dist/onprest-gateway
 dist/onprest-agent
 ```
 
-Set the example API key:
+Start the example PostgreSQL database with Docker Compose:
 
 ```sh
-export API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+make quickstart-db
 ```
+
+This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the
+`legacy` database, creates the `readonly_user` account used by
+`examples/capability.postgres.yaml`, and seeds the `customers` table. If
+`127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit
+both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml`
+to use the same alternate port.
 
 Start the gateway:
 
@@ -265,7 +272,13 @@ set +a
 Start the agent in another shell:
 
 ```sh
-AGENT_CAPABILITY_FILE=examples/capability.postgres.yaml ./dist/onprest-agent
+./dist/onprest-agent --config examples/capability.postgres.yaml
+```
+
+Set the example API key in the shell that will call the gateway:
+
+```sh
+export API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
 ```
 
 Call a capability:
@@ -278,7 +291,13 @@ curl -sS \
   http://localhost:8080/api/v1/capabilities/get_customer
 ```
 
-The example capability expects a PostgreSQL database matching [`examples/capability.postgres.yaml`](examples/capability.postgres.yaml).
+The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
+
+Stop and remove the example database when finished:
+
+```sh
+make quickstart-db-down
+```
 
 For real deployments, edit `capability.yaml` and place it beside `onprest-agent`.
 

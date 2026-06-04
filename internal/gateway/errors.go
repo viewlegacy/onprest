@@ -44,25 +44,6 @@ func agentErrorStatus(code string) (int, string) {
 	case errAgentInternal:
 		return http.StatusBadGateway, errAgentInternal
 	default:
-		return http.StatusInternalServerError, errGatewayInternal
-	}
-}
-
-func publicErrorMessage(code string) string {
-	switch code {
-	case errGatewayCapabilityNotFound:
-		return "capability not found"
-	case errAgentValidationFailed:
-		return "parameter validation failed"
-	case errAgentQueryFailed:
-		return "database query failed"
-	case errAgentQueryTimeout:
-		return "database query timed out"
-	case errAgentDBUnreachable:
-		return "database is unreachable"
-	case errAgentInternal:
-		return "agent internal error"
-	default:
-		return "gateway internal error"
+		return http.StatusBadGateway, code
 	}
 }

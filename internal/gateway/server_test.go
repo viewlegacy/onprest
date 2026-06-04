@@ -115,7 +115,7 @@ func TestIPAllowListAllowsAndDenies(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
-	assertAPIError(t, rec.Body.Bytes(), errGatewayIPDenied)
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayIPDenied, "source ip is not allowed")
 }
 
 func TestRateLimitAllowsExceedsAndRefills(t *testing.T) {
@@ -135,6 +135,22 @@ func TestRateLimitAllowsExceedsAndRefills(t *testing.T) {
 	if !s.take("203.0.113.10") {
 		t.Fatal("request after refill rejected")
 	}
+}
+
+func TestRateLimitHTTPErrorMessage(t *testing.T) {
+	s := NewServer(Config{RateLimit: RateLimitConfig{RequestsPerSecond: 1, Burst: 1}}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want %d; body=%s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayRateLimited, "too many requests")
 }
 
 func TestListenAndServeContextShutsDownOnCancel(t *testing.T) {
@@ -215,7 +231,7 @@ func TestAuthenticateRejectsMissingAndInvalidAPIKey(t *testing.T) {
 			if rec.Code != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 			}
-			assertAPIError(t, rec.Body.Bytes(), errGatewayAuthFailed)
+			assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayAuthFailed, "invalid api key")
 		})
 	}
 }
@@ -244,13 +260,14 @@ func TestCapabilityEndpointHTTPErrorCases(t *testing.T) {
 		body        string
 		wantStatus  int
 		wantCode    string
+		wantMessage string
 	}{
-		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest},
-		{name: "invalid-json", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest},
-		{name: "method", method: http.MethodGet, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed, wantCode: errGatewayMethodNotAllowed},
-		{name: "empty-name", method: http.MethodPost, path: "/api/v1/capabilities/", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound},
-		{name: "slash-name", method: http.MethodPost, path: "/api/v1/capabilities/get/customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound},
-		{name: "offline", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{"id":1}`, wantStatus: http.StatusServiceUnavailable, wantCode: errGatewayAgentOffline},
+		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest, wantMessage: "Content-Type must be application/json"},
+		{name: "invalid-json", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest, wantMessage: "invalid json body"},
+		{name: "method", method: http.MethodGet, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed, wantCode: errGatewayMethodNotAllowed, wantMessage: "use POST"},
+		{name: "empty-name", method: http.MethodPost, path: "/api/v1/capabilities/", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound, wantMessage: "capability not found"},
+		{name: "slash-name", method: http.MethodPost, path: "/api/v1/capabilities/get/customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound, wantMessage: "capability not found"},
+		{name: "offline", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{"id":1}`, wantStatus: http.StatusServiceUnavailable, wantCode: errGatewayAgentOffline, wantMessage: "agent is not connected"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -263,24 +280,28 @@ func TestCapabilityEndpointHTTPErrorCases(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
-			assertAPIError(t, rec.Body.Bytes(), tc.wantCode)
+			assertAPIErrorMessage(t, rec.Body.Bytes(), tc.wantCode, tc.wantMessage)
 			entry := lastLogEntry(t, logs)
 			if entry["event"] != "request" || entry["error_code"] != tc.wantCode {
 				t.Fatalf("unexpected access log: %#v", entry)
+			}
+			if entry["error_message"] != tc.wantMessage {
+				t.Fatalf("error_message = %#v, want %q", entry["error_message"], tc.wantMessage)
 			}
 		})
 	}
 }
 
 func TestCapabilityEndpointUsesDirectParamsBody(t *testing.T) {
+	agentPayload := `{"rows":[{"id":7,"name":"Ada"}],"count":1}`
 	s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
 		if _, nested := req.Params["params"]; nested {
-			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Detail: "nested params are not expected"}}
+			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Message: "nested params are not expected"}}
 		}
 		if req.Params["id"] != float64(7) {
-			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Detail: "missing direct id"}}
+			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Message: "missing direct id"}}
 		}
-		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"rows":[{"id":7}],"count":1}`)}
+		return agentResponse{ID: req.ID, Result: json.RawMessage(agentPayload)}
 	})
 	defer cleanup()
 
@@ -292,23 +313,76 @@ func TestCapabilityEndpointUsesDirectParamsBody(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body["count"] != float64(1) {
-		t.Fatalf("body = %#v", body)
+	if rec.Body.String() != agentPayload {
+		t.Fatalf("body = %s, want exact agent payload %s", rec.Body.String(), agentPayload)
 	}
 	entry := lastLogEntry(t, logs)
 	if entry["http_status"] != float64(http.StatusOK) || entry["error_code"] != nil {
 		t.Fatalf("unexpected success access log: %#v", entry)
 	}
+	if entry["error_message"] != nil {
+		t.Fatalf("success access log error_message = %#v, want nil", entry["error_message"])
+	}
 }
 
-func TestAgentErrorDetailIsHiddenFromCapabilityResponseAndLogs(t *testing.T) {
-	secret := "db password is secret"
+func TestAgentErrorCodeAndMessagePassThroughForRESTAndMCPHTTP(t *testing.T) {
+	tests := []struct {
+		code       string
+		message    string
+		wantStatus int
+	}{
+		{errGatewayCapabilityNotFound, "capability is not defined", http.StatusNotFound},
+		{errAgentValidationFailed, "id: required param missing", http.StatusBadGateway},
+		{errAgentQueryFailed, "database query failed", http.StatusBadGateway},
+		{errAgentQueryTimeout, "query exceeded policy.timeout", http.StatusBadGateway},
+		{errAgentDBUnreachable, "database is unreachable", http.StatusBadGateway},
+		{errAgentInternal, "agent internal error", http.StatusBadGateway},
+		{"AGENT_NEW_PUBLIC_ERROR", "future public message", http.StatusBadGateway},
+	}
+	for _, tc := range tests {
+		t.Run("REST "+tc.code, func(t *testing.T) {
+			s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+				return agentResponse{ID: req.ID, Error: &wireError{Code: tc.code, Message: tc.message}}
+			})
+			defer cleanup()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{"id":7}`))
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			assertAPIErrorMessage(t, rec.Body.Bytes(), tc.code, tc.message)
+			entry := lastLogEntry(t, logs)
+			if entry["error_code"] != tc.code || entry["error_message"] != tc.message {
+				t.Fatalf("access log = %#v, want code/message pass-through", entry)
+			}
+		})
+		t.Run("MCP "+tc.code, func(t *testing.T) {
+			if tc.code == errGatewayCapabilityNotFound {
+				t.Skip("tools/call maps capability-not-found to JSON-RPC INVALID_PARAMS")
+			}
+			s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+				return agentResponse{ID: req.ID, Error: &wireError{Code: tc.code, Message: tc.message}}
+			})
+			defer cleanup()
+			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":7}}}`))
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			rec := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			assertAPIErrorMessage(t, rec.Body.Bytes(), tc.code, tc.message)
+		})
+	}
+}
+
+func TestAgentErrorMessagePassesThroughCapabilityResponseAndLogs(t *testing.T) {
+	message := "id: required param missing"
 	s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
-		return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Detail: secret}}
+		return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Message: message}}
 	})
 	defer cleanup()
 
@@ -320,10 +394,10 @@ func TestAgentErrorDetailIsHiddenFromCapabilityResponseAndLogs(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadGateway, rec.Body.String())
 	}
-	if strings.Contains(rec.Body.String(), secret) || strings.Contains(logs.String(), secret) {
-		t.Fatalf("agent detail leaked; response=%s logs=%s", rec.Body.String(), logs.String())
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errAgentValidationFailed, message)
+	if !strings.Contains(logs.String(), message) {
+		t.Fatalf("agent message missing from logs: %s", logs.String())
 	}
-	assertAPIErrorMessage(t, rec.Body.Bytes(), errAgentValidationFailed, "parameter validation failed")
 }
 
 func TestCapabilityEndpointReturnsGatewayTimeoutWhenAgentDoesNotRespond(t *testing.T) {
@@ -340,7 +414,7 @@ func TestCapabilityEndpointReturnsGatewayTimeoutWhenAgentDoesNotRespond(t *testi
 	if rec.Code != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusGatewayTimeout, rec.Body.String())
 	}
-	assertAPIError(t, rec.Body.Bytes(), errGatewayTimeout)
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayTimeout, "agent response timed out")
 }
 
 func TestMCPRequiresPost(t *testing.T) {
@@ -354,7 +428,7 @@ func TestMCPRequiresPost(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
-	assertAPIError(t, rec.Body.Bytes(), errGatewayMethodNotAllowed)
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayMethodNotAllowed, "use POST")
 }
 
 func TestMCPRejectsMissingID(t *testing.T) {
@@ -368,20 +442,7 @@ func TestMCPRejectsMissingID(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	var body struct {
-		Error struct {
-			Code int `json:"code"`
-			Data struct {
-				Code string `json:"code"`
-			} `json:"data"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Error.Code != -32600 || body.Error.Data.Code != errJSONRPCInvalidRequest {
-		t.Fatalf("unexpected error body: %s", rec.Body.String())
-	}
+	assertMCPErrorMessage(t, rec.Body.Bytes(), -32600, errJSONRPCInvalidRequest, "invalid json rpc request")
 }
 
 func TestMCPInitializePingParseAndMethodErrors(t *testing.T) {
@@ -390,12 +451,13 @@ func TestMCPInitializePingParseAndMethodErrors(t *testing.T) {
 		body       string
 		wantRPC    int
 		wantApp    string
+		wantMsg    string
 		wantResult bool
 	}{
 		{name: "initialize", body: `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, wantResult: true},
 		{name: "ping", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, wantResult: true},
-		{name: "parse", body: `{`, wantRPC: -32700, wantApp: errJSONRPCParseError},
-		{name: "method", body: `{"jsonrpc":"2.0","id":1,"method":"unknown"}`, wantRPC: -32601, wantApp: errJSONRPCMethodNotFound},
+		{name: "parse", body: `{`, wantRPC: -32700, wantApp: errJSONRPCParseError, wantMsg: "invalid json rpc"},
+		{name: "method", body: `{"jsonrpc":"2.0","id":1,"method":"unknown"}`, wantRPC: -32601, wantApp: errJSONRPCMethodNotFound, wantMsg: "unsupported MCP method"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -421,6 +483,9 @@ func TestMCPInitializePingParseAndMethodErrors(t *testing.T) {
 			if errObj["code"] != float64(tc.wantRPC) {
 				t.Fatalf("rpc code = %#v, want %d; body=%s", errObj["code"], tc.wantRPC, rec.Body.String())
 			}
+			if errObj["message"] != tc.wantMsg {
+				t.Fatalf("rpc message = %#v, want %q; body=%s", errObj["message"], tc.wantMsg, rec.Body.String())
+			}
 			data := errObj["data"].(map[string]any)
 			if data["code"] != tc.wantApp {
 				t.Fatalf("app code = %#v, want %s; body=%s", data["code"], tc.wantApp, rec.Body.String())
@@ -438,7 +503,7 @@ func TestMCPToolsListOfflineAndFiltered(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
-	assertAPIError(t, rec.Body.Bytes(), errGatewayAgentOffline)
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayAgentOffline, "agent metadata is not cached yet")
 
 	s.openapi = testOpenAPIDoc()
 	req = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
@@ -463,6 +528,38 @@ func TestMCPToolsListOfflineAndFiltered(t *testing.T) {
 	}
 }
 
+func TestMCPToolsCallUsesAgentResultAsContentAndStructuredContent(t *testing.T) {
+	agentPayload := `{"rows":[{"id":7,"name":"Ada"}],"count":1}`
+	s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		return agentResponse{ID: req.ID, Result: json.RawMessage(agentPayload)}
+	})
+	defer cleanup()
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":7}}}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			StructuredContent map[string]any `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Result.Content) != 1 || body.Result.Content[0].Text != agentPayload {
+		t.Fatalf("content = %#v, want exact agent payload %s", body.Result.Content, agentPayload)
+	}
+	if body.Result.StructuredContent["count"] != float64(1) {
+		t.Fatalf("structuredContent = %#v", body.Result.StructuredContent)
+	}
+}
+
 func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 	t.Run("invalid params", func(t *testing.T) {
 		s, _, apiKey := testServer(t)
@@ -470,7 +567,7 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		rec := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(rec, req)
-		assertMCPError(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams)
+		assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "invalid tools/call params")
 	})
 	t.Run("denied", func(t *testing.T) {
 		s, _, apiKey := testServer(t)
@@ -481,11 +578,11 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
 		}
-		assertAPIError(t, rec.Body.Bytes(), errGatewayCapabilityDenied)
+		assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayCapabilityDenied, "capability not allowed")
 	})
 	t.Run("unknown", func(t *testing.T) {
 		s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
-			return agentResponse{ID: req.ID, Error: &wireError{Code: errGatewayCapabilityNotFound, Detail: "secret detail"}}
+			return agentResponse{ID: req.ID, Error: &wireError{Code: errGatewayCapabilityNotFound, Message: "capability is not defined"}}
 		})
 		defer cleanup()
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`))
@@ -495,13 +592,13 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 		}
-		assertMCPError(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams)
+		assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "tool is not defined")
 	})
 }
 
 func TestOpenAPIEndpointFiltersCapabilities(t *testing.T) {
 	s, _, apiKey := testServer(t)
-	s.openapi = testOpenAPIDoc()
+	s.openapi = s.finalizeOpenAPI(testOpenAPIDoc())
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	rec := httptest.NewRecorder()
@@ -520,6 +617,31 @@ func TestOpenAPIEndpointFiltersCapabilities(t *testing.T) {
 	if _, ok := paths["/api/v1/capabilities/search_orders"]; ok {
 		t.Fatalf("denied path present: %#v", paths)
 	}
+	assertOpenAPIGatewayMetadata(t, body, "http://localhost:8080")
+}
+
+func TestOpenAPIEndpointIncludesGatewayMetadataFromCachedMeta(t *testing.T) {
+	raw := []byte(`{"data":{"openapi":"3.1.0","info":{"title":"IT"},"paths":{"/api/v1/capabilities/get_customer":{"post":{"x-onprest-capability":"get_customer"}}}}}`)
+	s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		return agentResponse{ID: req.ID, Result: json.RawMessage(raw)}
+	})
+	defer cleanup()
+	s.cfg.PublicURL = "https://tenant.example.com"
+
+	s.fetchMeta()
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	assertOpenAPIGatewayMetadata(t, body, "https://tenant.example.com")
 }
 
 func TestOpenAPIEndpointWildcardReturnsAllCapabilities(t *testing.T) {
@@ -530,7 +652,7 @@ func TestOpenAPIEndpointWildcardReturnsAllCapabilities(t *testing.T) {
 	}
 	logs := &bytes.Buffer{}
 	s := NewServer(Config{APIKeys: []APIKey{{Name: "admin", KeyHash: hash, Capabilities: []string{"*"}}}, AgentTimeout: 200 * time.Millisecond}, logs)
-	s.openapi = testOpenAPIDoc()
+	s.openapi = s.finalizeOpenAPI(testOpenAPIDoc())
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	rec := httptest.NewRecorder()
@@ -545,6 +667,65 @@ func TestOpenAPIEndpointWildcardReturnsAllCapabilities(t *testing.T) {
 	paths := body["paths"].(map[string]any)
 	if len(paths) != 2 {
 		t.Fatalf("len(paths) = %d, want 2: %#v", len(paths), paths)
+	}
+}
+
+func TestCORSPreflightAllowsConfiguredOrigin(t *testing.T) {
+	s, _, _ := testServer(t)
+	s.cfg.CORSAllowedOrigins = []string{"http://localhost:8090"}
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/capabilities/get_customer", nil)
+	req.Header.Set("Origin", "http://localhost:8090")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:8090" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, X-API-Key, Content-Type" {
+		t.Fatalf("Access-Control-Allow-Headers = %q", got)
+	}
+}
+
+func TestCORSPreflightRejectsUnconfiguredOrigin(t *testing.T) {
+	s, _, _ := testServer(t)
+	s.cfg.CORSAllowedOrigins = []string{"https://dashboard.example.com"}
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/capabilities/get_customer", nil)
+	req.Header.Set("Origin", "http://localhost:8090")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
+	}
+}
+
+func TestCORSHeadersOnAllowedOpenAPIRequest(t *testing.T) {
+	s, _, apiKey := testServer(t)
+	s.cfg.CORSAllowedOrigins = []string{"http://localhost:8090"}
+	s.openapi = s.finalizeOpenAPI(testOpenAPIDoc())
+
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Origin", "http://localhost:8090")
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:8090" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", got)
 	}
 }
 
@@ -570,6 +751,9 @@ func TestCapabilityErrorsAreAccessLoggedWithoutSensitiveData(t *testing.T) {
 	if entry["http_status"] != float64(http.StatusBadRequest) || entry["error_code"] != errGatewayInvalidRequest {
 		t.Fatalf("unexpected access log status/code: %#v", entry)
 	}
+	if entry["error_message"] != "Content-Type must be application/json" {
+		t.Fatalf("error_message = %#v, want Content-Type must be application/json", entry["error_message"])
+	}
 	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "password") {
 		t.Fatalf("access log leaked request params: %s", logs.String())
 	}
@@ -590,6 +774,9 @@ func TestCapabilityAuthFailureIsAccessLogged(t *testing.T) {
 	entry := lastLogEntry(t, logs)
 	if entry["http_status"] != float64(http.StatusUnauthorized) || entry["error_code"] != errGatewayAuthFailed {
 		t.Fatalf("unexpected access log: %#v", entry)
+	}
+	if entry["error_message"] != "invalid api key" {
+		t.Fatalf("error_message = %#v, want invalid api key", entry["error_message"])
 	}
 	if entry["api_key_name"] != "" {
 		t.Fatalf("api_key_name = %#v, want empty", entry["api_key_name"])
@@ -642,6 +829,59 @@ func TestOpenAPIMetaWrapperAndControlLog(t *testing.T) {
 	if entry["event"] != "openapi_cached" || entry["paths"] != float64(1) {
 		t.Fatalf("unexpected control log: %#v", entry)
 	}
+	if _, ok := entry["openapi"]; ok {
+		t.Fatalf("openapi_cached included full OpenAPI document: %#v", entry)
+	}
+	if strings.Contains(logs.String(), "openapi_snapshot") {
+		t.Fatalf("unexpected OpenAPI snapshot log when disabled: %s", logs.String())
+	}
+}
+
+func TestOpenAPISnapshotLogWhenEnabled(t *testing.T) {
+	raw := []byte(`{"data":{"openapi":"3.1.0","info":{"title":"IT"},"paths":{"/api/v1/capabilities/get_customer":{"post":{"x-onprest-capability":"get_customer"}}}}}`)
+	s, logs, _, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		return agentResponse{ID: req.ID, Result: json.RawMessage(raw)}
+	})
+	defer cleanup()
+	s.cfg.EmitOpenAPISnapshot = true
+	s.cfg.PublicURL = "https://snapshot.example.com"
+
+	s.fetchMeta()
+
+	entries := logEntries(t, logs)
+	if len(entries) != 2 {
+		t.Fatalf("log entries = %d, want exactly 2: %s", len(entries), logs.String())
+	}
+	cached := entries[0]
+	if cached["event"] != "openapi_cached" || cached["paths"] != float64(1) {
+		t.Fatalf("unexpected cached log before snapshot: %#v", cached)
+	}
+	if _, ok := cached["openapi"]; ok {
+		t.Fatalf("openapi_cached included full OpenAPI document: %#v", cached)
+	}
+	snapshot := entries[1]
+	if snapshot["event"] != "openapi_snapshot" || snapshot["paths"] != float64(1) {
+		t.Fatalf("unexpected snapshot log: %#v", snapshot)
+	}
+	openAPI, ok := snapshot["openapi"].(map[string]any)
+	if !ok {
+		t.Fatalf("openapi field missing from snapshot log: %#v", snapshot)
+	}
+	if openAPI["openapi"] != "3.1.0" {
+		t.Fatalf("snapshot OpenAPI version = %#v, want 3.1.0", openAPI["openapi"])
+	}
+	info, ok := openAPI["info"].(map[string]any)
+	if !ok || info["title"] != "IT" {
+		t.Fatalf("snapshot OpenAPI info = %#v, want title IT", openAPI["info"])
+	}
+	paths, ok := openAPI["paths"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot OpenAPI paths missing: %#v", openAPI)
+	}
+	if _, ok := paths["/api/v1/capabilities/get_customer"]; !ok {
+		t.Fatalf("snapshot OpenAPI full document missing capability path: %#v", paths)
+	}
+	assertOpenAPIGatewayMetadata(t, openAPI, "https://snapshot.example.com")
 }
 
 func TestAgentErrorStatusMapping(t *testing.T) {
@@ -656,7 +896,7 @@ func TestAgentErrorStatusMapping(t *testing.T) {
 		{errAgentQueryTimeout, http.StatusBadGateway, errAgentQueryTimeout},
 		{errAgentDBUnreachable, http.StatusBadGateway, errAgentDBUnreachable},
 		{errAgentInternal, http.StatusBadGateway, errAgentInternal},
-		{"UNKNOWN", http.StatusInternalServerError, errGatewayInternal},
+		{"UNKNOWN", http.StatusBadGateway, "UNKNOWN"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.code, func(t *testing.T) {
@@ -699,6 +939,30 @@ func TestAuthenticateAgentRejectsInvalidHeadersAndReplay(t *testing.T) {
 	if s.authenticateAgent(replayAgain) {
 		t.Fatal("replayed nonce authenticated")
 	}
+}
+
+func TestAgentWebSocketHTTPErrorMessages(t *testing.T) {
+	t.Run("invalid signature", func(t *testing.T) {
+		s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
+		req := httptest.NewRequest(http.MethodGet, "/ws/agent", nil)
+		rec := httptest.NewRecorder()
+		s.httpSrv.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+		}
+		assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayAuthFailed, "invalid agent signature")
+	})
+	t.Run("already connected", func(t *testing.T) {
+		s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
+		s.agent = &agentConn{conn: silentAgentConn{}, pending: map[string]chan agentResponse{}}
+		req := signedAgentRequest(t, "/ws/agent", time.Now().UTC(), "nonce-already-connected")
+		rec := httptest.NewRecorder()
+		s.httpSrv.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+		}
+		assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayAgentAlreadyConn, "agent already connected")
+	})
 }
 
 func testServer(t *testing.T) (*Server, *bytes.Buffer, string) {
@@ -822,10 +1086,16 @@ func assertAPIErrorMessage(t *testing.T, body []byte, wantCode, wantMessage stri
 
 func assertMCPError(t *testing.T, body []byte, wantRPC int, wantApp string) {
 	t.Helper()
+	assertMCPErrorMessage(t, body, wantRPC, wantApp, "")
+}
+
+func assertMCPErrorMessage(t *testing.T, body []byte, wantRPC int, wantApp, wantMessage string) {
+	t.Helper()
 	var got struct {
 		Error struct {
-			Code int `json:"code"`
-			Data struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
 				Code string `json:"code"`
 			} `json:"data"`
 		} `json:"error"`
@@ -835,6 +1105,9 @@ func assertMCPError(t *testing.T, body []byte, wantRPC int, wantApp string) {
 	}
 	if got.Error.Code != wantRPC || got.Error.Data.Code != wantApp {
 		t.Fatalf("MCP error = (%d, %q), want (%d, %q); body=%s", got.Error.Code, got.Error.Data.Code, wantRPC, wantApp, string(body))
+	}
+	if wantMessage != "" && got.Error.Message != wantMessage {
+		t.Fatalf("MCP error message = %q, want %q; body=%s", got.Error.Message, wantMessage, string(body))
 	}
 }
 
@@ -846,15 +1119,25 @@ func canonicalHeader(key, value string) http.Header {
 
 func lastLogEntry(t *testing.T, logs *bytes.Buffer) map[string]any {
 	t.Helper()
-	lines := strings.Fields(strings.TrimSpace(logs.String()))
+	entries := logEntries(t, logs)
+	return entries[len(entries)-1]
+}
+
+func logEntries(t *testing.T, logs *bytes.Buffer) []map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
 	if len(lines) == 0 {
 		t.Fatal("no log entries")
 	}
-	var entry map[string]any
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
-		t.Fatalf("parse log entry: %v; logs=%s", err, logs.String())
+	entries := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("parse log entry: %v; logs=%s", err, logs.String())
+		}
+		entries = append(entries, entry)
 	}
-	return entry
+	return entries
 }
 
 func signedAgentRequest(t *testing.T, path string, ts time.Time, nonce string) *http.Request {
@@ -900,5 +1183,45 @@ func testOpenAPIDoc() map[string]any {
 				},
 			},
 		},
+	}
+}
+
+func assertOpenAPIGatewayMetadata(t *testing.T, doc map[string]any, wantServerURL string) {
+	t.Helper()
+	servers, ok := doc["servers"].([]any)
+	if !ok || len(servers) != 1 {
+		t.Fatalf("servers = %#v, want one server", doc["servers"])
+	}
+	server, ok := servers[0].(map[string]any)
+	if !ok || server["url"] != wantServerURL {
+		t.Fatalf("servers[0] = %#v, want url %q", servers[0], wantServerURL)
+	}
+
+	security, ok := doc["security"].([]any)
+	if !ok || len(security) != 2 {
+		t.Fatalf("security = %#v, want bearer and X-API-Key alternatives", doc["security"])
+	}
+	if _, ok := security[0].(map[string]any)["bearerAuth"]; !ok {
+		t.Fatalf("security missing bearerAuth alternative: %#v", security)
+	}
+	if _, ok := security[1].(map[string]any)["apiKeyAuth"]; !ok {
+		t.Fatalf("security missing apiKeyAuth alternative: %#v", security)
+	}
+
+	components, ok := doc["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("components = %#v", doc["components"])
+	}
+	schemes, ok := components["securitySchemes"].(map[string]any)
+	if !ok {
+		t.Fatalf("securitySchemes = %#v", components["securitySchemes"])
+	}
+	bearer, ok := schemes["bearerAuth"].(map[string]any)
+	if !ok || bearer["type"] != "http" || bearer["scheme"] != "bearer" {
+		t.Fatalf("bearerAuth = %#v", schemes["bearerAuth"])
+	}
+	apiKey, ok := schemes["apiKeyAuth"].(map[string]any)
+	if !ok || apiKey["type"] != "apiKey" || apiKey["in"] != "header" || apiKey["name"] != "X-API-Key" {
+		t.Fatalf("apiKeyAuth = %#v", schemes["apiKeyAuth"])
 	}
 }

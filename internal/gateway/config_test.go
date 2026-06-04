@@ -12,6 +12,8 @@ func TestLoadConfigFromEnvAcceptsQuotedAPIKeysJSON(t *testing.T) {
 	t.Setenv("GATEWAY_TRUSTED_PROXY_CIDRS", "172.16.0.0/12")
 	t.Setenv("GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND", "5")
 	t.Setenv("GATEWAY_RATE_LIMIT_BURST", "7")
+	t.Setenv("GATEWAY_PUBLIC_URL", "https://gateway.example.com/")
+	t.Setenv("GATEWAY_CORS_ALLOWED_ORIGINS", "http://localhost:8090, https://dashboard.example.com, http://localhost:8090")
 
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
@@ -28,6 +30,17 @@ func TestLoadConfigFromEnvAcceptsQuotedAPIKeysJSON(t *testing.T) {
 	}
 	if cfg.RateLimit.RequestsPerSecond != 5 || cfg.RateLimit.Burst != 7 {
 		t.Fatalf("RateLimit = %#v", cfg.RateLimit)
+	}
+	if cfg.PublicURL != "https://gateway.example.com" {
+		t.Fatalf("PublicURL = %q, want normalized public URL", cfg.PublicURL)
+	}
+	if len(cfg.CORSAllowedOrigins) != 2 ||
+		cfg.CORSAllowedOrigins[0] != "http://localhost:8090" ||
+		cfg.CORSAllowedOrigins[1] != "https://dashboard.example.com" {
+		t.Fatalf("CORSAllowedOrigins = %#v", cfg.CORSAllowedOrigins)
+	}
+	if cfg.EmitOpenAPISnapshot {
+		t.Fatal("EmitOpenAPISnapshot = true, want default false")
 	}
 }
 
@@ -126,6 +139,76 @@ func TestLoadConfigFromEnvRejectsNonPositiveRateLimit(t *testing.T) {
 
 			if _, err := LoadConfigFromEnv(); err == nil || !strings.Contains(err.Error(), tc.errMsg) {
 				t.Fatalf("LoadConfigFromEnv() error = %v, want containing %q", err, tc.errMsg)
+			}
+		})
+	}
+}
+
+func TestLoadConfigFromEnvOpenAPISnapshotFlag(t *testing.T) {
+	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", "TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8")
+	t.Setenv("GATEWAY_API_KEYS_JSON", `[{"name":"dev","key_hash":"hash","capabilities":["*"]}]`)
+	t.Setenv("GATEWAY_EMIT_OPENAPI_SNAPSHOT", "true")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.EmitOpenAPISnapshot {
+		t.Fatal("EmitOpenAPISnapshot = false, want true")
+	}
+}
+
+func TestLoadConfigFromEnvRejectsInvalidOpenAPISnapshotFlag(t *testing.T) {
+	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", "TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8")
+	t.Setenv("GATEWAY_API_KEYS_JSON", `[{"name":"dev","key_hash":"hash","capabilities":["*"]}]`)
+	t.Setenv("GATEWAY_EMIT_OPENAPI_SNAPSHOT", "yes please")
+
+	if _, err := LoadConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "GATEWAY_EMIT_OPENAPI_SNAPSHOT must be a boolean") {
+		t.Fatalf("LoadConfigFromEnv() error = %v, want boolean error", err)
+	}
+}
+
+func TestLoadConfigFromEnvRejectsInvalidPublicURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "relative", value: "localhost:8080"},
+		{name: "unsupported scheme", value: "ws://gateway.example.com"},
+		{name: "query", value: "https://gateway.example.com?tenant=a"},
+		{name: "fragment", value: "https://gateway.example.com#api"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", "TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8")
+			t.Setenv("GATEWAY_API_KEYS_JSON", `[{"name":"dev","key_hash":"hash","capabilities":["*"]}]`)
+			t.Setenv("GATEWAY_PUBLIC_URL", tc.value)
+
+			if _, err := LoadConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "GATEWAY_PUBLIC_URL") {
+				t.Fatalf("LoadConfigFromEnv() error = %v, want GATEWAY_PUBLIC_URL error", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigFromEnvRejectsInvalidCORSAllowedOrigins(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "relative", value: "localhost:8090"},
+		{name: "unsupported scheme", value: "ftp://dashboard.example.com"},
+		{name: "path", value: "https://dashboard.example.com/app"},
+		{name: "query", value: "https://dashboard.example.com?tenant=a"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", "TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8")
+			t.Setenv("GATEWAY_API_KEYS_JSON", `[{"name":"dev","key_hash":"hash","capabilities":["*"]}]`)
+			t.Setenv("GATEWAY_CORS_ALLOWED_ORIGINS", tc.value)
+
+			if _, err := LoadConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "GATEWAY_CORS_ALLOWED_ORIGINS") {
+				t.Fatalf("LoadConfigFromEnv() error = %v, want GATEWAY_CORS_ALLOWED_ORIGINS error", err)
 			}
 		})
 	}

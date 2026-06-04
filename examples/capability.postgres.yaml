@@ -13,7 +13,7 @@ database:
   port: 5432
   name: legacy
   user: readonly_user
-  password: change-me-db-password
+  password: onprest-example-password
 
 logging:
   max_size: 10MB

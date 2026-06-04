@@ -28,6 +28,26 @@ Compatible alias:
 
 The command outputs a plaintext API key and bcrypt `key_hash`. Store only the hash in `GATEWAY_API_KEYS_JSON`. Give the plaintext key to the caller once.
 
+## Start Agent
+
+```bash
+./onprest-agent --config ./capability.yaml
+```
+
+`--config` selects the capability YAML file. If omitted, the agent checks `AGENT_CAPABILITY_FILE`, then falls back to `capability.yaml` next to the `onprest-agent` binary.
+
+## Agent Service Commands
+
+```bash
+./onprest-agent service install --config /absolute/path/capability.yaml
+./onprest-agent service start
+./onprest-agent service stop
+./onprest-agent service status
+./onprest-agent service uninstall
+```
+
+The service commands register and control the agent through the host OS service manager: systemd on Linux, launchd on macOS, and Windows Service on Windows. If `install` omits `--config`, it registers `capability.yaml` next to the `onprest-agent` binary. `install` does not enable automatic start on OS boot.
+
 ## Build
 
 ```bash

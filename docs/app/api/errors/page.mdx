@@ -1,6 +1,6 @@
 # Errors
 
-Onprest returns stable error codes with generic public messages, and keeps sensitive detail out of external responses.
+Onprest returns stable error codes with public client-facing messages, and keeps sensitive detail out of external responses.
 
 ## REST / MCP Shared HTTP Errors
 
@@ -41,7 +41,7 @@ These are returned as JSON-RPC errors with HTTP 200.
 
 ## Public Error Body
 
-REST and HTTP-level MCP errors include `error.code` and a generic `error.message`.
+REST and HTTP-level MCP errors include `error.code` and public `error.message`.
 
 ```json
 {
@@ -52,6 +52,44 @@ REST and HTTP-level MCP errors include `error.code` and a generic `error.message
 }
 ```
 
-`message` is part of the public API contract. It is safe for clients to display, but clients should branch on `code`.
+`message` is part of the public API contract. Agent validation messages may identify the invalid field and reason so callers can fix their request. Clients should still branch on `code`.
 
-Agent-originated raw `detail`, SQL text, DB-specific error text, DB credentials, and request params are written only to `onprest-agent.log` when needed. They are not included in gateway stdout or HTTP responses.
+Agent-originated raw detail such as stack traces, SQL text, DB-specific error text, DB credentials, and submitted param values is written only to `onprest-agent.log` when needed. It is not sent to gateway and is not included in gateway stdout or HTTP responses.
+
+## Agent-Originated Messages
+
+For agent errors, gateway returns the agent's public `code` and `message` unchanged. Secret detail stays in the agent local log.
+
+| Code | Public message |
+|---|---|
+| `GATEWAY_CAPABILITY_NOT_FOUND` | `capability is not defined` |
+| `AGENT_VALIDATION_FAILED` | one of the validation messages below |
+| `AGENT_QUERY_FAILED` | `database query failed` or `response exceeds policy.max_bytes` |
+| `AGENT_QUERY_TIMEOUT` | `query exceeded policy.timeout` |
+| `AGENT_DB_UNREACHABLE` | `database is unreachable` |
+| `AGENT_INTERNAL_ERROR` | `agent internal error` |
+
+Validation messages use the parameter name but never the submitted value.
+
+| Condition | Public message |
+|---|---|
+| unknown parameter | `unknown param: {name}` |
+| missing required parameter | `required param missing: {name}` |
+| string type mismatch | `{name}: must be string` |
+| string pattern mismatch | `{name}: does not match pattern` |
+| string too short | `{name}: below minLength` |
+| string too long | `{name}: above maxLength` |
+| invalid email | `{name}: must be email` |
+| invalid UUID | `{name}: must be uuid` |
+| invalid date | `{name}: must be date` |
+| invalid date-time | `{name}: must be date-time` |
+| invalid URI | `{name}: must be uri` |
+| URI without scheme | `{name}: must include URI scheme` |
+| integer type mismatch | `{name}: must be integer` |
+| integer below minimum | `{name}: below minimum` |
+| integer above maximum | `{name}: above maximum` |
+| number type mismatch | `{name}: must be number` |
+| number below minimum | `{name}: below minimum` |
+| number above maximum | `{name}: above maximum` |
+| boolean type mismatch | `{name}: must be boolean` |
+| enum mismatch | `{name}: not in enum` |

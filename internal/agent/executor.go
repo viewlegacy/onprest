@@ -12,51 +12,53 @@ import (
 	"github.com/viewlegacy/onprest/internal/protocol"
 )
 
+const queryTimeoutDetail = "query exceeded policy.timeout"
+
 func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.Response {
 	if req.Capability == "meta" {
 		return protocol.ResultResponse(req.ID, map[string]any{"data": BuildOpenAPI(r.cf)})
 	}
 	cap, ok := r.caps[req.Capability]
 	if !ok {
-		return r.errorResponse(req, "GATEWAY_CAPABILITY_NOT_FOUND", "capability is not defined")
+		return r.errorResponse(req, "GATEWAY_CAPABILITY_NOT_FOUND", "capability is not defined", "capability is not defined")
 	}
 	params, err := validateParams(cap, req.Params)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error())
+		return r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
 	}
 	query, args, err := buildSQL(r.cf.Database.Driver, cap.SQL, params)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error())
+		return r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
 	}
 	d, err := timeout(cap.Policy)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", err.Error())
+		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
 	}
 	ctx, cancel := context.WithTimeout(parent, d)
 	defer cancel()
 	rows, cols, err := queryRows(ctx, r.db, query, args, cap.Policy.MaxRows)
 	if err != nil {
 		if ctx.Err() != nil {
-			return r.errorResponse(req, "AGENT_QUERY_TIMEOUT", err.Error())
+			return r.errorResponse(req, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail, queryTimeoutDetail)
 		}
 		if isDBUnreachable(err) || !r.dbReachable(parent) {
-			return r.errorResponse(req, "AGENT_DB_UNREACHABLE", err.Error())
+			return r.errorResponse(req, "AGENT_DB_UNREACHABLE", "database is unreachable", err.Error())
 		}
-		return r.errorResponse(req, "AGENT_QUERY_FAILED", err.Error())
+		return r.errorResponse(req, "AGENT_QUERY_FAILED", "database query failed", err.Error())
 	}
 	rows, err = applyResultContract(rows, cols, cap.Result)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_QUERY_FAILED", err.Error())
+		return r.errorResponse(req, "AGENT_QUERY_FAILED", "database query failed", err.Error())
 	}
 	result := map[string]any{"rows": rows, "count": len(rows)}
 	limit, err := maxBytes(cap.Policy)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", err.Error())
+		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
 	}
 	if b, err := json.Marshal(result); err != nil {
-		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", err.Error())
+		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
 	} else if int64(len(b)) > limit {
-		return r.errorResponse(req, "AGENT_QUERY_FAILED", "response exceeds policy.max_bytes")
+		return r.errorResponse(req, "AGENT_QUERY_FAILED", "response exceeds policy.max_bytes", "response exceeds policy.max_bytes")
 	}
 	return protocol.ResultResponse(req.ID, result)
 }
@@ -214,9 +216,9 @@ func coerceString(v any) string {
 	}
 }
 
-func (r *Runner) errorResponse(req protocol.Request, code, detail string) protocol.Response {
-	r.detailError(req.Capability, code, detail, req.ID)
-	return protocol.Response{ID: req.ID, Error: &protocol.Error{Code: code, Detail: detail}}
+func (r *Runner) errorResponse(req protocol.Request, code, message, detail string) protocol.Response {
+	r.detailError(req.Capability, code, message, detail, req.ID)
+	return protocol.Response{ID: req.ID, Error: &protocol.Error{Code: code, Message: message}}
 }
 
 func (r *Runner) explainAll(parent context.Context) error {

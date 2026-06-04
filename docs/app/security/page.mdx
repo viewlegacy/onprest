@@ -10,7 +10,7 @@ Onprest is designed to reduce the boundary under the assumption that every compo
 | agent | agent private key, DB credentials | Yes | capability execution |
 | dashboard | masked/read-only managed view | No | managed-only observation |
 
-The gateway forwards capability names and params. DB connection information, SQL text, and agent error detail are never written to gateway HTTP responses or stdout logs. HTTP errors return only a stable `code` and a generic `message`.
+The gateway forwards capability names and params. DB connection information, SQL text, and raw agent detail are never written to gateway HTTP responses or stdout logs. HTTP errors return a stable `code` and public `message`.
 
 ## Gateway Compromise
 
@@ -80,13 +80,13 @@ The managed dashboard is outside the OSS core and is read-only.
 
 - API keys are not stored in plaintext.
 - Display is limited to masked information.
-- Logs do not display params or agent detail.
+- Logs do not display submitted param values or raw agent detail.
 - It has no create, update, or delete operations.
 - The backend admin UI is not exposed publicly in the managed environment.
 
 ## Sensitive Detail Handling
 
-External HTTP responses and gateway stdout never include raw detail. The HTTP response `message` is a generic public contract field.
+External HTTP responses and gateway stdout never include raw detail. The HTTP response `message` is a public contract field; validation messages may identify the invalid field and reason.
 
 ```json
 {
@@ -97,4 +97,4 @@ External HTTP responses and gateway stdout never include raw detail. The HTTP re
 }
 ```
 
-DB-specific errors, SQL execution detail, DB credentials, and input param details stay in the agent local log. The agent local log is `onprest-agent.log` next to the agent binary.
+DB-specific errors, SQL execution detail, DB credentials, stack traces, and submitted param values stay in the agent local log. The agent local log is `onprest-agent.log` next to the agent binary.
