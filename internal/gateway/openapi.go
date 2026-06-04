@@ -3,6 +3,10 @@ package gateway
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
+	"net/url"
+	"strings"
 )
 
 func cloneMap(in map[string]any) map[string]any {
@@ -36,6 +40,101 @@ func filterOpenAPI(doc map[string]any, caps []string) {
 			delete(paths, path)
 		}
 	}
+}
+
+func (s *Server) finalizeOpenAPI(doc map[string]any) map[string]any {
+	applyOpenAPIGatewayMetadata(doc, s.gatewayPublicURL())
+	return doc
+}
+
+func (s *Server) gatewayPublicURL() string {
+	if s.cfg.PublicURL != "" {
+		return s.cfg.PublicURL
+	}
+	return publicURLFromAddr(s.cfg.Addr)
+}
+
+func applyOpenAPIGatewayMetadata(doc map[string]any, serverURL string) {
+	if doc == nil {
+		return
+	}
+	doc["servers"] = []any{map[string]any{"url": serverURL}}
+	components, _ := doc["components"].(map[string]any)
+	if components == nil {
+		components = map[string]any{}
+		doc["components"] = components
+	}
+	components["securitySchemes"] = map[string]any{
+		"bearerAuth": map[string]any{
+			"type":   "http",
+			"scheme": "bearer",
+		},
+		"apiKeyAuth": map[string]any{
+			"type": "apiKey",
+			"in":   "header",
+			"name": "X-API-Key",
+		},
+	}
+	doc["security"] = []any{
+		map[string]any{"bearerAuth": []any{}},
+		map[string]any{"apiKeyAuth": []any{}},
+	}
+}
+
+func normalizePublicURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", errors.New("GATEWAY_PUBLIC_URL must be an absolute http or https URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("GATEWAY_PUBLIC_URL must use http or https")
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("GATEWAY_PUBLIC_URL must not include query or fragment")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	return u.String(), nil
+}
+
+func normalizeOrigin(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", errors.New("GATEWAY_CORS_ALLOWED_ORIGINS must contain absolute http or https origins")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("GATEWAY_CORS_ALLOWED_ORIGINS must use http or https")
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("GATEWAY_CORS_ALLOWED_ORIGINS values must not include path, query, or fragment")
+	}
+	return u.String(), nil
+}
+
+func publicURLFromAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = ":8080"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		if strings.HasPrefix(addr, ":") {
+			host = ""
+			port = strings.TrimPrefix(addr, ":")
+		} else {
+			host = addr
+		}
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "localhost"
+	}
+	if port == "" {
+		return fmt.Sprintf("http://%s", host)
+	}
+	return fmt.Sprintf("http://%s", net.JoinHostPort(host, port))
 }
 
 func toolsFromOpenAPI(doc map[string]any) []map[string]any {

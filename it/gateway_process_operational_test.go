@@ -273,9 +273,13 @@ func waitForOutputContains(t *testing.T, output *lockedBuffer, needles ...string
 
 func parseJSONLines(t *testing.T, raw string) []map[string]any {
 	t.Helper()
-	lines := strings.Fields(strings.TrimSpace(raw))
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
 	var out []map[string]any
 	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		var entry map[string]any
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("parse JSON line %q: %v\nall output:\n%s", line, err, raw)

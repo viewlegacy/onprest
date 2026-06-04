@@ -57,7 +57,7 @@ func NewRunner(cfg Config, logOut io.Writer) (*Runner, error) {
 	}
 	r := &Runner{cfg: cfg, cf: cf, caps: cf.ByName(), db: db, logOut: logOut, detailLog: detailLog, detailLogCloser: detailLog}
 	if err := r.explainAll(ctx); err != nil {
-		r.detailError("", "AGENT_STARTUP_FAILED", err.Error(), "")
+		r.detailError("", "AGENT_STARTUP_FAILED", "agent startup failed", err.Error(), "")
 		_ = db.Close()
 		return nil, startupFailure()
 	}
@@ -79,6 +79,7 @@ func writeStartupDetail(w io.Writer, code, detail string) {
 		"event":      "agent_error",
 		"capability": "",
 		"error_code": code,
+		"message":    "agent startup failed",
 		"detail":     detail,
 	}
 	_ = json.NewEncoder(w).Encode(fields)
@@ -129,8 +130,8 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 		dec := json.NewDecoder(bytes.NewReader(msg))
 		dec.UseNumber()
 		if err := dec.Decode(&req); err != nil {
-			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request: "+err.Error(), "")
-			_ = conn.WriteText(protocol.MustJSON(protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Detail: "invalid gateway request"}}))
+			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request", "invalid gateway request: "+err.Error(), "")
+			_ = conn.WriteText(protocol.MustJSON(protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}))
 			continue
 		}
 		resp := r.handle(ctx, req)
@@ -153,7 +154,7 @@ func (r *Runner) log(event string, fields map[string]any) {
 	_ = json.NewEncoder(r.logOut).Encode(fields)
 }
 
-func (r *Runner) detailError(capability, code, detail, requestID string) {
+func (r *Runner) detailError(capability, code, message, detail, requestID string) {
 	if r.detailLog == nil {
 		return
 	}
@@ -162,6 +163,7 @@ func (r *Runner) detailError(capability, code, detail, requestID string) {
 		"event":      "agent_error",
 		"capability": capability,
 		"error_code": code,
+		"message":    message,
 		"detail":     detail,
 	}
 	if requestID != "" {

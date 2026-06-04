@@ -5,6 +5,8 @@
 | Variable | Default | Description |
 |---|---|---|
 | `GATEWAY_ADDR` | `:8080` | Gateway listen address |
+| `GATEWAY_PUBLIC_URL` | derived from `GATEWAY_ADDR` | External HTTP(S) base URL used in OpenAPI `servers` |
+| `GATEWAY_CORS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to call Gateway with CORS |
 | `GATEWAY_AGENT_PUBLIC_KEY` | none | Required Ed25519 public key for agent auth |
 | `GATEWAY_API_KEYS_JSON` | none | Required API key JSON array |
 | `GATEWAY_IP_ALLOW_LIST` | empty | Empty means no IP allow restriction |
@@ -17,6 +19,8 @@
 
 ```env
 GATEWAY_ADDR=:8080
+GATEWAY_PUBLIC_URL=https://gateway.example.com
+GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
 GATEWAY_AGENT_PUBLIC_KEY=TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8
 GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$INgs32pPDl8EQAOTcQ1NN.eZUpNkDtyTKXh2luqxE32vNBmaLpy7m","capabilities":["*"]}]'
 GATEWAY_IP_ALLOW_LIST=
@@ -28,11 +32,13 @@ GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
 
 ## Agent
 
-Most agent runtime settings are in `capability.yaml`. The file path itself can be selected with an environment variable.
+Most agent runtime settings are in `capability.yaml`. Prefer `onprest-agent --config /path/to/capability.yaml` when launching the binary directly. The file path can also be selected with an environment variable.
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENT_CAPABILITY_FILE` | `capability.yaml` | Path to the agent capability YAML file |
+| `AGENT_CAPABILITY_FILE` | binary-adjacent `capability.yaml` | Path to the agent capability YAML file |
+
+`--config` takes precedence over `AGENT_CAPABILITY_FILE`.
 
 Important fields:
 

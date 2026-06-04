@@ -166,7 +166,7 @@ func TestGatewayOpenAPIAndMCPFilteringWithManualAgent(t *testing.T) {
 	}
 }
 
-func TestGatewayWireFormatAndAgentErrorDetailAreHidden(t *testing.T) {
+func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -201,19 +201,24 @@ func TestGatewayWireFormatAndAgentErrorDetailAreHidden(t *testing.T) {
 	if req.ID == "" || req.Capability != "echo_customer" || req.Params["secret"] != "dont-log-me" {
 		t.Fatalf("capability request = %#v", req)
 	}
-	if err := conn.WriteText(protocol.MustJSON(protocol.Response{
-		ID: req.ID,
-		Error: &protocol.Error{
-			Code:   "AGENT_VALIDATION_FAILED",
-			Detail: "database password is dont-log-me",
+	agentMessage := "secret: rejected by validation"
+	if err := conn.WriteText(protocol.MustJSON(map[string]any{
+		"id": req.ID,
+		"error": map[string]any{
+			"code":    "AGENT_VALIDATION_FAILED",
+			"message": agentMessage,
+			"detail":  "database password is dont-log-me",
 		},
 	})); err != nil {
 		t.Fatalf("write agent error: %v", err)
 	}
 	body := <-done
 	requireAPIErrorCode(t, body, "AGENT_VALIDATION_FAILED")
+	if !strings.Contains(string(body), agentMessage) || !strings.Contains(logs.String(), agentMessage) {
+		t.Fatalf("agent message not propagated; body=%s logs=%s", string(body), logs.String())
+	}
 	if strings.Contains(string(body), "dont-log-me") || strings.Contains(logs.String(), "dont-log-me") {
-		t.Fatalf("agent detail or params leaked; body=%s logs=%s", string(body), logs.String())
+		t.Fatalf("agent raw detail or params leaked; body=%s logs=%s", string(body), logs.String())
 	}
 
 	mcpDone := make(chan []byte, 1)
@@ -234,19 +239,24 @@ func TestGatewayWireFormatAndAgentErrorDetailAreHidden(t *testing.T) {
 	if req.ID == "" || req.Capability != "echo_customer" || req.Params["secret"] != "dont-log-me-too" {
 		t.Fatalf("MCP capability request = %#v", req)
 	}
-	if err := conn.WriteText(protocol.MustJSON(protocol.Response{
-		ID: req.ID,
-		Error: &protocol.Error{
-			Code:   "AGENT_VALIDATION_FAILED",
-			Detail: "database password is dont-log-me-too",
+	mcpAgentMessage := "secret: rejected by validation"
+	if err := conn.WriteText(protocol.MustJSON(map[string]any{
+		"id": req.ID,
+		"error": map[string]any{
+			"code":    "AGENT_VALIDATION_FAILED",
+			"message": mcpAgentMessage,
+			"detail":  "database password is dont-log-me-too",
 		},
 	})); err != nil {
 		t.Fatalf("write MCP agent error: %v", err)
 	}
 	mcpBody := <-mcpDone
 	requireAPIErrorCode(t, mcpBody, "AGENT_VALIDATION_FAILED")
+	if !strings.Contains(string(mcpBody), mcpAgentMessage) || !strings.Contains(logs.String(), mcpAgentMessage) {
+		t.Fatalf("MCP agent message not propagated; body=%s logs=%s", string(mcpBody), logs.String())
+	}
 	if strings.Contains(string(mcpBody), "dont-log-me-too") || strings.Contains(logs.String(), "dont-log-me-too") {
-		t.Fatalf("MCP agent detail or params leaked; body=%s logs=%s", string(mcpBody), logs.String())
+		t.Fatalf("MCP agent raw detail or params leaked; body=%s logs=%s", string(mcpBody), logs.String())
 	}
 }
 

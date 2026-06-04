@@ -22,9 +22,9 @@ The repository does not need to be deployed from source. Build artifacts can be 
 7. Start the agent.
 8. Verify `/healthz`, `/openapi.json`, REST, and MCP.
 
-## Binary-Only Environments
+## Binary Deployment
 
-For legacy environments without Docker:
+This is the primary deployment path for legacy environments without Docker.
 
 ```bash
 set -a
@@ -34,7 +34,7 @@ set +a
 ```
 
 ```bash
-AGENT_CAPABILITY_FILE=./capability.yaml ./onprest-agent
+./onprest-agent --config ./capability.yaml
 ```
 
 Keep the agent binary and `capability.yaml` together. Agent local logs are written next to the agent binary.
@@ -45,6 +45,8 @@ For a self-hosted gateway, configure at least:
 
 ```env
 GATEWAY_ADDR=:8080
+GATEWAY_PUBLIC_URL=https://gateway.example.com
+GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
 GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
 GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]}]'
 ```
@@ -56,11 +58,25 @@ Then decide whether to set:
 - `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` and `GATEWAY_RATE_LIMIT_BURST` for per-source rate limiting.
 - `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true` only when an operator needs the full OpenAPI document on gateway stdout for collection.
 
-For the agent, configure `capability.yaml` and optionally set:
+For the agent, configure `capability.yaml` and pass it with `--config`. If `--config` and `AGENT_CAPABILITY_FILE` are both omitted, the agent reads `capability.yaml` next to the `onprest-agent` binary. `AGENT_CAPABILITY_FILE` remains available for environments that prefer env-based configuration:
 
 ```env
 AGENT_CAPABILITY_FILE=/path/to/capability.yaml
 ```
+
+For OS-managed binary operation, register the agent and start it through the host service manager:
+
+```bash
+./onprest-agent service install --config /absolute/path/capability.yaml
+./onprest-agent service start
+./onprest-agent service status
+./onprest-agent service stop
+./onprest-agent service uninstall
+```
+
+`service install` can omit `--config`; in that case it registers `capability.yaml` next to the `onprest-agent` binary. It does not enable automatic start on OS boot. Configure boot-time startup separately with the host OS if required.
+
+When the agent runs as an OS service, stdout/stderr are handled by the service manager. On macOS service installs, process events go to `/var/log/onprest-agent.stdout.log` and fatal stderr output goes to `/var/log/onprest-agent.stderr.log`. DB-specific detail still belongs in `onprest-agent.log` next to the agent binary.
 
 ## Docker Optional Usage
 
@@ -71,7 +87,13 @@ docker build --build-arg TARGET=gateway -t onprest-gateway .
 docker build --build-arg TARGET=agent -t onprest-agent .
 ```
 
-`docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
+When running the agent container, mount `capability.yaml` and pass it to the container entrypoint:
+
+```bash
+docker run --rm -v "$PWD/capability.yaml:/config/capability.yaml:ro" onprest-agent --config /config/capability.yaml
+```
+
+The mounted `capability.yaml` must use database and gateway addresses reachable from inside the container. Container platforms manage process start/stop and stdout/stderr collection. Do not use `onprest-agent service install` inside a container. `docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
 
 ## Reverse Proxy Optionality
 

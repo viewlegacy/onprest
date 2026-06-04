@@ -153,7 +153,7 @@ func TestAgentRejectsUnknownCapabilityFromCompromisedGateway(t *testing.T) {
 	if resp.Error == nil || resp.Error.Code != "GATEWAY_CAPABILITY_NOT_FOUND" {
 		t.Fatalf("unknown capability response = %#v", resp)
 	}
-	if strings.Contains(resp.Error.Detail, "gateway-only-secret") {
+	if strings.Contains(resp.Error.Message, "gateway-only-secret") {
 		t.Fatalf("unknown capability response leaked params: %#v", resp.Error)
 	}
 	cancel()

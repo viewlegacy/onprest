@@ -75,7 +75,7 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 			writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "tool is not defined")
 			return
 		}
-		writeJSON(w, result.Status, apiError(result.Code, result.Detail))
+		writeJSON(w, result.Status, apiError(result.Code, result.Message))
 		return
 	}
 	var structured any

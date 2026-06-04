@@ -13,7 +13,7 @@ type agentCallResult struct {
 	Payload []byte
 	Status  int
 	Code    string
-	Detail  string
+	Message string
 }
 
 func (r agentCallResult) OK() bool {
@@ -51,7 +51,7 @@ func (s *Server) callAgent(ctx context.Context, capability string, params map[st
 	ac := s.agent
 	s.agentMu.RUnlock()
 	if ac == nil {
-		return agentCallResult{Status: http.StatusServiceUnavailable, Code: errGatewayAgentOffline, Detail: "agent is not connected"}
+		return agentCallResult{Status: http.StatusServiceUnavailable, Code: errGatewayAgentOffline, Message: "agent is not connected"}
 	}
 	id := newID()
 	ch := make(chan protocol.Response, 1)
@@ -60,7 +60,7 @@ func (s *Server) callAgent(ctx context.Context, capability string, params map[st
 	err := ac.conn.WriteText(protocol.MustJSON(protocol.Request{ID: id, Capability: capability, Params: params}))
 	ac.mu.Unlock()
 	if err != nil {
-		return agentCallResult{Status: http.StatusServiceUnavailable, Code: errGatewayAgentOffline, Detail: err.Error()}
+		return agentCallResult{Status: http.StatusServiceUnavailable, Code: errGatewayAgentOffline, Message: "agent is not connected"}
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.AgentTimeout)
 	defer cancel()
@@ -68,14 +68,14 @@ func (s *Server) callAgent(ctx context.Context, capability string, params map[st
 	case resp := <-ch:
 		if resp.Error != nil {
 			status, code := agentErrorStatus(resp.Error.Code)
-			return agentCallResult{Status: status, Code: code, Detail: publicErrorMessage(code)}
+			return agentCallResult{Status: status, Code: code, Message: resp.Error.Message}
 		}
 		return agentCallResult{Payload: resp.Result, Status: http.StatusOK}
 	case <-ctx.Done():
 		ac.mu.Lock()
 		delete(ac.pending, id)
 		ac.mu.Unlock()
-		return agentCallResult{Status: http.StatusGatewayTimeout, Code: errGatewayTimeout, Detail: ctx.Err().Error()}
+		return agentCallResult{Status: http.StatusGatewayTimeout, Code: errGatewayTimeout, Message: "agent response timed out"}
 	}
 }
 
@@ -120,6 +120,7 @@ func (s *Server) fetchMeta() {
 		s.log("openapi_parse_failed", map[string]any{"error": err.Error()})
 		return
 	}
+	doc = s.finalizeOpenAPI(doc)
 	s.agentMu.Lock()
 	s.openapi = doc
 	s.agentMu.Unlock()

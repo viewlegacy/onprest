@@ -281,6 +281,7 @@ func TestValidateParamsRejectsContractViolations(t *testing.T) {
 		"date":     {Type: "string", Format: "date"},
 		"datetime": {Type: "string", Format: "date-time"},
 		"uri":      {Type: "string", Format: "uri"},
+		"enum":     {Type: "string", Enum: []any{"red", "blue"}},
 	}}
 	valid := map[string]any{
 		"required": "ok",
@@ -293,36 +294,48 @@ func TestValidateParamsRejectsContractViolations(t *testing.T) {
 		"date":     "2026-05-04",
 		"datetime": "2026-05-04T12:00:00Z",
 		"uri":      "https://example.com",
+		"enum":     "red",
 	}
 	if _, err := validateParams(cap, valid); err != nil {
 		t.Fatalf("valid params rejected: %v", err)
 	}
 
 	tests := []struct {
-		name   string
-		mutate func(map[string]any)
+		name    string
+		mutate  func(map[string]any)
+		wantErr string
 	}{
-		{name: "unknown", mutate: func(in map[string]any) { in["unknown"] = "x" }},
-		{name: "required", mutate: func(in map[string]any) { delete(in, "required") }},
-		{name: "string type", mutate: func(in map[string]any) { in["string"] = 1 }},
-		{name: "integer type", mutate: func(in map[string]any) { in["integer"] = json.Number("1.5") }},
-		{name: "number type", mutate: func(in map[string]any) { in["number"] = "1" }},
-		{name: "boolean type", mutate: func(in map[string]any) { in["boolean"] = "true" }},
-		{name: "min length", mutate: func(in map[string]any) { in["string"] = "ab" }},
-		{name: "max length", mutate: func(in map[string]any) { in["string"] = "abcdef" }},
-		{name: "pattern", mutate: func(in map[string]any) { in["string"] = "ABC" }},
-		{name: "email", mutate: func(in map[string]any) { in["email"] = "bad" }},
-		{name: "uuid", mutate: func(in map[string]any) { in["uuid"] = "bad" }},
-		{name: "date", mutate: func(in map[string]any) { in["date"] = "2026-99-99" }},
-		{name: "date-time", mutate: func(in map[string]any) { in["datetime"] = "bad" }},
-		{name: "uri", mutate: func(in map[string]any) { in["uri"] = "example.com" }},
+		{name: "unknown", mutate: func(in map[string]any) { in["unknown"] = "x" }, wantErr: "unknown param: unknown"},
+		{name: "required", mutate: func(in map[string]any) { delete(in, "required") }, wantErr: "required param missing: required"},
+		{name: "string type", mutate: func(in map[string]any) { in["string"] = 1 }, wantErr: "string: must be string"},
+		{name: "integer type", mutate: func(in map[string]any) { in["integer"] = json.Number("1.5") }, wantErr: "integer: must be integer"},
+		{name: "number type", mutate: func(in map[string]any) { in["number"] = "1" }, wantErr: "number: must be number"},
+		{name: "boolean type", mutate: func(in map[string]any) { in["boolean"] = "true" }, wantErr: "boolean: must be boolean"},
+		{name: "min length", mutate: func(in map[string]any) { in["string"] = "ab" }, wantErr: "string: below minLength"},
+		{name: "max length", mutate: func(in map[string]any) { in["string"] = "abcdef" }, wantErr: "string: above maxLength"},
+		{name: "pattern", mutate: func(in map[string]any) { in["string"] = "ABC" }, wantErr: "string: does not match pattern"},
+		{name: "integer minimum", mutate: func(in map[string]any) { in["integer"] = json.Number("0") }, wantErr: "integer: below minimum"},
+		{name: "integer maximum", mutate: func(in map[string]any) { in["integer"] = json.Number("11") }, wantErr: "integer: above maximum"},
+		{name: "number minimum", mutate: func(in map[string]any) { in["number"] = json.Number("0") }, wantErr: "number: below minimum"},
+		{name: "number maximum", mutate: func(in map[string]any) { in["number"] = json.Number("11") }, wantErr: "number: above maximum"},
+		{name: "enum", mutate: func(in map[string]any) { in["enum"] = "green" }, wantErr: "enum: not in enum"},
+		{name: "email", mutate: func(in map[string]any) { in["email"] = "bad" }, wantErr: "email: must be email"},
+		{name: "uuid", mutate: func(in map[string]any) { in["uuid"] = "bad" }, wantErr: "uuid: must be uuid"},
+		{name: "date", mutate: func(in map[string]any) { in["date"] = "2026-99-99" }, wantErr: "date: must be date"},
+		{name: "date-time", mutate: func(in map[string]any) { in["datetime"] = "bad" }, wantErr: "datetime: must be date-time"},
+		{name: "uri scheme", mutate: func(in map[string]any) { in["uri"] = "example.com" }, wantErr: "uri: must include URI scheme"},
+		{name: "uri parse", mutate: func(in map[string]any) { in["uri"] = "http://[::1" }, wantErr: "uri: must be uri"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			input := cloneParams(valid)
 			tc.mutate(input)
-			if _, err := validateParams(cap, input); err == nil {
+			_, err := validateParams(cap, input)
+			if err == nil {
 				t.Fatal("validateParams() error = nil, want error")
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("validateParams() error = %q, want %q", err.Error(), tc.wantErr)
 			}
 		})
 	}
@@ -445,11 +458,28 @@ func TestRunnerWritesDetailedAgentErrorsToDetailLog(t *testing.T) {
 	if resp.Error == nil || resp.Error.Code != "AGENT_VALIDATION_FAILED" {
 		t.Fatalf("response = %#v", resp)
 	}
+	if resp.Error.Message != "required param missing: id" {
+		t.Fatalf("response message = %q", resp.Error.Message)
+	}
 	logs := detail.String()
 	for _, want := range []string{"agent_error", "req-1", "get_customer", "AGENT_VALIDATION_FAILED", "required param missing"} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("detail log missing %q: %s", want, logs)
 		}
+	}
+}
+
+func TestStartupDetailLogUsesStartupMessageAndKeepsDetailLocal(t *testing.T) {
+	detail := &bytes.Buffer{}
+	writeStartupDetail(detail, "AGENT_STARTUP_FAILED", "explain failed on private table")
+	var entry map[string]any
+	if err := json.Unmarshal(detail.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["error_code"] != "AGENT_STARTUP_FAILED" ||
+		entry["message"] != "agent startup failed" ||
+		entry["detail"] != "explain failed on private table" {
+		t.Fatalf("startup detail entry = %#v", entry)
 	}
 }
 

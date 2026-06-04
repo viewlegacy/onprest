@@ -15,16 +15,17 @@ Request event fields:
 | `api_key_name` | API key name from config |
 | `http_status` | response status |
 | `error_code` | stable error code or null |
+| `error_message` | same public value as the API response `error.message`, or null |
 | `duration_ms` | request duration |
 
-gateway stdout excludes params, SQL, DB credentials, agent detail, plaintext API keys, and agent private keys.
+gateway stdout excludes submitted param values, SQL, DB credentials, agent raw detail, plaintext API keys, and agent private keys.
 
 OpenAPI metadata events:
 
 | Event | Fields | Description |
 |---|---|---|
 | `openapi_cached` | `paths` | Emitted after gateway caches agent metadata. This is always summary-only. |
-| `openapi_snapshot` | `paths`, `openapi` | Emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`. `openapi` contains the full cached OpenAPI document. |
+| `openapi_snapshot` | `paths`, `openapi` | Emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`. `openapi` contains the full cached OpenAPI document, including gateway-added `servers`, `securitySchemes`, and `security`. |
 
 `openapi_snapshot` contains unfiltered OpenAPI metadata for the connected agent. It still must not contain SQL or DB credentials, but it may contain public descriptions, parameter names, and result schema names from `capability.yaml`.
 
@@ -44,4 +45,4 @@ logging:
   max_files: 3
 ```
 
-`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the local detail log.
+`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the local detail log. OS service managers may redirect agent stdout/stderr to separate process log files; those files do not replace `onprest-agent.log`.
