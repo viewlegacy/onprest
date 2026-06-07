@@ -106,7 +106,7 @@ TLS termination is environment-owned. Use any reverse proxy, platform proxy, or 
 
 The gateway can be useful without being trusted with meaning.
 
-| Concern | Gateway | On-prem Agent |
+| Concern | Gateway | Agent |
 |---|---:|---:|
 | Public REST/MCP endpoint | Yes | No |
 | WebSocket edge | Yes | Outbound client |
@@ -123,7 +123,7 @@ The gateway can be useful without being trusted with meaning.
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
 | Output allow-list | No | Yes |
-| Detailed DB errors | No | Yes, local only |
+| Detailed DB errors | No | Local only |
 | Agent private key | No | Yes |
 | Agent public key | Yes | No |
 
@@ -278,14 +278,14 @@ Start the agent in another shell:
 Set the example API key in the shell that will call the gateway:
 
 ```sh
-export API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
 ```
 
 Call a capability:
 
 ```sh
 curl -sS \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"customer_id":1}' \
   http://localhost:8080/api/v1/capabilities/get_customer

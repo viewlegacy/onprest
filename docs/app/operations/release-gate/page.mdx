@@ -2,39 +2,7 @@
 
 Use the release gate before treating an OSS core change as operationally ready.
 
-## Unit Tests
-
-```bash
-go test ./...
-```
-
-## Integration Tests
-
-```bash
-go test -tags=integration ./it/...
-```
-
-DB-specific selection:
-
-```bash
-go test -tags=integration ./it/... -args -onprest-it-db=postgres
-go test -tags=integration ./it/... -args -onprest-it-db=mysql
-go test -tags=integration ./it/... -args -onprest-it-db=sqlserver
-go test -tags=integration ./it/... -args -onprest-it-db=oracle
-go test -tags=integration ./it/... -args -onprest-it-db=all
-```
-
-## Make Targets
-
-```bash
-make test
-make test-it
-make test-it-postgres-ci
-make test-it-postgres-stability
-make test-it-all-db
-make test-it-docker-ops
-make test-it-release-gate
-```
+The individual unit, integration, DB-selection, and make targets are documented once in [Test Commands](/reference/test-commands). This page covers only the release gate itself and its acceptance criteria.
 
 ## Release Gate Command
 

@@ -1,6 +1,20 @@
 # Test Commands
 
+This page is the canonical reference for Onprest test commands and what each one verifies. Other pages link here instead of repeating the command list.
+
 Test commands require a Go toolchain compatible with the version declared in `go.mod`.
+
+## Command Summary
+
+| Command | What it runs |
+|---|---|
+| `go test ./...` / `make test` | Unit tests only. No database or Docker required. |
+| `go test -tags=integration ./it/...` / `make test-it` | Full integration suite against a database. Requires Docker for Testcontainers-backed databases. |
+| `make test-it-postgres-ci` | PostgreSQL integration tests, excluding Docker image build tests, run 3 times in a row to catch flakiness. Containers are mandatory. |
+| `make test-it-postgres-stability` | DB-interruption stability test (`TestPostgresDBUnreachableDuringQuery`) run 5 times in a row to confirm the agent handles a database that drops mid-query. |
+| `make test-it-all-db` | Cross-driver smoke test (`TestContainerDBDriver`) across PostgreSQL, MySQL, SQL Server, and Oracle, with a 30-minute timeout. |
+| `make test-it-docker-ops` | Operational tests for the Docker image build and Docker Compose env-file handling (verifies `GATEWAY_API_KEYS_JSON` and bcrypt `$` survive env-file loading). |
+| `make test-it-release-gate` | Full release gate. Runs the unit, integration, stability, all-DB, and Docker operational checks, and asserts zero skips and zero leftover Testcontainers resources. See [Release Gate](/operations/release-gate). |
 
 ## Unit
 
@@ -8,13 +22,19 @@ Test commands require a Go toolchain compatible with the version declared in `go
 go test ./...
 ```
 
+Fast, dependency-free checks. Run these first.
+
 ## Integration
 
 ```bash
 go test -tags=integration ./it/...
 ```
 
+Exercises the agent against a real database. Driver behavior, placeholder conversion, EXPLAIN validation, and error redaction are covered here.
+
 ## DB Selection
+
+Select which database the integration tests target with `-onprest-it-db`.
 
 ```bash
 go test -tags=integration ./it/... -args -onprest-it-db=postgres
@@ -24,17 +44,21 @@ go test -tags=integration ./it/... -args -onprest-it-db=oracle
 go test -tags=integration ./it/... -args -onprest-it-db=all
 ```
 
+`all` runs every supported driver in sequence. PostgreSQL is the default target for `make test-it`.
+
 ## Make Targets
 
 ```bash
-make test
-make test-it
-make test-it-postgres-ci
-make test-it-postgres-stability
-make test-it-all-db
-make test-it-docker-ops
-make test-it-release-gate
+make test                        # unit tests
+make test-it                     # integration suite
+make test-it-postgres-ci         # PostgreSQL CI run, 3x, no Docker build tests
+make test-it-postgres-stability  # DB-interruption stability, 5x
+make test-it-all-db              # all-driver smoke, 30m timeout
+make test-it-docker-ops          # Docker image + compose env-file ops tests
+make test-it-release-gate        # full release gate
 ```
+
+See the [Command Summary](#command-summary) above for what each target verifies.
 
 ## Required Containers
 
@@ -42,4 +66,4 @@ make test-it-release-gate
 ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/...
 ```
 
-Use this when Docker/Testcontainers availability must be treated as required instead of skipped.
+By default, container-backed tests are skipped when Docker is unavailable. Set `ONPREST_IT_REQUIRE_CONTAINERS=1` to make container availability mandatory, so a missing Docker daemon fails the run instead of silently skipping. Use this in CI and release gates where skips are not acceptable.

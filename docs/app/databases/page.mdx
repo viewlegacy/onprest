@@ -2,11 +2,48 @@
 
 Onprest supports PostgreSQL, MySQL, SQL Server, and Oracle through the agent.
 
-The gateway remains database-agnostic. Driver behavior, placeholder conversion, EXPLAIN validation, and DB-specific errors stay on the agent side.
+The gateway remains database-agnostic. Driver behavior, placeholder conversion, EXPLAIN validation, and DB-specific errors stay on the agent side. Each database is exercised by Testcontainers-backed integration tests. The agent uses DB-specific connection handling, placeholder conversion, EXPLAIN verification, schema/seed setup, result scanning, timeout handling, and error redaction.
+
+## Least Privilege
+
+Use a DB user with the narrowest permissions needed for the defined capabilities.
+
+For read capabilities:
+
+- Prefer read-only users.
+- Grant access only to required schemas, tables, views, or stored objects.
+- Keep DB credentials only in `capability.yaml` on the agent side.
+- Do not encode DB credentials in gateway env or API clients.
+
+YAML `policy.readonly` is a guardrail, not a replacement for DB permissions.
+
+## Startup Verification
+
+The agent verifies capabilities before connecting to the gateway.
+
+| Check | Purpose |
+|---|---|
+| DB ping | Fail fast when the database is unreachable |
+| EXPLAIN | Catch invalid SQL before exposing the capability |
+| YAML lint | Reject invalid driver, policy, params, result, or logging settings |
+
+If startup verification fails, details are written to `onprest-agent.log`.
+
+## Connection Generation
+
+The agent generates DSNs from the `database` section of `capability.yaml`.
+
+| Driver | Current connection behavior |
+|---|---|
+| `postgres` | URL DSN with `sslmode=disable` |
+| `mysql` | TCP DSN using `user:password@tcp(host:port)/name` |
+| `sqlserver` | URL DSN with `database=name` and `encrypt=disable` |
+| `oracle` | URL DSN with `oracle://user:password@host:port/name` |
+
+These are current OSS core behaviors. Put the agent in an environment where this DB connection policy is acceptable, for example inside a private network segment or behind an environment-owned tunnel.
 
 ## Topics
 
-- [Overview](/databases/overview)
 - [PostgreSQL](/databases/postgres)
 - [MySQL](/databases/mysql)
 - [SQL Server](/databases/sqlserver)
