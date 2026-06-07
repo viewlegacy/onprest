@@ -7,7 +7,7 @@
 ```env
 # Required.
 GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
-GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]},{"name":"partner-a","key_hash":"$2a$10$xxxxx","capabilities":["get_customers","get_orders"]}]'
+GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]},{"name":"partner-a","key_hash":"$2a$10$xxxxx","capabilities":["get_customer","get_orders"]}]'
 
 # Optional. Omit these to use defaults or disabled behavior.
 # GATEWAY_ADDR=:8080
@@ -77,7 +77,7 @@ The public key goes into `GATEWAY_AGENT_PUBLIC_KEY`. The private key goes into `
   {
     "name": "partner-a",
     "key_hash": "$2a$10$xxxxx",
-    "capabilities": ["get_customers", "get_orders"]
+    "capabilities": ["get_customer", "get_orders"]
   }
 ]
 ```

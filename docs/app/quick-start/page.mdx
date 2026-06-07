@@ -42,6 +42,8 @@ For real deployments, generate fresh keys and edit your own `capability.yaml`.
 
 ## 2. Generate Agent Keys
 
+> Steps 2–5 create your own keys and config. **If you are using the repository example files, skip steps 2–5 and continue at step 6.**
+
 The agent holds an Ed25519 private key. The gateway holds only the public key.
 
 ```bash
@@ -171,7 +173,7 @@ Start the agent in another terminal.
 
 If `--config` and `AGENT_CAPABILITY_FILE` are both omitted, the agent reads `capability.yaml` next to the `onprest-agent` binary.
 
-The agent connects outbound to `/ws/agent`. During connection, the gateway verifies the signature with the agent public key. After connection, the gateway calls the `meta` capability and caches OpenAPI in memory.
+The agent connects outbound to `/ws/agent`. During connection, the gateway verifies the signature with the agent public key. After connection, the gateway calls the internal `meta` capability to fetch the agent-generated OpenAPI spec and caches it in memory (see [OpenAPI](/api/openapi)).
 
 ## 7. Verify Health
 
@@ -202,6 +204,17 @@ curl -s \
   -H "Authorization: Bearer ${ONPREST_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"customer_id":1}'
+```
+
+A successful call returns the rows the capability is allowed to expose:
+
+```json
+{
+  "rows": [
+    { "id": 1, "name": "Ada Lovelace", "email": "ada@example.com" }
+  ],
+  "count": 1
+}
 ```
 
 The REST request body is the capability params object directly. Do not wrap it in `{"params": {...}}`.

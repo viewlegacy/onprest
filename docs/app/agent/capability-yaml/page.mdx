@@ -33,26 +33,19 @@ defaults:
   max_bytes: 1MB
 
 capabilities:
-  get_customers:
-    description: "Fetch customers by status"
-    sql: |
-      SELECT id, name, email FROM customers
-      WHERE status = :status LIMIT :limit
+  get_customer:
+    description: "Fetch one customer by id"
+    sql: select id, name, email from customers where id = :customer_id
     params:
-      status:
-        type: string
-        enum: ["active", "inactive"]
-        description: "Customer status"
-      limit:
+      customer_id:
         type: integer
-        default: 50
+        required: true
         minimum: 1
-        maximum: 500
-        description: "Number of rows to return"
+        description: "Customer ID"
     policy:
       readonly: true
       timeout: 5s
-      max_rows: 500
+      max_rows: 1
       max_bytes: 256KB
       expose_in_openapi: true
     result:
