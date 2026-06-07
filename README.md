@@ -106,7 +106,7 @@ TLS termination is environment-owned. Use any reverse proxy, platform proxy, or 
 
 The gateway can be useful without being trusted with meaning.
 
-| Concern | Gateway | On-prem Agent |
+| Concern | Gateway | Agent |
 |---|---:|---:|
 | Public REST/MCP endpoint | Yes | No |
 | WebSocket edge | Yes | Outbound client |
@@ -123,7 +123,7 @@ The gateway can be useful without being trusted with meaning.
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
 | Output allow-list | No | Yes |
-| Detailed DB errors | No | Yes, local only |
+| Detailed DB errors | No | Local only |
 | Agent private key | No | Yes |
 | Agent public key | Yes | No |
 
@@ -232,7 +232,13 @@ For production deployments, use a read-only database user whenever the intended 
 
 ## Quick Start
 
-Quick Start assumes you are running from the repository root.
+### Prerequisites
+
+- A Go toolchain compatible with the version declared in [`go.mod`](go.mod), to build the binaries.
+- Docker with Compose, used only to start the disposable example PostgreSQL database in this guide. Docker is not required to run Onprest itself.
+- A Linux or macOS host. `make build` builds natively for the host you run it on, so on Linux it produces Linux binaries and on macOS it produces macOS binaries. Use `make build-cross` to produce binaries for other targets (additional Linux/macOS architectures and Windows).
+
+Quick Start assumes you are running from the repository root, and uses the repository example files so you do not have to generate keys yet.
 
 Build the two binaries:
 
@@ -275,23 +281,46 @@ Start the agent in another shell:
 ./dist/onprest-agent --config examples/capability.postgres.yaml
 ```
 
-Set the example API key in the shell that will call the gateway:
+Set the example API key in the shell that will call the gateway. This is the plaintext key that matches the bcrypt hash already present in `examples/gateway.env`. For your own deployment, generate keys with `onprest-gateway create-key` (see [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)).
 
 ```sh
-export API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
 ```
+
+Confirm the gateway is up and the agent is connected before calling a capability:
+
+```sh
+curl -sS http://localhost:8080/healthz
+```
+
+```json
+{ "ok": true, "agent_connected": true }
+```
+
+`/healthz` needs no API key. If `agent_connected` is `false`, wait for the agent to finish its startup checks and connect, then retry.
 
 Call a capability:
 
 ```sh
 curl -sS \
-  -H "Authorization: Bearer $API_KEY" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"customer_id":1}' \
   http://localhost:8080/api/v1/capabilities/get_customer
 ```
 
-The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
+A successful call returns the rows the capability is allowed to expose:
+
+```json
+{
+  "rows": [
+    { "id": 1, "name": "Ada Lovelace", "email": "ada@example.com" }
+  ],
+  "count": 1
+}
+```
+
+Only the fields listed in the capability `result` allow-list are returned. The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
 
 Stop and remove the example database when finished:
 
@@ -346,19 +375,21 @@ Oracle requires the runtime prerequisites for `godror`.
 
 ## Documentation
 
-Detailed docs are intentionally kept outside this README.
+Detailed docs are intentionally kept outside this README and published at
+[docs.onprest.viewlegacy.com](https://docs.onprest.viewlegacy.com). The
+source lives under [`docs/`](docs/).
 
 Recommended next reads:
 
-- [Architecture](docs/app/architecture/page.mdx)
-- [Capability YAML](docs/app/agent/capability-yaml/page.mdx)
-- [Gateway configuration](docs/app/gateway/configuration/page.mdx)
-- [Provisioning CLI](docs/app/reference/cli/page.mdx)
-- [REST API](docs/app/api/rest/page.mdx)
-- [MCP](docs/app/api/mcp/page.mdx)
-- [Security model](docs/app/security/page.mdx)
-- [Deployment](docs/app/operations/deployment/page.mdx)
-- [Operations](docs/app/operations/page.mdx)
+- [Architecture](https://docs.onprest.viewlegacy.com/architecture)
+- [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml)
+- [Gateway configuration](https://docs.onprest.viewlegacy.com/gateway/configuration)
+- [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)
+- [REST API](https://docs.onprest.viewlegacy.com/api/rest)
+- [MCP](https://docs.onprest.viewlegacy.com/api/mcp)
+- [Security model](https://docs.onprest.viewlegacy.com/security)
+- [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment)
+- [Operations](https://docs.onprest.viewlegacy.com/operations)
 
 ## OSS and Managed
 

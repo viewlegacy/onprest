@@ -10,7 +10,7 @@ Check:
 - agent host can make outbound connections to gateway.
 - timestamp skew is not outside the allowed signing window.
 
-gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when signature validation fails.
+The gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when signature validation fails.
 
 ## OpenAPI Returns 503
 
@@ -33,7 +33,7 @@ Check:
 
 Update the key definition or use a key whose `capabilities` includes the requested capability or `"*"`.
 
-## DB Ping Or EXPLAIN Startup Failure
+## DB Ping or EXPLAIN Startup Failure
 
 Agent stops before connecting to gateway. Check `onprest-agent.log` next to the agent binary.
 
@@ -61,7 +61,7 @@ Review:
 - `GATEWAY_RATE_LIMIT_BURST`
 - trusted proxy source IP detection
 
-## Docker Or Testcontainers Issues
+## Docker or Testcontainers Issues
 
 Container-backed integration tests require Docker daemon access.
 
@@ -71,4 +71,4 @@ Use mandatory mode when skips should fail the gate:
 ONPREST_IT_REQUIRE_CONTAINERS=1 make test-it-release-gate
 ```
 
-If tests fail after interruption, check for leftover testcontainers resources and rerun the release gate.
+If tests fail after interruption, check for leftover testcontainers resources and rerun the release gate. See [Test Commands](/reference/test-commands) for the meaning of `ONPREST_IT_REQUIRE_CONTAINERS` and the full command list.

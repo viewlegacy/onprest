@@ -9,7 +9,7 @@ onprest-agent.log.2
 onprest-agent.log.3
 ```
 
-The local log is the place for DB-specific and SQL execution detail. gateway stdout and HTTP responses intentionally omit those details.
+The local log is the place for DB-specific and SQL execution detail. Gateway stdout and HTTP responses intentionally omit those details.
 
 When the agent runs in a terminal, process-level events such as `agent_ready` are written to stdout and fatal startup messages are written to stderr. When installed as an OS service, the service manager may redirect those streams to separate stdout/stderr files. These service stdout/stderr files are process logs, not replacements for `onprest-agent.log`.
 

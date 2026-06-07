@@ -1,12 +1,44 @@
 # Agent
 
-`onprest-agent` runs in the on-prem or DB-adjacent environment. It reads `capability.yaml`, validates startup safety, executes SQL with prepared params, and keeps DB-specific detail local.
+`onprest-agent` runs in the on-prem or DB-adjacent environment. It reads `capability.yaml`, validates startup safety, executes SQL with prepared params, and keeps DB-specific detail local. It owns the meaning of every capability and is the only OSS core component that holds DB connection details and SQL.
 
-The agent connects outbound to gateway over WebSocket. It does not require inbound access to the on-prem network.
+The agent connects outbound to the gateway over WebSocket. It does not require inbound access to the on-prem network.
+
+## Runtime Model
+
+- Single Go binary.
+- Configured by `capability.yaml`.
+- Connects outbound to the gateway over WebSocket.
+- Does not open an inbound HTTP server.
+- Reconnects every 30 seconds by default when the gateway is unavailable.
+- Requires restart to pick up capability changes.
+
+## Startup Checks
+
+Before connecting to the gateway, the agent performs:
+
+1. `capability.yaml` load.
+2. Structural lint and required-field validation.
+3. DB ping.
+4. SQL EXPLAIN verification for each capability.
+
+If DB ping or EXPLAIN fails, startup is aborted. Detail is written to `onprest-agent.log`; stderr stays generic so SQL and DB-specific detail are not exposed to process supervisors or remote logs.
+
+## Execution Flow
+
+When the gateway sends a capability request, the agent:
+
+1. Rejects unknown capability names.
+2. Validates params against the YAML contract.
+3. Applies policy settings.
+4. Executes SQL with prepared parameters.
+5. Applies the result allow-list.
+6. Returns either `result` or a normalized agent error code.
+
+Error detail remains local to the agent side.
 
 ## Topics
 
-- [Overview](/agent/overview)
 - [Capability YAML](/agent/capability-yaml)
 - [Local Logs](/agent/local-logs)
 - [Key Rotation](/agent/key-rotation)

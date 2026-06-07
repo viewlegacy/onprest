@@ -2,7 +2,7 @@
 
 API keys authenticate REST, MCP, and OpenAPI requests. They also define which capabilities the caller can use.
 
-## Create A Key
+## Create a Key
 
 ```bash
 ./onprest-gateway create-key --name partner-a --capabilities "get_customer,get_orders"
@@ -39,18 +39,18 @@ For `tools/list` and `/openapi.json`, gateway filters the visible tools or paths
 Use either bearer auth or `X-API-Key`.
 
 ```http
-Authorization: Bearer onp_...
+Authorization: Bearer {api_key}
 ```
 
 ```http
-X-API-Key: onp_...
+X-API-Key: {api_key}
 ```
 
 Bearer auth is recommended for general clients. `X-API-Key` is available for environments where bearer headers are inconvenient.
 
 ## Log Identity
 
-gateway logs the key `name`, not the plaintext API key.
+The gateway logs the key `name`, not the plaintext API key.
 
 ```json
 {
