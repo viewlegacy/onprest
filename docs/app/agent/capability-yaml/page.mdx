@@ -97,6 +97,18 @@ Descriptions do not grant permissions, change validation, affect SQL execution, 
 
 For AI/MCP use, write descriptions as stable business-facing contract text. Do not put secrets, internal-only incident detail, DB credentials, or sensitive operational notes in descriptions because they can appear in OpenAPI and MCP metadata.
 
+## Service
+
+`service` provides the OpenAPI info metadata for the generated spec. All fields are optional.
+
+| Field | Required | Default | Description |
+|---|---:|---|---|
+| `title` | No | `Onprest Agent` | OpenAPI service title |
+| `version` | No | `0.1.0` | OpenAPI service version |
+| `description` | No | empty | OpenAPI service-level documentation |
+
+When `title` or `version` is empty, the agent fills in the default shown above at startup.
+
 ## Gateway
 
 | Field | Required | Description |
@@ -124,6 +136,8 @@ Current DSN generation adds `sslmode=disable` for PostgreSQL and `encrypt=disabl
 | `max_size` | `10MB` | Size threshold for rotating the local detail log |
 | `max_files` | `3` | Number of rotated files to retain |
 
+`max_size` accepts a byte size with an optional `B`, `KB`, `MB`, or `GB` suffix, such as `10MB`. A bare number is treated as bytes.
+
 The local detail log path is the agent executable path plus `.log`, for example `onprest-agent.log`.
 
 ## Defaults
@@ -142,7 +156,7 @@ If neither `defaults` nor capability `policy` sets a value, the implementation d
 
 ## Capabilities
 
-Each entry under `capabilities` defines one externally callable operation.
+Each entry under `capabilities` defines one externally callable operation. At least one capability is required; the agent rejects a file with no capabilities at startup.
 
 | Field | Required | Description |
 |---|---:|---|
@@ -165,12 +179,14 @@ Each entry under `capabilities` defines one externally callable operation.
 | `minimum` / `maximum` | numeric bounds |
 | `minLength` / `maxLength` | string length bounds |
 | `pattern` | regular expression |
-| `format` | `email`, `uuid`, `date`, `date-time`, `uri`, and similar formats |
+| `format` | one of `email`, `uuid`, `date`, `date-time`, `uri` |
 | `description` | public documentation text |
 
 Unknown params are rejected.
 
 `minimum` and `maximum` are integer-valued bounds and apply to `integer` and `number` params. JSON numbers are accepted for numeric params; `integer` rejects fractional values.
+
+`format` accepts only the five values listed above; any other value is rejected at startup. `minLength` and `maxLength` must be `0` or greater, and `minLength` must not exceed `maxLength`.
 
 ## Policy
 
@@ -178,13 +194,15 @@ Unknown params are rejected.
 
 | Field | Description |
 |---|---|
-| `readonly` | `true` allows read-only SQL only |
+| `readonly` | `true` allows read-only SQL only (the statement must begin with `SELECT`) |
 | `timeout` | execution timeout, such as `5s` |
 | `max_rows` | maximum rows returned |
 | `max_bytes` | maximum response size, such as `256KB` |
 | `expose_in_openapi` | whether to include the capability in OpenAPI and MCP tools/list |
 
 Use read-only DB users for read capabilities. YAML policy is an application guard; DB privileges should still enforce least privilege.
+
+`timeout` accepts a Go duration string such as `5s` or `500ms`. `max_bytes` accepts a byte size with an optional `B`, `KB`, `MB`, or `GB` suffix, such as `256KB`; a bare number is treated as bytes.
 
 When `readonly` is `true`, startup lint rejects non-read-only SQL. `timeout`, `max_rows`, and `max_bytes` are enforced during capability execution.
 
