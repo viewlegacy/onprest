@@ -11,9 +11,13 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqID := newID()
 	name := capabilityFromPath(r.URL.Path)
-	key, ok := s.authenticate(w, r)
-	if !ok {
-		s.accessLog(reqID, "", name, http.StatusUnauthorized, errGatewayAuthFailed, "invalid api key", start)
+	key, authStatus := s.authenticate(w, r)
+	if authStatus != 0 {
+		code, message := errGatewayAuthFailed, "invalid api key"
+		if authStatus == http.StatusTooManyRequests {
+			code, message = errGatewayRateLimited, "authentication is busy; retry later"
+		}
+		s.accessLog(reqID, "", name, authStatus, code, message, start)
 		return
 	}
 	if name == "" || strings.Contains(name, "/") {
@@ -60,8 +64,8 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.authenticate(w, r)
-	if !ok {
+	key, authStatus := s.authenticate(w, r)
+	if authStatus != 0 {
 		return
 	}
 	s.agentMu.RLock()

@@ -38,7 +38,7 @@ make quickstart-db
 
 This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the `legacy` database, creates the `readonly_user` account used by `examples/capability.postgres.yaml`, and seeds the `customers` table. If `127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml` to use the same alternate port.
 
-For real deployments, generate fresh keys and edit your own `capability.yaml`.
+For real deployments, generate fresh keys and edit your own `capability.yaml`. The example's `ws://localhost` URL is for loopback development only; a non-loopback deployment must use `wss://` as described in [Deployment](/operations/deployment).
 
 ## 2. Generate Agent Keys
 

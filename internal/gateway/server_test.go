@@ -218,8 +218,8 @@ func TestAuthenticateAcceptsBearerAndXAPIKey(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 			req.Header = tc.header
 			rec := httptest.NewRecorder()
-			key, ok := s.authenticate(rec, req)
-			if !ok {
+			key, status := s.authenticate(rec, req)
+			if status != 0 {
 				t.Fatalf("authenticate() failed: status=%d body=%s", rec.Code, rec.Body.String())
 			}
 			if key.Name != "dev" {
@@ -242,7 +242,7 @@ func TestAuthenticateRejectsMissingAndInvalidAPIKey(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 			req.Header = tc.header
 			rec := httptest.NewRecorder()
-			if _, ok := s.authenticate(rec, req); ok {
+			if _, status := s.authenticate(rec, req); status == 0 {
 				t.Fatal("authenticate() ok = true, want false")
 			}
 			if rec.Code != http.StatusUnauthorized {
@@ -250,6 +250,36 @@ func TestAuthenticateRejectsMissingAndInvalidAPIKey(t *testing.T) {
 			}
 			assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayAuthFailed, "invalid api key")
 		})
+	}
+}
+
+func TestAuthenticateRejectsImmediatelyWhenBcryptConcurrencyIsSaturated(t *testing.T) {
+	s, logs, _ := testServer(t)
+	for i := 0; i < cap(s.apiKeyAuthSlots); i++ {
+		s.apiKeyAuthSlots <- struct{}{}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	req.Header.Set("Authorization", "Bearer attacker-controlled-unique-token")
+	rec := httptest.NewRecorder()
+	if _, status := s.authenticate(rec, req); status == 0 {
+		t.Fatal("authentication succeeded while bcrypt slots were saturated")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusTooManyRequests, rec.Body.String())
+	}
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayRateLimited, "authentication is busy; retry later")
+
+	httpReq := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{}`))
+	httpReq.Header.Set("Authorization", "Bearer another-uncached-token")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpRec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(httpRec, httpReq)
+	if httpRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("handler status = %d, want %d", httpRec.Code, http.StatusTooManyRequests)
+	}
+	entry := lastLogEntry(t, logs)
+	if entry["http_status"] != float64(http.StatusTooManyRequests) || entry["error_code"] != errGatewayRateLimited {
+		t.Fatalf("authentication saturation access log = %#v", entry)
 	}
 }
 
@@ -421,7 +451,7 @@ func TestCapabilityEndpointUsesDirectParamsBody(t *testing.T) {
 		if _, nested := req.Params["params"]; nested {
 			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Message: "nested params are not expected"}}
 		}
-		if req.Params["id"] != float64(7) {
+		if id, ok := req.Params["id"].(json.Number); !ok || id.String() != "7" {
 			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Message: "missing direct id"}}
 		}
 		return agentResponse{ID: req.ID, Result: json.RawMessage(agentPayload)}
@@ -584,6 +614,29 @@ func TestMCPAcceptsNotificationWithoutResponseBody(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Fatalf("notification body = %q, want empty", rec.Body.String())
+	}
+}
+
+func TestMCPToolCallPreservesInt64ArgumentsAndStructuredContent(t *testing.T) {
+	const boundary = "9007199254740993"
+	s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		id, ok := req.Params["id"].(json.Number)
+		if !ok || id.String() != boundary {
+			t.Errorf("agent param id = %#v (%T), want json.Number(%s)", req.Params["id"], req.Params["id"], boundary)
+		}
+		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"data":[{"id":` + boundary + `}],"count":1}`)}
+	})
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":`+boundary+`}}}`))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	rec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"id":`+boundary) {
+		t.Fatalf("MCP response lost int64 precision: %s", rec.Body.String())
 	}
 }
 
@@ -1077,27 +1130,27 @@ func TestAuthenticateAgentRejectsInvalidHeadersAndReplay(t *testing.T) {
 		t.Fatal("missing headers authenticated")
 	}
 
-	badSignature := signedAgentRequest(t, "/ws/agent", time.Now().UTC(), "nonce-bad")
+	badSignature := signedAgentRequest(t, s, "/ws/agent", time.Now().UTC(), "nonce-bad")
 	badSignature.Header.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)))
 	if s.authenticateAgent(badSignature) {
 		t.Fatal("bad signature authenticated")
 	}
 
-	old := signedAgentRequest(t, "/ws/agent", time.Now().Add(-6*time.Minute).UTC(), "nonce-old")
+	old := signedAgentRequest(t, s, "/ws/agent", time.Now().Add(-6*time.Minute).UTC(), "nonce-old")
 	if s.authenticateAgent(old) {
 		t.Fatal("stale timestamp authenticated")
 	}
 
-	future := signedAgentRequest(t, "/ws/agent", time.Now().Add(2*time.Minute).UTC(), "nonce-future")
+	future := signedAgentRequest(t, s, "/ws/agent", time.Now().Add(2*time.Minute).UTC(), "nonce-future")
 	if s.authenticateAgent(future) {
 		t.Fatal("future timestamp authenticated")
 	}
 
-	replay := signedAgentRequest(t, "/ws/agent", time.Now().UTC(), "nonce-replay")
+	replay := signedAgentRequest(t, s, "/ws/agent", time.Now().UTC(), "nonce-replay")
 	if !s.authenticateAgent(replay) {
 		t.Fatal("valid signed request rejected")
 	}
-	replayAgain := signedAgentRequest(t, "/ws/agent", time.Now().UTC(), "nonce-replay")
+	replayAgain := signedAgentRequest(t, s, "/ws/agent", time.Now().UTC(), "nonce-replay")
 	if s.authenticateAgent(replayAgain) {
 		t.Fatal("replayed nonce authenticated")
 	}
@@ -1117,7 +1170,7 @@ func TestAgentWebSocketHTTPErrorMessages(t *testing.T) {
 	t.Run("already connected", func(t *testing.T) {
 		s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
 		s.agent = &agentConn{conn: silentAgentConn{}, pending: map[string]chan agentResponse{}}
-		req := signedAgentRequest(t, "/ws/agent", time.Now().UTC(), "nonce-already-connected")
+		req := signedAgentRequest(t, s, "/ws/agent", time.Now().UTC(), "nonce-already-connected")
 		rec := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusConflict {
@@ -1180,7 +1233,9 @@ func (f *fakeAgentConn) ReadText() ([]byte, error) {
 
 func (f *fakeAgentConn) WriteText(msg []byte) error {
 	var req agentRequest
-	if err := json.Unmarshal(msg, &req); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(msg))
+	dec.UseNumber()
+	if err := dec.Decode(&req); err != nil {
 		return err
 	}
 	resp := agentResponse{ID: req.ID, Result: json.RawMessage(`{"rows":[],"count":0}`)}
@@ -1305,25 +1360,30 @@ func logEntries(t *testing.T, logs *bytes.Buffer) []map[string]any {
 	return entries
 }
 
-func signedAgentRequest(t *testing.T, path string, ts time.Time, nonce string) *http.Request {
+func signedAgentRequest(t *testing.T, s *Server, path string, ts time.Time, nonce string) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
-	req.Header = signedAgentHeaders(t, path, ts, nonce)
+	req.Header = signedAgentHeaders(t, s, path, ts, nonce)
 	return req
 }
 
-func signedAgentHeaders(t *testing.T, path string, ts time.Time, nonce string) http.Header {
+func signedAgentHeaders(t *testing.T, s *Server, path string, ts time.Time, nonce string) http.Header {
 	t.Helper()
 	privateKeyBytes, err := base64.RawURLEncoding.DecodeString(testAgentPrivateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	timestamp := ts.Format(time.RFC3339)
-	signature := ed25519.Sign(ed25519.PrivateKey(privateKeyBytes), agentAuthMessage(path, timestamp, nonce))
+	challenge := "test-challenge-" + nonce
+	s.authMu.Lock()
+	s.agentChallenges[challenge] = time.Now()
+	s.authMu.Unlock()
+	signature := ed25519.Sign(ed25519.PrivateKey(privateKeyBytes), agentAuthMessage(path, timestamp, nonce, challenge))
 	headers := http.Header{}
 	headers.Set("Sec-WebSocket-Key", testHandshakeKey)
 	headers.Set("X-Agent-Timestamp", timestamp)
 	headers.Set("X-Agent-Nonce", nonce)
+	headers.Set("X-Agent-Challenge", challenge)
 	headers.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(signature))
 	return headers
 }

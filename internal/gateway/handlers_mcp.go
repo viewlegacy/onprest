@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,8 +12,8 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
 		return
 	}
-	key, ok := s.authenticate(w, r)
-	if !ok {
+	key, authStatus := s.authenticate(w, r)
+	if authStatus != 0 {
 		return
 	}
 	var req struct {
@@ -70,7 +71,7 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	}
-	if err := json.Unmarshal(rawParams, &params); err != nil || params.Name == "" {
+	if err := decodeJSONNumber(rawParams, &params); err != nil || params.Name == "" {
 		writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "invalid tools/call params")
 		return
 	}
@@ -94,11 +95,20 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 		return
 	}
 	var structured any
-	_ = json.Unmarshal(result.Payload, &structured)
+	_ = decodeJSONNumber(result.Payload, &structured)
 	writeMCP(w, id, map[string]any{
 		"content":           []any{map[string]any{"type": "text", "text": string(result.Payload)}},
 		"structuredContent": structured,
 	}, nil)
+}
+
+func decodeJSONNumber(raw []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	return ensureJSONEOF(dec)
 }
 
 func ensureJSONEOF(dec *json.Decoder) error {

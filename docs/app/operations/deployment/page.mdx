@@ -65,6 +65,10 @@ For the agent, configure `capability.yaml` and pass it with `--config`. If `--co
 AGENT_CAPABILITY_FILE=/path/to/capability.yaml
 ```
 
+Production `gateway.url` values must use `wss://.../ws/agent`. Plain `ws://` is accepted without an override only on loopback for local development. The `allow_insecure_non_loopback_ws` acknowledgement exists for isolated development networks, not production deployment.
+
+The challenge-based `onprest-agent-v2` handshake requires matching gateway and agent releases. An old agent cannot authenticate to a new gateway, and a new agent cannot obtain a challenge from an old gateway. Schedule the two binaries as one coordinated upgrade.
+
 For OS-managed binary operation, register the agent and start it through the host service manager:
 
 ```bash

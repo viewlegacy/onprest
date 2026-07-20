@@ -20,7 +20,9 @@ type Server struct {
 	agent           *agentConn
 	authMu          sync.Mutex
 	nonces          map[string]time.Time
+	agentChallenges map[string]time.Time
 	apiKeyCache     map[[sha256.Size]byte]cachedAPIKey
+	apiKeyAuthSlots chan struct{}
 	openapi         map[string]any
 	rateMu          sync.Mutex
 	rate            map[string]*bucket
@@ -88,10 +90,11 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	if cfg.MaxRequestBodyBytes <= 0 {
 		cfg.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
 	}
-	s := &Server{cfg: cfg, logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}}
+	s := &Server{cfg: cfg, logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, agentChallenges: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}, apiKeyAuthSlots: make(chan struct{}, maxConcurrentAPIKeyAuthentications)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/ws/agent", s.handleAgentWS)
+	mux.HandleFunc("/ws/agent/challenge", s.handleAgentChallenge)
 	mux.HandleFunc("/api/v1/capabilities/", s.handleCapability)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/mcp", s.handleMCP)

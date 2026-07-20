@@ -103,6 +103,12 @@ func TestAgentRejectsUnknownCapabilityFromCompromisedGateway(t *testing.T) {
 	responseCh := make(chan protocol.Response, 1)
 	srv := &http.Server{Addr: addr}
 	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/ws/agent/challenge" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"challenge":"compromised-gateway-challenge"}`)
+			return
+		}
 		conn, err := ws.Accept(w, r)
 		if err != nil {
 			t.Errorf("accept fake gateway websocket: %v", err)

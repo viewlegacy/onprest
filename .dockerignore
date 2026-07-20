@@ -5,8 +5,7 @@ docs/.next
 docs/node_modules
 docs/public/_pagefind
 
-it/local/*
-!it/local/.gitignore
+it/local
 
 .DS_Store
 *.log

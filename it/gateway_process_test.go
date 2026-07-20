@@ -179,5 +179,5 @@ func waitForHealthAgentState(t *testing.T, baseURL string, want bool) {
 
 func wsDialForError(t *testing.T, gatewayURL string, privateKey ed25519.PrivateKey) (*ws.Conn, error) {
 	t.Helper()
-	return ws.Dial(2*time.Second, gatewayURL, signedAgentHeaders(t, privateKey, "/ws/agent"))
+	return ws.Dial(2*time.Second, gatewayURL, signedAgentHeaders(t, gatewayURL, privateKey, "/ws/agent"))
 }

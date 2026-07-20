@@ -19,6 +19,8 @@ import (
 	"github.com/viewlegacy/onprest/internal/ws"
 )
 
+const agentResponseWriteTimeout = 5 * time.Second
+
 type Runner struct {
 	cfg             Config
 	cf              *CapabilityFile
@@ -92,8 +94,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer r.detailLogCloser.Close()
 	}
 	for ctx.Err() == nil {
+		challengeCtx, challengeCancel := context.WithTimeout(ctx, 10*time.Second)
+		challenge, err := fetchAgentChallenge(challengeCtx, r.cf.Gateway.URL)
+		challengeCancel()
+		if err != nil {
+			r.log("gateway_connect_failed", map[string]any{"error": err.Error()})
+			sleep(ctx, r.cfg.ReconnectEvery)
+			continue
+		}
 		headers := http.Header{}
-		if err := setAgentAuthHeaders(headers, r.cf.Gateway.AgentPrivateKey, "/ws/agent"); err != nil {
+		if err := setAgentAuthHeaders(headers, r.cf.Gateway.AgentPrivateKey, "/ws/agent", challenge); err != nil {
 			r.log("agent_auth_failed", map[string]any{"error": err.Error()})
 			return err
 		}
@@ -112,7 +122,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 	connCtx, cancel := context.WithCancel(ctx)
-	defer conn.Close()
+	maxConcurrent := *r.cf.Runtime.MaxConcurrentRequests
+	requests := make(chan protocol.Request, maxConcurrent)
+	responses := make(chan protocol.Response, maxConcurrent*2+1)
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -121,12 +133,47 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 		case <-done:
 		}
 	}()
-	defer close(done)
-	sem := make(chan struct{}, *r.cf.Runtime.MaxConcurrentRequests)
 	var workers sync.WaitGroup
+	workers.Add(maxConcurrent + 1)
+	for range maxConcurrent {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case req := <-requests:
+					resp := r.handle(connCtx, req)
+					select {
+					case responses <- resp:
+					case <-connCtx.Done():
+						return
+					}
+				case <-connCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer workers.Done()
+		for {
+			select {
+			case resp := <-responses:
+				if err := conn.WriteTextWithDeadline(protocol.MustJSON(resp), agentResponseWriteTimeout); err != nil {
+					r.log("gateway_write_failed", map[string]any{"error": err.Error()})
+					cancel()
+					_ = conn.Close()
+					return
+				}
+			case <-connCtx.Done():
+				return
+			}
+		}
+	}()
 	defer func() {
 		cancel()
+		_ = conn.Close()
 		workers.Wait()
+		close(done)
 	}()
 	for connCtx.Err() == nil {
 		msg, err := conn.ReadText()
@@ -139,25 +186,28 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 		dec.UseNumber()
 		if err := dec.Decode(&req); err != nil {
 			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request", "invalid gateway request: "+err.Error(), "")
-			_ = conn.WriteText(protocol.MustJSON(protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}))
+			select {
+			case responses <- protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
+			case <-connCtx.Done():
+				return
+			}
 			continue
 		}
 		select {
-		case sem <- struct{}{}:
+		case requests <- req:
 		case <-connCtx.Done():
 			return
-		}
-		workers.Add(1)
-		go func(req protocol.Request) {
-			defer workers.Done()
-			defer func() { <-sem }()
-			resp := r.handle(connCtx, req)
-			if err := conn.WriteText(protocol.MustJSON(resp)); err != nil {
-				r.log("gateway_write_failed", map[string]any{"error": err.Error()})
+		default:
+			select {
+			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_BUSY", Message: "agent request queue is full"}}:
+			case <-connCtx.Done():
+				return
+			default:
 				cancel()
 				_ = conn.Close()
+				return
 			}
-		}(req)
+		}
 	}
 }
 

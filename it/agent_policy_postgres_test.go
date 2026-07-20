@@ -3,9 +3,11 @@
 package it
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	agentpkg "github.com/viewlegacy/onprest/internal/agent"
+	"github.com/viewlegacy/onprest/internal/gateway"
 )
 
 func TestPostgresPolicyAndQueryFailures(t *testing.T) {
@@ -256,8 +259,13 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
         type: integer`)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	baseURL := startInternalGateway(t, ctx, addr, secrets, 5*time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	baseURL := startInternalGatewayWithConfig(t, ctx, addr, secrets, 5*time.Second, io.Discard, func(cfg *gateway.Config) {
+		cfg.AgentPingInterval = 50 * time.Millisecond
+		cfg.AgentPongTimeout = 50 * time.Millisecond
+		cfg.AgentWriteTimeout = 100 * time.Millisecond
+	})
+	var agentLogs bytes.Buffer
+	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, &agentLogs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,10 +291,30 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 	}()
 
 	assertPostgresQueryRemainsInactive(t, db, "onprest_it_concurrency_second", 500*time.Millisecond)
+	waitForHealthAgentState(t, baseURL, true)
 	select {
 	case got := <-second:
 		t.Fatalf("second request completed before the configured single worker was released: status=%d body=%s err=%v", got.status, got.body, got.err)
 	default:
+	}
+
+	busyStart := time.Now()
+	busyStatus, busyBody := postCapability(t, baseURL, secrets.APIKey, "second_blocking_query", `{}`)
+	if busyStatus != http.StatusServiceUnavailable {
+		t.Fatalf("REST request beyond bounded queue status=%d body=%s", busyStatus, busyBody)
+	}
+	requireAPIErrorCode(t, busyBody, "AGENT_BUSY")
+	if elapsed := time.Since(busyStart); elapsed > 750*time.Millisecond {
+		t.Fatalf("REST bounded-queue rejection waited %s instead of failing promptly", elapsed)
+	}
+
+	mcpBusyStart := time.Now()
+	mcpBusy := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":"busy","method":"tools/call","params":{"name":"second_blocking_query","arguments":{}}}`)
+	if !bytes.Contains(mcpBusy, []byte(`"isError":true`)) || !bytes.Contains(mcpBusy, []byte(`"code":"AGENT_BUSY"`)) {
+		t.Fatalf("MCP request beyond bounded queue did not return an AGENT_BUSY tool result: %s", mcpBusy)
+	}
+	if elapsed := time.Since(mcpBusyStart); elapsed > 750*time.Millisecond {
+		t.Fatalf("MCP bounded-queue rejection waited %s instead of failing promptly", elapsed)
 	}
 
 	for _, request := range []struct {
@@ -301,6 +329,9 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 		case <-time.After(6 * time.Second):
 			t.Fatalf("%s request did not finish", request.name)
 		}
+	}
+	if connections := strings.Count(agentLogs.String(), `"event":"gateway_connected"`); connections != 1 {
+		t.Fatalf("agent connection generation changed while workers were saturated: connections=%d logs=%s", connections, agentLogs.String())
 	}
 	cancel()
 	select {

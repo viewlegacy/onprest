@@ -146,7 +146,7 @@ func TestAPIKeySuccessCacheIsBoundedAndStoresOnlyDigests(t *testing.T) {
 	s, _, apiKey := testServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	if _, ok := s.authenticate(httptest.NewRecorder(), req); !ok {
+	if _, status := s.authenticate(httptest.NewRecorder(), req); status != 0 {
 		t.Fatal("valid key rejected")
 	}
 	if len(s.apiKeyCache) != 1 {
@@ -185,19 +185,78 @@ func TestRateLimitBucketCleanupAndHardCap(t *testing.T) {
 func TestInvalidSignatureDoesNotConsumeNonceAndSignatureIsBoundToHandshakeKey(t *testing.T) {
 	s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
 	nonce := "nonce-not-consumed"
-	bad := signedAgentRequest(t, "/ws/agent", time.Now().UTC(), nonce)
+	good := signedAgentRequest(t, s, "/ws/agent", time.Now().UTC(), nonce)
+	bad := good.Clone(good.Context())
+	bad.Header = good.Header.Clone()
 	bad.Header.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)))
 	if s.authenticateAgent(bad) {
 		t.Fatal("invalid signature authenticated")
 	}
-	if !s.authenticateAgent(signedAgentRequest(t, "/ws/agent", time.Now().UTC(), nonce)) {
+	if !s.authenticateAgent(good) {
 		t.Fatal("valid signature rejected after invalid attempt reused nonce")
 	}
 
-	bound := signedAgentRequest(t, "/ws/agent", time.Now().UTC(), "nonce-key-binding")
+	bound := signedAgentRequest(t, s, "/ws/agent", time.Now().UTC(), "nonce-key-binding")
 	bound.Header.Set("Sec-WebSocket-Key", "MDEyMzQ1Njc4OWFiY2RlZg==")
 	if s.authenticateAgent(bound) {
 		t.Fatal("signature authenticated with a different handshake key")
+	}
+}
+
+func TestCapturedHandshakeIsRejectedAfterGatewayRestart(t *testing.T) {
+	first := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
+	captured := signedAgentRequest(t, first, "/ws/agent", time.Now().UTC(), "captured-handshake")
+	if !first.authenticateAgent(captured.Clone(captured.Context())) {
+		t.Fatal("original handshake did not authenticate")
+	}
+	if first.authenticateAgent(captured.Clone(captured.Context())) {
+		t.Fatal("captured handshake authenticated twice in the issuing gateway")
+	}
+	second := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
+	if second.authenticateAgent(captured.Clone(captured.Context())) {
+		t.Fatal("captured handshake authenticated after gateway restart")
+	}
+}
+
+func TestExpiredAgentChallengeIsRejected(t *testing.T) {
+	s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
+	req := signedAgentRequest(t, s, "/ws/agent", time.Now().UTC(), "expired-challenge")
+	challenge := req.Header.Get("X-Agent-Challenge")
+	s.authMu.Lock()
+	s.agentChallenges[challenge] = time.Now().Add(-agentChallengeTTL - time.Second)
+	s.authMu.Unlock()
+	if s.authenticateAgent(req) {
+		t.Fatal("expired agent challenge authenticated")
+	}
+	s.authMu.Lock()
+	_, retained := s.agentChallenges[challenge]
+	s.authMu.Unlock()
+	if retained {
+		t.Fatal("expired agent challenge was not removed")
+	}
+}
+
+func TestAgentChallengeEndpointIsOneTimeBoundedAndNotCacheable(t *testing.T) {
+	s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
+	get := httptest.NewRequest(http.MethodGet, "/ws/agent/challenge", nil)
+	getRec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(getRec, get)
+	if getRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET challenge status = %d", getRec.Code)
+	}
+	for i := 0; i < maxAgentChallenges+1; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/ws/agent/challenge", nil)
+		rec := httptest.NewRecorder()
+		s.httpSrv.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("POST challenge status=%d cache=%q body=%s", rec.Code, rec.Header().Get("Cache-Control"), rec.Body.String())
+		}
+	}
+	s.authMu.Lock()
+	count := len(s.agentChallenges)
+	s.authMu.Unlock()
+	if count != maxAgentChallenges {
+		t.Fatalf("challenge store size = %d, want %d", count, maxAgentChallenges)
 	}
 }
 
@@ -349,17 +408,39 @@ func dialSignedTestAgent(t *testing.T, rawURL, nonce string) *ws.Conn {
 	}
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	path := "/ws/agent"
-	signature := ed25519.Sign(ed25519.PrivateKey(privateKey), protocol.AgentAuthMessage(path, timestamp, nonce, key))
+	challenge := fetchTestAgentChallenge(t, rawURL)
+	signature := ed25519.Sign(ed25519.PrivateKey(privateKey), protocol.AgentAuthMessage(path, timestamp, nonce, challenge, key))
 	headers := http.Header{}
 	headers.Set("Sec-WebSocket-Key", key)
 	headers.Set("X-Agent-Timestamp", timestamp)
 	headers.Set("X-Agent-Nonce", nonce)
+	headers.Set("X-Agent-Challenge", challenge)
 	headers.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(signature))
 	conn, err := ws.Dial(time.Second, rawURL, headers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return conn
+}
+
+func fetchTestAgentChallenge(t *testing.T, rawURL string) string {
+	t.Helper()
+	challengeURL := "http" + strings.TrimPrefix(strings.TrimSuffix(rawURL, "/ws/agent"), "ws") + "/ws/agent/challenge"
+	resp, err := http.Post(challengeURL, "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("challenge status = %s", resp.Status)
+	}
+	var body struct {
+		Challenge string `json:"challenge"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.Challenge == "" {
+		t.Fatalf("decode challenge: %v", err)
+	}
+	return body.Challenge
 }
 
 func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool, description string) {

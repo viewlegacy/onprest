@@ -19,6 +19,7 @@ const (
 	errAgentQueryTimeout         = "AGENT_QUERY_TIMEOUT"
 	errAgentDBUnreachable        = "AGENT_DB_UNREACHABLE"
 	errAgentInternal             = "AGENT_INTERNAL_ERROR"
+	errAgentBusy                 = "AGENT_BUSY"
 	errJSONRPCParseError         = "PARSE_ERROR"
 	errJSONRPCInvalidRequest     = "INVALID_REQUEST"
 	errJSONRPCMethodNotFound     = "METHOD_NOT_FOUND"
@@ -45,6 +46,8 @@ func agentErrorStatus(code string) (int, string) {
 		return http.StatusBadGateway, errAgentDBUnreachable
 	case errAgentInternal:
 		return http.StatusBadGateway, errAgentInternal
+	case errAgentBusy:
+		return http.StatusServiceUnavailable, errAgentBusy
 	default:
 		return http.StatusBadGateway, code
 	}

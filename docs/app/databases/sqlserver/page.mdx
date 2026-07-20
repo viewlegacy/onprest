@@ -44,3 +44,5 @@ This can have permission implications. Confirm the DB user has the permissions r
 ```bash
 go test -tags=integration ./it/... -args -onprest-it-db=sqlserver
 ```
+
+The release suite starts a SQL Server container with forced TLS and checks that both modes negotiate encryption, `verify-full` accepts the correct CA and hostname, and rejects a wrong CA or hostname. This is a real TDS connection test, not only a DSN-string assertion.

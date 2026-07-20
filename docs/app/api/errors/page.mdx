@@ -12,6 +12,7 @@ Onprest returns stable error codes with public client-facing messages, and keeps
 | 429 | `GATEWAY_RATE_LIMITED` | Rate limit exceeded |
 | 500 | `GATEWAY_INTERNAL_ERROR` | Unexpected gateway error |
 | 503 | `GATEWAY_AGENT_OFFLINE` | Agent is not connected |
+| 503 | `AGENT_BUSY` | Agent execution slots and bounded waiting queue are full |
 | 504 | `GATEWAY_TIMEOUT` | Agent response timed out |
 | 400 | `AGENT_VALIDATION_FAILED` | Agent rejected params (REST) |
 | 502 | `AGENT_QUERY_FAILED` | SQL execution failed |
@@ -73,6 +74,7 @@ For agent errors, gateway returns the agent's public `code` and `message` unchan
 | `AGENT_QUERY_TIMEOUT` | `query exceeded policy.timeout` |
 | `AGENT_DB_UNREACHABLE` | `database is unreachable` |
 | `AGENT_INTERNAL_ERROR` | `agent internal error` |
+| `AGENT_BUSY` | `agent request queue is full` |
 
 Validation messages use the parameter name but never the submitted value.
 

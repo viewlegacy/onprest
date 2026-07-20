@@ -16,9 +16,11 @@ This gate verifies:
 - PostgreSQL integration tests 3 consecutive times
 - PostgreSQL DB interruption stability 5 consecutive times
 - all-DB smoke path
+- MySQL special-character credential connection
+- SQL Server `require` / `verify-full` TLS against a TLS-enabled real database, including wrong CA and hostname rejection
 - Docker image operational tests
 - Docker Compose env-file operational tests
-- skip count is zero in required mode
+- test/subtest skip count is zero in required mode (`go test -json` package records with no `Test` field are not test skips)
 - testcontainers residue is zero
 
 ## GitHub Actions

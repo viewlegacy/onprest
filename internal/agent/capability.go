@@ -41,8 +41,9 @@ type ServiceDef struct {
 }
 
 type GatewayDef struct {
-	URL             string `json:"url" yaml:"url"`
-	AgentPrivateKey string `json:"agent_private_key" yaml:"agent_private_key"`
+	URL                      string `json:"url" yaml:"url"`
+	AgentPrivateKey          string `json:"agent_private_key" yaml:"agent_private_key"`
+	AllowInsecureNonLoopback bool   `json:"allow_insecure_non_loopback_ws,omitempty" yaml:"allow_insecure_non_loopback_ws,omitempty"`
 }
 
 type DatabaseDef struct {
@@ -146,6 +147,9 @@ func (cf *CapabilityFile) Lint() error {
 	if cf.Gateway.URL == "" {
 		return errors.New("gateway.url is required")
 	}
+	if err := lintGatewayURL(cf.Gateway.URL, cf.Gateway.AllowInsecureNonLoopback); err != nil {
+		return err
+	}
 	if cf.Gateway.AgentPrivateKey == "" {
 		return errors.New("gateway.agent_private_key is required")
 	}
@@ -177,7 +181,7 @@ func (cf *CapabilityFile) Lint() error {
 		if err := cap.Policy.lint(name + ".policy"); err != nil {
 			return err
 		}
-		if readonly(cap.Policy) && !isReadOnlySQL(cap.SQL) {
+		if readonly(cap.Policy) && !isReadOnlySQL(cf.Database.Driver, cap.SQL) {
 			return fmt.Errorf("%s.sql must be read-only when policy.readonly is true", name)
 		}
 		for pname, p := range cap.Params {
@@ -191,6 +195,28 @@ func (cf *CapabilityFile) Lint() error {
 			}
 		}
 		cf.Capabilities[name] = cap
+	}
+	return nil
+}
+
+func lintGatewayURL(raw string, allowInsecureNonLoopback bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return errors.New("gateway.url must be a valid ws:// or wss:// URL")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "/ws/agent" {
+		return errors.New("gateway.url must use the exact /ws/agent path without credentials, query, or fragment")
+	}
+	if u.Scheme == "wss" {
+		return nil
+	}
+	if u.Scheme != "ws" {
+		return errors.New("gateway.url must use ws:// or wss://")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) && !allowInsecureNonLoopback {
+		return errors.New("gateway.url must use wss:// for non-loopback hosts; the explicit insecure override is for isolated development only")
 	}
 	return nil
 }
@@ -492,21 +518,30 @@ func parseByteSize(raw string) (int64, error) {
 	return n * multiplier, nil
 }
 
-func isReadOnlySQL(query string) bool {
+func isReadOnlySQL(driver, query string) bool {
 	keyword := firstSQLKeyword(query)
-	return keyword == "select" && hasSingleSQLStatement(query)
+	return keyword == "select" && hasSingleSQLStatement(driver, query)
 }
 
-func hasSingleSQLStatement(query string) bool {
+func hasSingleSQLStatement(driver, query string) bool {
 	for i := 0; i < len(query); {
 		switch {
-		case query[i] == '\'', query[i] == '"':
-			i = skipSQLQuoted(query, i, query[i])
+		case query[i] == '\'':
+			backslashEscapes := driver == "postgres" && isPostgresEscapeStringPrefix(query, i)
+			i = skipSQLQuoted(query, i, '\'', backslashEscapes)
+		case query[i] == '"':
+			i = skipSQLQuoted(query, i, '"', false)
+		case driver == "mysql" && query[i] == '`':
+			i = skipSQLQuoted(query, i, '`', false)
+		case driver == "sqlserver" && query[i] == '[':
+			i = skipSQLBracketIdentifier(query, i)
+		case driver == "oracle" && isOracleAlternativeQuotePrefix(query, i):
+			i = skipOracleAlternativeQuote(query, i)
 		case i+1 < len(query) && query[i:i+2] == "--":
 			i = skipSQLLineComment(query, i)
 		case i+1 < len(query) && query[i:i+2] == "/*":
 			i = skipSQLBlockComment(query, i)
-		case query[i] == '$':
+		case driver == "postgres" && query[i] == '$':
 			if next, ok := skipSQLDollarQuote(query, i); ok {
 				i = next
 			} else {
@@ -521,9 +556,9 @@ func hasSingleSQLStatement(query string) bool {
 	return true
 }
 
-func skipSQLQuoted(query string, start int, quote byte) int {
+func skipSQLQuoted(query string, start int, quote byte, backslashEscapes bool) int {
 	for i := start + 1; i < len(query); i++ {
-		if query[i] == '\\' && i+1 < len(query) {
+		if backslashEscapes && query[i] == '\\' && i+1 < len(query) {
 			i++
 			continue
 		}
@@ -535,6 +570,55 @@ func skipSQLQuoted(query string, start int, quote byte) int {
 			continue
 		}
 		return i + 1
+	}
+	return len(query)
+}
+
+func isPostgresEscapeStringPrefix(query string, quote int) bool {
+	if quote == 0 || (query[quote-1] != 'e' && query[quote-1] != 'E') {
+		return false
+	}
+	return quote == 1 || !isIdent(query[quote-2])
+}
+
+func skipSQLBracketIdentifier(query string, start int) int {
+	for i := start + 1; i < len(query); i++ {
+		if query[i] != ']' {
+			continue
+		}
+		if i+1 < len(query) && query[i+1] == ']' {
+			i++
+			continue
+		}
+		return i + 1
+	}
+	return len(query)
+}
+
+func isOracleAlternativeQuotePrefix(query string, quote int) bool {
+	if quote+2 >= len(query) || (query[quote] != 'q' && query[quote] != 'Q') || query[quote+1] != '\'' {
+		return false
+	}
+	return quote == 0 || !isIdent(query[quote-1])
+}
+
+func skipOracleAlternativeQuote(query string, start int) int {
+	opening := query[start+2]
+	closing := opening
+	switch opening {
+	case '[':
+		closing = ']'
+	case '(':
+		closing = ')'
+	case '{':
+		closing = '}'
+	case '<':
+		closing = '>'
+	}
+	for i := start + 3; i+1 < len(query); i++ {
+		if query[i] == closing && query[i+1] == '\'' {
+			return i + 2
+		}
 	}
 	return len(query)
 }

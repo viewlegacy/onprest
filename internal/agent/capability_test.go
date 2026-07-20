@@ -154,28 +154,37 @@ capabilities:
 
 func TestReadOnlySQLRejectsWithAndAllowsSelect(t *testing.T) {
 	tests := []struct {
-		name  string
-		query string
-		want  bool
+		name   string
+		driver string
+		query  string
+		want   bool
 	}{
-		{name: "select", query: "select id from customers where id = :id", want: true},
-		{name: "leading comments select", query: "-- comment\n/* block */\nSELECT id FROM customers", want: true},
-		{name: "with select", query: "with recent as (select id from customers) select id from recent", want: false},
-		{name: "with insert cte", query: "with inserted as (insert into customers(name) values (:name) returning id) select id from inserted", want: false},
-		{name: "update", query: "update customers set name = :name", want: false},
-		{name: "multiple statements", query: "select 1; update customers set name = 'x'", want: false},
-		{name: "semicolon in string", query: "select ';' as value", want: true},
-		{name: "semicolon in escaped string", query: `select 'it''s;fine' as value`, want: true},
-		{name: "semicolon in line comment", query: "select 1 -- ; ignored\n", want: true},
-		{name: "semicolon in block comment", query: "select /* ; ignored */ 1", want: true},
-		{name: "semicolon in dollar quote", query: "select $$; ignored$$", want: true},
-		{name: "trailing semicolon", query: "select 1; -- trailing comment", want: true},
-		{name: "second empty statement", query: "select 1;;", want: false},
+		{name: "select", driver: "postgres", query: "select id from customers where id = :id", want: true},
+		{name: "leading comments select", driver: "postgres", query: "-- comment\n/* block */\nSELECT id FROM customers", want: true},
+		{name: "with select", driver: "postgres", query: "with recent as (select id from customers) select id from recent", want: false},
+		{name: "with insert cte", driver: "postgres", query: "with inserted as (insert into customers(name) values (:name) returning id) select id from inserted", want: false},
+		{name: "update", driver: "postgres", query: "update customers set name = :name", want: false},
+		{name: "multiple statements", driver: "postgres", query: "select 1; update customers set name = 'x'", want: false},
+		{name: "semicolon in string", driver: "postgres", query: "select ';' as value", want: true},
+		{name: "semicolon in escaped string", driver: "postgres", query: `select 'it''s;fine' as value`, want: true},
+		{name: "semicolon in line comment", driver: "postgres", query: "select 1 -- ; ignored\n", want: true},
+		{name: "semicolon in block comment", driver: "postgres", query: "select /* ; ignored */ 1", want: true},
+		{name: "semicolon in dollar quote", driver: "postgres", query: "select $$; ignored$$", want: true},
+		{name: "trailing semicolon", driver: "postgres", query: "select 1; -- trailing comment", want: true},
+		{name: "second empty statement", driver: "postgres", query: "select 1;;", want: false},
+		{name: "postgres standard string backslash does not escape quote", driver: "postgres", query: `SELECT '\'; UPDATE protected_table SET value = 99`, want: false},
+		{name: "postgres explicit escape string", driver: "postgres", query: `SELECT E'escaped\'; still string'`, want: true},
+		{name: "sqlserver backslash does not escape quote", driver: "sqlserver", query: `SELECT '\'; UPDATE protected_table SET value = 99`, want: false},
+		{name: "oracle backslash does not escape quote", driver: "oracle", query: `SELECT '\' FROM dual; UPDATE protected_table SET value = 99`, want: false},
+		{name: "mysql conservative across sql modes", driver: "mysql", query: `SELECT '\'; UPDATE protected_table SET value = 99`, want: false},
+		{name: "mysql backtick identifier", driver: "mysql", query: "select `semi;colon` from customers", want: true},
+		{name: "sqlserver bracket identifier", driver: "sqlserver", query: "select [semi;colon] from customers", want: true},
+		{name: "oracle alternative quote", driver: "oracle", query: "select q'[semi;colon]' from dual", want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isReadOnlySQL(tc.query); got != tc.want {
-				t.Fatalf("isReadOnlySQL(%q) = %t, want %t", tc.query, got, tc.want)
+			if got := isReadOnlySQL(tc.driver, tc.query); got != tc.want {
+				t.Fatalf("isReadOnlySQL(%q, %q) = %t, want %t", tc.driver, tc.query, got, tc.want)
 			}
 		})
 	}
@@ -244,6 +253,33 @@ func TestCapabilityFileLintRequiredFieldsAndPolicy(t *testing.T) {
 			tc.mutate(cf)
 			if err := cf.Lint(); err == nil {
 				t.Fatal("Lint() error = nil, want error")
+			}
+		})
+	}
+}
+
+func TestGatewayURLRequiresWSSOutsideLoopback(t *testing.T) {
+	tests := []struct {
+		name          string
+		url           string
+		allowInsecure bool
+		wantErr       bool
+	}{
+		{name: "production wss", url: "wss://gateway.example.com/ws/agent"},
+		{name: "loopback hostname", url: "ws://localhost:8080/ws/agent"},
+		{name: "loopback ipv4", url: "ws://127.0.0.1:8080/ws/agent"},
+		{name: "loopback ipv6", url: "ws://[::1]:8080/ws/agent"},
+		{name: "non-loopback plaintext", url: "ws://10.0.0.8:8080/ws/agent", wantErr: true},
+		{name: "development override", url: "ws://gateway:8080/ws/agent", allowInsecure: true},
+		{name: "wrong path", url: "wss://gateway.example.com/agent", wantErr: true},
+		{name: "query forbidden", url: "wss://gateway.example.com/ws/agent?token=x", wantErr: true},
+		{name: "credentials forbidden", url: "wss://user@gateway.example.com/ws/agent", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := lintGatewayURL(tc.url, tc.allowInsecure)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("lintGatewayURL(%q, %t) error = %v, wantErr %t", tc.url, tc.allowInsecure, err, tc.wantErr)
 			}
 		})
 	}

@@ -139,6 +139,56 @@ func TestCloseWritesOneCloseFrameAndClosesTransportOnce(t *testing.T) {
 	}
 }
 
+func TestWriteDeadlineAndCloseUnblockCommunicationBlackhole(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	conn := &Conn{c: local, br: bufio.NewReader(local), isClient: true}
+	start := time.Now()
+	err := conn.WriteTextWithDeadline(bytes.Repeat([]byte("x"), 1<<20), 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("blackholed websocket write succeeded")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("write deadline took %s", elapsed)
+	}
+	start = time.Now()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Close blocked for %s after a stalled write", elapsed)
+	}
+}
+
+func TestCloseUnblocksConcurrentWriteWithoutDeadline(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	conn := &Conn{c: local, br: bufio.NewReader(local), isClient: true}
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- conn.WriteText(bytes.Repeat([]byte("x"), 1<<20))
+	}()
+
+	// net.Pipe has no buffering, so a peer that never reads leaves the write
+	// holding writeMu until Close's forced transport shutdown releases it.
+	time.Sleep(20 * time.Millisecond)
+	start := time.Now()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Close blocked for %s behind a concurrent stalled write", elapsed)
+	}
+	select {
+	case err := <-writeDone:
+		if err == nil {
+			t.Fatal("blackholed write succeeded after Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent stalled write did not unblock after Close")
+	}
+}
+
 func TestDialTimesOutDuringUpgradeResponse(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

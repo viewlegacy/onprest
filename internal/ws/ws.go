@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	guid           = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-	maxMessageSize = 16 << 20
+	guid                = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	maxMessageSize      = 16 << 20
+	controlWriteTimeout = 5 * time.Second
 )
 
 type Conn struct {
@@ -28,10 +29,12 @@ type Conn struct {
 	br       *bufio.Reader
 	isClient bool
 
-	writeMu        sync.Mutex
-	closeFrameOnce sync.Once
-	closeOnce      sync.Once
-	closeErr       error
+	writeMu            sync.Mutex
+	closeFrameOnce     sync.Once
+	closeOnce          sync.Once
+	transportCloseOnce sync.Once
+	closeErr           error
+	transportCloseErr  error
 
 	handlerMu   sync.RWMutex
 	pongHandler func()
@@ -207,7 +210,7 @@ func (c *Conn) ReadText() ([]byte, error) {
 			c.writeClose(payload)
 			return nil, io.EOF
 		case 9:
-			if err := c.writeFrame(10, payload); err != nil {
+			if err := c.writeFrameWithDeadline(10, payload, controlWriteTimeout); err != nil {
 				return nil, err
 			}
 		case 10:
@@ -224,6 +227,10 @@ func (c *Conn) ReadText() ([]byte, error) {
 }
 
 func (c *Conn) WriteText(payload []byte) error { return c.writeFrame(1, payload) }
+
+func (c *Conn) WriteTextWithDeadline(payload []byte, timeout time.Duration) error {
+	return c.writeFrameWithDeadline(1, payload, timeout)
+}
 
 func (c *Conn) WritePing(payload []byte) error {
 	if len(payload) > 125 {
@@ -244,10 +251,17 @@ func (c *Conn) SetPongHandler(handler func()) {
 
 func (c *Conn) Close() error {
 	c.closeOnce.Do(func() {
+		forceClose := time.AfterFunc(250*time.Millisecond, func() { _ = c.closeTransport() })
 		c.writeClose([]byte{0x03, 0xe8})
-		c.closeErr = c.c.Close()
+		forceClose.Stop()
+		c.closeErr = c.closeTransport()
 	})
 	return c.closeErr
+}
+
+func (c *Conn) closeTransport() error {
+	c.transportCloseOnce.Do(func() { c.transportCloseErr = c.c.Close() })
+	return c.transportCloseErr
 }
 
 func (c *Conn) writeClose(payload []byte) {
@@ -316,11 +330,21 @@ func (c *Conn) readFrame() (bool, byte, []byte, error) {
 }
 
 func (c *Conn) writeFrame(op byte, payload []byte) error {
+	return c.writeFrameWithDeadline(op, payload, 0)
+}
+
+func (c *Conn) writeFrameWithDeadline(op byte, payload []byte, timeout time.Duration) error {
 	if op >= 8 && len(payload) > 125 {
 		return errors.New("websocket control payload too large")
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if timeout > 0 {
+		if err := c.c.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		defer c.c.SetWriteDeadline(time.Time{})
+	}
 
 	maskBit := byte(0)
 	if c.isClient {
