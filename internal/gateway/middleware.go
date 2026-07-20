@@ -10,6 +10,22 @@ import (
 
 const maxRateLimitBuckets = 10000
 
+func (s *Server) withRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					panic(recovered)
+				}
+				s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusInternalServerError, errGatewayInternal, "unexpected gateway error", start)
+				writeJSON(w, http.StatusInternalServerError, apiError(errGatewayInternal, "unexpected gateway error"))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) withAccess(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

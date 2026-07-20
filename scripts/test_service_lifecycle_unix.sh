@@ -25,6 +25,7 @@ cleanup
 installed=$("${elevate[@]}" "$agent_bin" service status)
 grep -q '^installed: true$' <<<"$installed"
 grep -Fq "config: $default_config" <<<"$installed"
+grep -Fq "binary: $agent_bin" <<<"$installed"
 case "$(uname -s)" in
   Linux)
     grep -q '^native: systemd$' <<<"$installed"

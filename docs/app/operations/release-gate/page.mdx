@@ -21,7 +21,20 @@ This gate verifies:
 - skip count is zero in required mode
 - testcontainers residue is zero
 
-Native service lifecycle CI additionally installs, starts, inspects, stops, and removes the built agent with systemd, launchd, and Windows Service on their respective operating systems. It verifies that install remains manual-start and that the reported native manager, installed state, runtime state, config path, and PID are real manager state rather than a mocked adapter.
+## GitHub Actions
+
+Every push and pull request runs `go test ./...` and `go vet ./...`.
+
+Pull requests targeting `main` and pushes to `main` also run these checks:
+
+| Check | Scope |
+|---|---|
+| `release-gate / integration-linux` | Runs `make test-it-release-gate` once on Linux |
+| `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
+| `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
+| `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
+
+The three service checks use the native OS managers and a real PostgreSQL instance. They cover service registration and process lifecycle only; the general unit, integration, all-database, and Docker suites remain in `integration-linux`.
 
 ## Requirements
 
@@ -37,7 +50,7 @@ If Docker is unavailable and mandatory mode is not enabled, container-backed tes
 
 ## Acceptance Criteria
 
-A release candidate should pass the release gate and preserve the architecture boundaries:
+A release candidate should pass `integration-linux` and all three native service checks, and preserve the architecture boundaries:
 
 - two deployable binaries: `onprest-gateway` and `onprest-agent`
 - no gateway SQL construction

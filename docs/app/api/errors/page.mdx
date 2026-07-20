@@ -10,6 +10,7 @@ Onprest returns stable error codes with public client-facing messages, and keeps
 | 403 | `GATEWAY_CAPABILITY_DENIED` | API key cannot call the capability |
 | 403 | `GATEWAY_IP_DENIED` | Source IP is not allowed |
 | 429 | `GATEWAY_RATE_LIMITED` | Rate limit exceeded |
+| 500 | `GATEWAY_INTERNAL_ERROR` | Unexpected gateway error |
 | 503 | `GATEWAY_AGENT_OFFLINE` | Agent is not connected |
 | 504 | `GATEWAY_TIMEOUT` | Agent response timed out |
 | 400 | `AGENT_VALIDATION_FAILED` | Agent rejected params (REST) |
@@ -18,7 +19,7 @@ Onprest returns stable error codes with public client-facing messages, and keeps
 | 502 | `AGENT_DB_UNREACHABLE` | Agent cannot reach the DB |
 | 502 | `AGENT_INTERNAL_ERROR` | Unexpected agent error |
 
-The agent-originated rows above are REST mappings. MCP `tools/call` returns those runtime failures as HTTP 200 tool results with `isError: true`; HTTP authentication, authorization, IP, and rate-limit failures remain HTTP errors.
+The agent-originated rows above are REST mappings. MCP `tools/call` returns those runtime failures as HTTP 200 tool results with `isError: true`. Gateway boundary errors use the HTTP status shown above.
 
 ## Endpoint HTTP Errors
 

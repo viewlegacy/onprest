@@ -965,6 +965,30 @@ func TestAgentErrorStatusMapping(t *testing.T) {
 	}
 }
 
+func TestRecoveryReturnsStableGatewayInternalError(t *testing.T) {
+	var logs bytes.Buffer
+	s := NewServer(Config{}, &logs)
+	handler := s.withRecovery(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("sensitive panic detail")
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	assertAPIErrorMessage(t, rec.Body.Bytes(), errGatewayInternal, "unexpected gateway error")
+	if strings.Contains(rec.Body.String(), "sensitive panic detail") || strings.Contains(logs.String(), "sensitive panic detail") {
+		t.Fatalf("panic detail leaked: response=%q logs=%q", rec.Body.String(), logs.String())
+	}
+	entry := lastLogEntry(t, &logs)
+	if entry["http_status"] != float64(http.StatusInternalServerError) || entry["error_code"] != errGatewayInternal {
+		t.Fatalf("recovery access log = %#v", entry)
+	}
+}
+
 func TestAuthenticateAgentRejectsInvalidHeadersAndReplay(t *testing.T) {
 	s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
 	missing := httptest.NewRequest(http.MethodGet, "/ws/agent", nil)

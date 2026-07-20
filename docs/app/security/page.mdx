@@ -80,7 +80,7 @@ onprest-agent-v1
 <Sec-WebSocket-Key>
 ```
 
-The version prefix prevents cross-protocol reuse, and binding the signature to the handshake's fresh `Sec-WebSocket-Key` prevents a captured signature from authorizing another handshake. The gateway validates the signature before atomically consuming the nonce. Timestamp tolerance and nonce reuse rejection add defense in depth. There is no compatibility path for the former signature format; gateway and agent must be upgraded together.
+The version prefix prevents cross-protocol reuse, and binding the signature to the handshake's fresh `Sec-WebSocket-Key` prevents a captured signature from authorizing another handshake. The gateway validates the signature before atomically consuming the nonce. Timestamp tolerance and nonce reuse rejection add defense in depth.
 
 Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `GATEWAY_AGENT_ALREADY_CONNECTED`.
 

@@ -13,7 +13,7 @@ Outputs an Ed25519 private key and public key.
 - private key: `capability.yaml` `gateway.agent_private_key`
 - public key: `gateway.env` `GATEWAY_AGENT_PUBLIC_KEY`
 
-Compatible alias:
+Command alias:
 
 ```bash
 ./onprest-gateway create-agent
@@ -36,7 +36,7 @@ The command outputs a plaintext API key and bcrypt `key_hash`. Store only the ha
 
 `--config` selects the capability YAML file. If omitted, the agent checks `AGENT_CAPABILITY_FILE`, then falls back to `capability.yaml` next to the `onprest-agent` binary.
 
-`--capability-file PATH` is a compatible alias for `--config PATH`. When both are supplied, the formal `--config` option takes precedence.
+`--capability-file PATH` is an alias for `--config PATH`. When both are supplied, `--config` takes precedence.
 
 ## Agent Service Commands
 
@@ -48,7 +48,7 @@ The command outputs a plaintext API key and bcrypt `key_hash`. Store only the ha
 ./onprest-agent service uninstall
 ```
 
-`service remove` is a compatible alias for `service uninstall`. The service commands register and control the agent through the host OS service manager: systemd on Linux, launchd on macOS, and Windows Service on Windows. `status` reports `service`, `native`, `installed`, and `state`, plus PID/config/binary/unit fields when available. If `install` omits `--config`, it registers `capability.yaml` next to the `onprest-agent` binary. `install` does not enable automatic start on OS boot.
+`service remove` is an alias for `service uninstall`. The service commands register and control the agent through the host OS service manager: systemd on Linux, launchd on macOS, and Windows Service on Windows. `status` reports `service`, `native`, `installed`, and `state`, plus PID/config/binary/unit fields when available. If `install` omits `--config`, it registers `capability.yaml` next to the `onprest-agent` binary. `install` does not enable automatic start on OS boot.
 
 ## Build
 

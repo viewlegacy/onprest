@@ -125,7 +125,7 @@ When `title` or `version` is empty, the agent fills in the default shown above a
 | `name` | Yes | Database, service, or schema name used by the driver |
 | `user` | Yes | DB username |
 | `password` | No | DB password; keep this only on the agent side |
-| `tls.mode` | No | TLS mode described below; defaults to `disable` for backward compatibility |
+| `tls.mode` | No | TLS mode described below; defaults to `disable` |
 | `tls.ca_file` | No | PEM CA certificate used to verify the DB server |
 | `tls.cert_file` | No | PostgreSQL PEM client certificate for mutual TLS |
 | `tls.key_file` | No | PostgreSQL PEM client private key; required together with `cert_file` |
@@ -139,7 +139,7 @@ TLS support is driver-specific:
 | SQL Server | `disable`, `require`, `verify-full` | `require` encrypts while trusting the presented server certificate. `verify-full` verifies the certificate trust chain plus `server_name` or `host`; set `ca_file` for a private CA. |
 | MySQL / Oracle | `disable` only | Non-disabled TLS is rejected at startup; this avoids silently pretending that the generated connection is verified. |
 
-Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`. `cert_file` and `key_file` are PostgreSQL-only; `server_name` is SQL Server-only. The default remains `disable` so existing capability files retain their prior connection behavior. Prefer a verified mode on networks where the database connection can be intercepted.
+Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`. `cert_file` and `key_file` are PostgreSQL-only; `server_name` is SQL Server-only. Prefer a verified mode on networks where the database connection can be intercepted.
 
 ## Logging
 
@@ -206,7 +206,7 @@ Unknown params are rejected.
 
 | Field | Description |
 |---|---|
-| `readonly` | `true` allows exactly one top-level `SELECT` statement; a second statement is rejected even after comments or quoted text |
+| `readonly` | `true` accepts one statement beginning with `SELECT`, including nested `SELECT` subqueries |
 | `timeout` | execution timeout, such as `5s` |
 | `max_rows` | maximum rows returned |
 | `max_bytes` | maximum response size, such as `256KB` |
@@ -216,7 +216,7 @@ Use read-only DB users for read capabilities. YAML policy is an application guar
 
 `timeout` accepts a Go duration string such as `5s` or `500ms`. `max_bytes` uses the same exact non-negative integer byte-size grammar as `logging.max_size`.
 
-When `readonly` is `true`, startup lint rejects non-read-only SQL. `timeout`, `max_rows`, and `max_bytes` are enforced during capability execution.
+When `readonly` is `true`, startup lint rejects another statement after the first, such as `SELECT 1; UPDATE customers SET ...`. One trailing semicolon is allowed, and semicolons inside strings, quoted identifiers, comments, or PostgreSQL dollar-quoted bodies do not split the statement. Statements beginning with `WITH` are rejected, including read-only CTEs. `timeout`, `max_rows`, and `max_bytes` are enforced during capability execution.
 
 ## Result Allow-List
 

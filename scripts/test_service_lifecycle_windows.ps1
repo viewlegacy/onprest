@@ -17,15 +17,26 @@ function Invoke-AgentService([string[]]$Arguments) {
   return ($output -join "`n")
 }
 
+function Remove-AgentServiceIfPresent {
+  $service = Get-Service -Name 'onprest-agent' -ErrorAction SilentlyContinue
+  if ($null -eq $service) {
+    return
+  }
+  if ($service.Status -ne 'Stopped') {
+    Invoke-AgentService @('stop') | Out-Null
+  }
+  Invoke-AgentService @('uninstall') | Out-Null
+}
+
 try {
-  & $AgentBin service stop 2>$null | Out-Null
-  & $AgentBin service uninstall 2>$null | Out-Null
+  Remove-AgentServiceIfPresent
 
   Invoke-AgentService @('install') | Out-Null
   $installed = Invoke-AgentService @('status')
   if ($installed -notmatch '(?m)^installed: true$' -or
       $installed -notmatch '(?m)^native: windows-service$' -or
-      $installed -notmatch [regex]::Escape("config: $DefaultConfig")) {
+      $installed -notmatch [regex]::Escape("config: $DefaultConfig") -or
+      $installed -notmatch [regex]::Escape("binary: $AgentBin")) {
     throw "installed status contract failed: $installed"
   }
   $startMode = (Get-CimInstance Win32_Service -Filter "Name='onprest-agent'").StartMode
@@ -42,6 +53,10 @@ try {
   }
   if ($running -notmatch '(?m)^state: running$') {
     throw "service did not reach running state: $running"
+  }
+  $processId = (Get-CimInstance Win32_Service -Filter "Name='onprest-agent'").ProcessId
+  if ($processId -le 0) {
+    throw "native service manager did not report a running process ID"
   }
   Start-Sleep -Seconds 1
   $stillRunning = Invoke-AgentService @('status')
@@ -66,6 +81,10 @@ try {
   }
 }
 finally {
-  & $AgentBin service stop 2>$null | Out-Null
-  & $AgentBin service uninstall 2>$null | Out-Null
+  try {
+    Remove-AgentServiceIfPresent
+  }
+  catch {
+    Write-Warning "service cleanup failed: $_"
+  }
 }

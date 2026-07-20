@@ -1,26 +1,20 @@
 name: service-lifecycle
 
 on:
-  push:
-    paths:
-      - 'cmd/agent/**'
-      - 'internal/agent/**'
-      - 'scripts/test_service_lifecycle_*'
-      - '.github/workflows/service-lifecycle.yml'
-      - 'go.mod'
-      - 'go.sum'
   pull_request:
-    paths:
-      - 'cmd/agent/**'
-      - 'internal/agent/**'
-      - 'scripts/test_service_lifecycle_*'
-      - '.github/workflows/service-lifecycle.yml'
-      - 'go.mod'
-      - 'go.sum'
+    branches:
+      - main
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux-systemd:
@@ -31,13 +25,24 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make build
+      - name: Build isolated systemd environment
+        run: docker build --pull -f scripts/service-test-systemd.Dockerfile -t onprest-service-test-systemd .
       - name: Start isolated systemd and PostgreSQL
         run: |
           docker run --privileged --cgroupns=host -d --name onprest-service-test \
             --tmpfs /run --tmpfs /run/lock \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
-            -v "$PWD:/workspace" ubuntu:24.04 /sbin/init
-          docker exec onprest-service-test bash -ec 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql'
+            -v "$PWD:/workspace" onprest-service-test-systemd
+          for _ in {1..30}; do
+            state=$(docker exec onprest-service-test systemctl is-system-running 2>/dev/null || true)
+            if [ "$state" = running ] || [ "$state" = degraded ]; then break; fi
+            sleep 1
+          done
+          state=$(docker exec onprest-service-test systemctl is-system-running 2>/dev/null || true)
+          if [ "$state" != running ] && [ "$state" != degraded ]; then
+            docker logs onprest-service-test
+            exit 1
+          fi
           docker exec onprest-service-test systemctl start postgresql
           docker exec onprest-service-test runuser -u postgres -- psql -c "ALTER USER postgres PASSWORD 'onprest';"
       - name: Exercise actual systemd lifecycle

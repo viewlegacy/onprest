@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestMakeBuildProducesOnlyRunnableGatewayAndAgent(t *testing.T) {
@@ -212,6 +214,97 @@ func TestRepositoryDoesNotAddCaddyImplementationDependency(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
+	root := repoRoot(t)
+	workflowDir := filepath.Join(root, ".github", "workflows")
+
+	ci := readWorkflow(t, filepath.Join(workflowDir, "ci.yml"))
+	ciEvents := workflowSection(t, ci, "on")
+	for _, event := range []string{"push", "pull_request"} {
+		if _, ok := ciEvents[event]; !ok {
+			t.Fatalf("ci workflow missing %s trigger", event)
+		}
+	}
+	ciText := readText(t, filepath.Join(workflowDir, "ci.yml"))
+	for _, command := range []string{"go test ./...", "go vet ./..."} {
+		if !strings.Contains(ciText, command) {
+			t.Fatalf("ci workflow missing %q", command)
+		}
+	}
+
+	release := readWorkflow(t, filepath.Join(workflowDir, "release-gate.yml"))
+	assertMainWorkflowTriggers(t, release)
+	releaseJobs := workflowSection(t, release, "jobs")
+	if _, ok := releaseJobs["integration-linux"]; !ok {
+		t.Fatal("release gate workflow missing integration-linux job")
+	}
+	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") {
+		t.Fatal("release gate workflow does not run make test-it-release-gate")
+	}
+
+	service := readWorkflow(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
+	assertMainWorkflowTriggers(t, service)
+	serviceJobs := workflowSection(t, service, "jobs")
+	for _, job := range []string{"linux-systemd", "macos-launchd", "windows-service"} {
+		if _, ok := serviceJobs[job]; !ok {
+			t.Fatalf("service lifecycle workflow missing %s job", job)
+		}
+	}
+	serviceText := readText(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
+	if strings.Contains(serviceText, "\n    paths:") {
+		t.Fatal("service lifecycle must run unconditionally for main PRs and pushes")
+	}
+	if !strings.Contains(serviceText, "scripts/service-test-systemd.Dockerfile") {
+		t.Fatal("linux service lifecycle does not build the systemd test image")
+	}
+	systemdImage := readText(t, filepath.Join(root, "scripts", "service-test-systemd.Dockerfile"))
+	for _, want := range []string{"systemd-sysv", "postgresql", `CMD ["/sbin/init"]`} {
+		if !strings.Contains(systemdImage, want) {
+			t.Fatalf("systemd service test image missing %q", want)
+		}
+	}
+}
+
+func readWorkflow(t *testing.T, path string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow map[string]any
+	if err := yaml.Unmarshal(b, &workflow); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return workflow
+}
+
+func workflowSection(t *testing.T, workflow map[string]any, name string) map[string]any {
+	t.Helper()
+	section, ok := workflow[name].(map[string]any)
+	if !ok {
+		t.Fatalf("workflow section %q missing or invalid: %#v", name, workflow[name])
+	}
+	return section
+}
+
+func assertMainWorkflowTriggers(t *testing.T, workflow map[string]any) {
+	t.Helper()
+	events := workflowSection(t, workflow, "on")
+	for _, event := range []string{"pull_request", "push"} {
+		config, ok := events[event].(map[string]any)
+		if !ok {
+			t.Fatalf("workflow %s trigger missing configuration", event)
+		}
+		branches, ok := config["branches"].([]any)
+		if !ok || len(branches) != 1 || branches[0] != "main" {
+			t.Fatalf("workflow %s branches = %#v, want [main]", event, config["branches"])
+		}
+	}
+	if _, ok := events["workflow_dispatch"]; !ok {
+		t.Fatal("workflow missing workflow_dispatch trigger")
 	}
 }
 

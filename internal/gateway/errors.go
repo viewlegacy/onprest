@@ -7,6 +7,7 @@ const (
 	errGatewayCapabilityDenied   = "GATEWAY_CAPABILITY_DENIED"
 	errGatewayIPDenied           = "GATEWAY_IP_DENIED"
 	errGatewayRateLimited        = "GATEWAY_RATE_LIMITED"
+	errGatewayInternal           = "GATEWAY_INTERNAL_ERROR"
 	errGatewayAgentOffline       = "GATEWAY_AGENT_OFFLINE"
 	errGatewayTimeout            = "GATEWAY_TIMEOUT"
 	errGatewayInvalidRequest     = "GATEWAY_INVALID_REQUEST"

@@ -146,7 +146,7 @@ A normal gateway-to-agent request contains only a capability name and params.
 }
 ```
 
-The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Read-only capabilities accept exactly one top-level `SELECT`; integer JSON tokens remain exact through signed 64-bit conversion; response values must be finite and representable by the declared result type.
+The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Read-only capabilities accept one `SELECT` statement, including nested subqueries. Integer JSON tokens remain exact through signed 64-bit conversion, and response values must be finite and representable by the declared result type.
 
 ## Dedicated Gateway Model
 
@@ -160,7 +160,7 @@ TLS termination and reverse proxy / load balancer choice are owned by the operat
 
 The gateway works when directly exposed or when placed behind any compatible reverse proxy / LB. Forwarded headers are trusted only when they arrive from a source included in `GATEWAY_TRUSTED_PROXY_CIDRS`. A trusted proxy must overwrite, rather than append to, caller-provided forwarding headers.
 
-Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. `disable` remains the compatibility default. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
+Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. The default is `disable`. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
 
 ## Managed Dashboard
 

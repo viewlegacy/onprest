@@ -40,7 +40,7 @@ The agent generates DSNs from the `database` section of `capability.yaml`.
 | `sqlserver` | URL DSN with configurable `disable`, encrypted-but-unverified `require`, or CA/hostname-verified `verify-full` TLS |
 | `oracle` | URL DSN with `oracle://user:password@host:port/name` |
 
-TLS defaults to `disable` for compatibility with existing capability files. Select a verified mode where supported instead of relying only on network placement. MySQL and Oracle reject non-disabled TLS configuration until those driver paths provide an explicit verified implementation; they never silently downgrade a requested TLS mode.
+TLS defaults to `disable`. Select a verified mode where supported instead of relying only on network placement. MySQL and Oracle reject non-disabled TLS configuration until those driver paths provide an explicit verified implementation; they never silently downgrade a requested TLS mode.
 
 ## Topics
 
