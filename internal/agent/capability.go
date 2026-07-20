@@ -10,9 +10,11 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,12 +39,21 @@ type GatewayDef struct {
 }
 
 type DatabaseDef struct {
-	Driver   string `json:"driver" yaml:"driver"`
-	Host     string `json:"host" yaml:"host"`
-	Port     int    `json:"port" yaml:"port"`
-	Name     string `json:"name" yaml:"name"`
-	User     string `json:"user" yaml:"user"`
-	Password string `json:"password" yaml:"password"`
+	Driver   string         `json:"driver" yaml:"driver"`
+	Host     string         `json:"host" yaml:"host"`
+	Port     int            `json:"port" yaml:"port"`
+	Name     string         `json:"name" yaml:"name"`
+	User     string         `json:"user" yaml:"user"`
+	Password string         `json:"password" yaml:"password"`
+	TLS      DatabaseTLSDef `json:"tls,omitempty" yaml:"tls,omitempty"`
+}
+
+type DatabaseTLSDef struct {
+	Mode       string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	CAFile     string `json:"ca_file,omitempty" yaml:"ca_file,omitempty"`
+	CertFile   string `json:"cert_file,omitempty" yaml:"cert_file,omitempty"`
+	KeyFile    string `json:"key_file,omitempty" yaml:"key_file,omitempty"`
+	ServerName string `json:"server_name,omitempty" yaml:"server_name,omitempty"`
 }
 
 type LoggingDef struct {
@@ -193,7 +204,39 @@ func (db DatabaseDef) lint() error {
 	if db.Port <= 0 {
 		return errors.New("database.port is required")
 	}
+	mode := db.tlsMode()
+	switch mode {
+	case "disable", "require", "verify-ca", "verify-full":
+	default:
+		return fmt.Errorf("database.tls.mode must be one of disable, require, verify-ca, verify-full")
+	}
+	if db.Driver != "postgres" && db.Driver != "sqlserver" && mode != "disable" {
+		return fmt.Errorf("database.tls is currently supported only for postgres and sqlserver")
+	}
+	if db.Driver == "sqlserver" && mode == "verify-ca" {
+		return fmt.Errorf("database.tls.mode verify-ca is not supported for sqlserver; use require or verify-full")
+	}
+	if (db.TLS.CertFile == "") != (db.TLS.KeyFile == "") {
+		return fmt.Errorf("database.tls.cert_file and key_file must be set together")
+	}
+	if db.Driver != "postgres" && (db.TLS.CertFile != "" || db.TLS.KeyFile != "") {
+		return fmt.Errorf("database.tls client certificates are supported only for postgres")
+	}
+	if db.Driver != "sqlserver" && db.TLS.ServerName != "" {
+		return fmt.Errorf("database.tls.server_name is supported only for sqlserver")
+	}
+	if mode == "disable" && (db.TLS.CAFile != "" || db.TLS.CertFile != "" || db.TLS.KeyFile != "" || db.TLS.ServerName != "") {
+		return fmt.Errorf("database.tls certificate fields require an enabled TLS mode")
+	}
 	return nil
+}
+
+func (db DatabaseDef) tlsMode() string {
+	mode := strings.ToLower(strings.TrimSpace(db.TLS.Mode))
+	if mode == "" {
+		return "disable"
+	}
+	return mode
 }
 
 func (db DatabaseDef) DSN() string {
@@ -207,11 +250,18 @@ func (db DatabaseDef) DSN() string {
 			Path:   "/" + db.Name,
 		}
 		q := u.Query()
-		q.Set("sslmode", "disable")
+		q.Set("sslmode", db.tlsMode())
+		if db.TLS.CAFile != "" {
+			q.Set("sslrootcert", db.TLS.CAFile)
+		}
+		if db.TLS.CertFile != "" {
+			q.Set("sslcert", db.TLS.CertFile)
+			q.Set("sslkey", db.TLS.KeyFile)
+		}
 		u.RawQuery = q.Encode()
 		return u.String()
 	case "mysql":
-		return fmt.Sprintf("%s:%s@tcp(%s)/%s", db.User, db.Password, hostPort, db.Name)
+		return (&mysql.Config{User: db.User, Passwd: db.Password, Net: "tcp", Addr: hostPort, DBName: db.Name}).FormatDSN()
 	case "sqlserver":
 		u := url.URL{
 			Scheme: "sqlserver",
@@ -220,7 +270,26 @@ func (db DatabaseDef) DSN() string {
 		}
 		q := u.Query()
 		q.Set("database", db.Name)
-		q.Set("encrypt", "disable")
+		switch db.tlsMode() {
+		case "disable":
+			q.Set("encrypt", "disable")
+		case "require":
+			q.Set("encrypt", "true")
+			q.Set("TrustServerCertificate", "true")
+		case "verify-ca", "verify-full":
+			q.Set("encrypt", "true")
+			q.Set("TrustServerCertificate", "false")
+			if db.TLS.CAFile != "" {
+				q.Set("certificate", db.TLS.CAFile)
+			}
+			if db.tlsMode() == "verify-full" {
+				serverName := db.TLS.ServerName
+				if serverName == "" {
+					serverName = db.Host
+				}
+				q.Set("hostNameInCertificate", serverName)
+			}
+		}
 		u.RawQuery = q.Encode()
 		return u.String()
 	case "oracle":
@@ -385,19 +454,113 @@ func parseByteSize(raw string) (int64, error) {
 			break
 		}
 	}
-	var n int64
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+	if s == "" {
+		return 0, errors.New("missing integer value")
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
 		return 0, err
 	}
 	if n <= 0 {
 		return 0, errors.New("must be > 0")
+	}
+	if n > (int64(^uint64(0)>>1) / multiplier) {
+		return 0, errors.New("size overflows int64")
 	}
 	return n * multiplier, nil
 }
 
 func isReadOnlySQL(query string) bool {
 	keyword := firstSQLKeyword(query)
-	return keyword == "select"
+	return keyword == "select" && hasSingleSQLStatement(query)
+}
+
+func hasSingleSQLStatement(query string) bool {
+	for i := 0; i < len(query); {
+		switch {
+		case query[i] == '\'', query[i] == '"':
+			i = skipSQLQuoted(query, i, query[i])
+		case i+1 < len(query) && query[i:i+2] == "--":
+			i = skipSQLLineComment(query, i)
+		case i+1 < len(query) && query[i:i+2] == "/*":
+			i = skipSQLBlockComment(query, i)
+		case query[i] == '$':
+			if next, ok := skipSQLDollarQuote(query, i); ok {
+				i = next
+			} else {
+				i++
+			}
+		case query[i] == ';':
+			return onlySQLTrivia(query[i+1:])
+		default:
+			i++
+		}
+	}
+	return true
+}
+
+func skipSQLQuoted(query string, start int, quote byte) int {
+	for i := start + 1; i < len(query); i++ {
+		if query[i] == '\\' && i+1 < len(query) {
+			i++
+			continue
+		}
+		if query[i] != quote {
+			continue
+		}
+		if i+1 < len(query) && query[i+1] == quote {
+			i++
+			continue
+		}
+		return i + 1
+	}
+	return len(query)
+}
+
+func skipSQLLineComment(query string, start int) int {
+	if end := strings.IndexByte(query[start+2:], '\n'); end >= 0 {
+		return start + 2 + end + 1
+	}
+	return len(query)
+}
+
+func skipSQLBlockComment(query string, start int) int {
+	if end := strings.Index(query[start+2:], "*/"); end >= 0 {
+		return start + 2 + end + 2
+	}
+	return len(query)
+}
+
+func skipSQLDollarQuote(query string, start int) (int, bool) {
+	endTag := start + 1
+	for endTag < len(query) && (isIdent(query[endTag]) || isDigit(query[endTag])) {
+		endTag++
+	}
+	if endTag >= len(query) || query[endTag] != '$' {
+		return start, false
+	}
+	tag := query[start : endTag+1]
+	end := strings.Index(query[endTag+1:], tag)
+	if end < 0 {
+		return len(query), true
+	}
+	return endTag + 1 + end + len(tag), true
+}
+
+func onlySQLTrivia(query string) bool {
+	for i := 0; i < len(query); {
+		switch {
+		case query[i] == ' ' || query[i] == '\t' || query[i] == '\r' || query[i] == '\n':
+			i++
+		case i+1 < len(query) && query[i:i+2] == "--":
+			i = skipSQLLineComment(query, i)
+		case i+1 < len(query) && query[i:i+2] == "/*":
+			i = skipSQLBlockComment(query, i)
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func firstSQLKeyword(query string) string {

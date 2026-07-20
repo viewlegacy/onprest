@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
@@ -17,6 +18,8 @@ import (
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 )
+
+const maxConcurrentAgentRequests = 16
 
 type Runner struct {
 	cfg             Config
@@ -110,17 +113,24 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
+	connCtx, cancel := context.WithCancel(ctx)
 	defer conn.Close()
 	done := make(chan struct{})
 	go func() {
 		select {
-		case <-ctx.Done():
+		case <-connCtx.Done():
 			_ = conn.Close()
 		case <-done:
 		}
 	}()
 	defer close(done)
-	for ctx.Err() == nil {
+	sem := make(chan struct{}, maxConcurrentAgentRequests)
+	var workers sync.WaitGroup
+	defer func() {
+		cancel()
+		workers.Wait()
+	}()
+	for connCtx.Err() == nil {
 		msg, err := conn.ReadText()
 		if err != nil {
 			r.log("gateway_disconnected", map[string]any{"error": err.Error()})
@@ -134,11 +144,22 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			_ = conn.WriteText(protocol.MustJSON(protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}))
 			continue
 		}
-		resp := r.handle(ctx, req)
-		if err := conn.WriteText(protocol.MustJSON(resp)); err != nil {
-			r.log("gateway_write_failed", map[string]any{"error": err.Error()})
+		select {
+		case sem <- struct{}{}:
+		case <-connCtx.Done():
 			return
 		}
+		workers.Add(1)
+		go func(req protocol.Request) {
+			defer workers.Done()
+			defer func() { <-sem }()
+			resp := r.handle(connCtx, req)
+			if err := conn.WriteText(protocol.MustJSON(resp)); err != nil {
+				r.log("gateway_write_failed", map[string]any{"error": err.Error()})
+				cancel()
+				_ = conn.Close()
+			}
+		}(req)
 	}
 }
 

@@ -297,7 +297,7 @@ curl -sS http://localhost:8080/healthz
 { "ok": true, "agent_connected": true }
 ```
 
-`/healthz` needs no API key. If `agent_connected` is `false`, wait for the agent to finish its startup checks and connect, then retry.
+`/healthz` needs no API key, but it still uses the configured IP allow list and per-source rate limit. If `agent_connected` is `false`, wait for the agent to finish its startup checks and connect, then retry.
 
 Call a capability:
 
@@ -371,7 +371,7 @@ Initial driver targets:
 - SQL Server
 - Oracle
 
-Oracle requires the runtime prerequisites for `godror`.
+Oracle uses the pure-Go `go-ora` driver and does not require Oracle Instant Client.
 
 ## Documentation
 

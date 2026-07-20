@@ -20,11 +20,6 @@ cleanup_logs() {
 }
 trap cleanup_logs EXIT
 
-run_plain() {
-	echo "==> $*"
-	"$@"
-}
-
 run_go_json_no_skip() {
 	local label="$1"
 	shift
@@ -78,7 +73,7 @@ echo "integration release gate logs: $LOG_DIR"
 
 assert_docker_available
 
-run_plain go test ./...
+run_go_json_no_skip "unit" go test -json ./...
 
 run_go_json_no_skip "postgres-ci" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \

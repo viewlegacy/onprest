@@ -22,6 +22,8 @@ The repository does not need to be deployed from source. Build artifacts can be 
 7. Start the agent.
 8. Verify `/healthz`, `/openapi.json`, REST, and MCP.
 
+Gateway and agent versions that use the handshake-bound signature must be deployed as one coordinated release. The old signature format is deliberately not accepted. Stop or drain callers, update gateway and agent configuration/binaries in the same maintenance window, then restart gateway followed by agent and run the verification above. Rollback must likewise restore both binaries together; do not leave a mixed-version pair running.
+
 ## Binary Deployment
 
 This is the primary deployment path for legacy environments without Docker.
@@ -74,7 +76,7 @@ For OS-managed binary operation, register the agent and start it through the hos
 ./onprest-agent service uninstall
 ```
 
-`service install` can omit `--config`; in that case it registers `capability.yaml` next to the `onprest-agent` binary. It does not enable automatic start on OS boot. Configure boot-time startup separately with the host OS if required.
+`service remove` is a compatible alias for `service uninstall`. `service install` can omit `--config`; in that case it registers `capability.yaml` next to the `onprest-agent` binary. It does not enable automatic start on OS boot. Configure boot-time startup separately with the host OS if required.
 
 When the agent runs as an OS service, stdout/stderr are handled by the service manager. On macOS service installs, process events go to `/var/log/onprest-agent.stdout.log` and fatal stderr output goes to `/var/log/onprest-agent.stderr.log`. DB-specific detail still belongs in `onprest-agent.log` next to the agent binary.
 

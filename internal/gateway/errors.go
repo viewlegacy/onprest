@@ -7,7 +7,6 @@ const (
 	errGatewayCapabilityDenied   = "GATEWAY_CAPABILITY_DENIED"
 	errGatewayIPDenied           = "GATEWAY_IP_DENIED"
 	errGatewayRateLimited        = "GATEWAY_RATE_LIMITED"
-	errGatewayInternal           = "GATEWAY_INTERNAL_ERROR"
 	errGatewayAgentOffline       = "GATEWAY_AGENT_OFFLINE"
 	errGatewayTimeout            = "GATEWAY_TIMEOUT"
 	errGatewayInvalidRequest     = "GATEWAY_INVALID_REQUEST"
@@ -31,14 +30,16 @@ func apiError(code, message string) map[string]any {
 
 func agentErrorStatus(code string) (int, string) {
 	switch code {
+	case errGatewayAgentOffline:
+		return http.StatusServiceUnavailable, errGatewayAgentOffline
 	case errGatewayCapabilityNotFound:
 		return http.StatusNotFound, errGatewayCapabilityNotFound
 	case errAgentValidationFailed:
-		return http.StatusBadGateway, errAgentValidationFailed
+		return http.StatusBadRequest, errAgentValidationFailed
 	case errAgentQueryFailed:
 		return http.StatusBadGateway, errAgentQueryFailed
 	case errAgentQueryTimeout:
-		return http.StatusBadGateway, errAgentQueryTimeout
+		return http.StatusGatewayTimeout, errAgentQueryTimeout
 	case errAgentDBUnreachable:
 		return http.StatusBadGateway, errAgentDBUnreachable
 	case errAgentInternal:

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"net/http"
@@ -12,22 +13,41 @@ import (
 )
 
 type Server struct {
-	cfg     Config
-	logOut  io.Writer
-	agentMu sync.RWMutex
-	agent   *agentConn
-	authMu  sync.Mutex
-	nonces  map[string]time.Time
-	openapi map[string]any
-	rateMu  sync.Mutex
-	rate    map[string]*bucket
-	httpSrv *http.Server
+	cfg             Config
+	logOut          io.Writer
+	logMu           sync.Mutex
+	agentMu         sync.RWMutex
+	agent           *agentConn
+	authMu          sync.Mutex
+	nonces          map[string]time.Time
+	apiKeyCache     map[[sha256.Size]byte]cachedAPIKey
+	openapi         map[string]any
+	rateMu          sync.Mutex
+	rate            map[string]*bucket
+	rateLastCleanup time.Time
+	httpSrv         *http.Server
 }
 
 type agentConn struct {
-	conn    textConn
-	pending map[string]chan protocol.Response
-	mu      sync.Mutex
+	conn     textConn
+	pending  map[string]chan protocol.Response
+	mu       sync.Mutex
+	closed   bool
+	send     chan agentWrite
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+type agentWrite struct {
+	payload []byte
+	result  chan error
+	ctx     context.Context
+}
+
+type cachedAPIKey struct {
+	key      APIKey
+	expires  time.Time
+	lastUsed time.Time
 }
 
 type textConn interface {
@@ -36,20 +56,43 @@ type textConn interface {
 	Close() error
 }
 
+type deadlineTextConn interface {
+	textConn
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	WritePing([]byte) error
+	SetPongHandler(func())
+}
+
 type bucket struct {
 	tokens float64
 	last   time.Time
 }
 
 func NewServer(cfg Config, logOut io.Writer) *Server {
-	s := &Server{cfg: cfg, logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}}
+	if cfg.AgentTimeout <= 0 {
+		cfg.AgentTimeout = 30 * time.Second
+	}
+	if cfg.AgentWriteTimeout <= 0 {
+		cfg.AgentWriteTimeout = 5 * time.Second
+	}
+	if cfg.AgentPingInterval <= 0 {
+		cfg.AgentPingInterval = 15 * time.Second
+	}
+	if cfg.AgentPongTimeout <= 0 {
+		cfg.AgentPongTimeout = 10 * time.Second
+	}
+	if cfg.BodyReadTimeout <= 0 {
+		cfg.BodyReadTimeout = 15 * time.Second
+	}
+	s := &Server{cfg: cfg, logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/ws/agent", s.handleAgentWS)
 	mux.HandleFunc("/api/v1/capabilities/", s.handleCapability)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/mcp", s.handleMCP)
-	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withAccess(mux), ReadHeaderTimeout: 10 * time.Second}
+	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withAccess(mux), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	return s
 }
 

@@ -70,7 +70,7 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 		`{"id":1,"code":"ABC","secret":"leak-me"}`,
 	} {
 		status, body = postCapability(t, baseURL, secrets.APIKey, "validated_lookup", payload)
-		if status != http.StatusBadGateway {
+		if status != http.StatusBadRequest {
 			t.Fatalf("invalid REST payload %s status=%d body=%s", payload, status, string(body))
 		}
 		requireAPIErrorCode(t, body, "AGENT_VALIDATION_FAILED")
@@ -80,10 +80,10 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 	}
 
 	status, body = postMCPStatus(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"validated_lookup","arguments":{"id":1,"code":"leak-me"}}}`)
-	if status != http.StatusBadGateway {
+	if status != http.StatusOK {
 		t.Fatalf("invalid MCP status=%d body=%s", status, string(body))
 	}
-	requireAPIErrorCode(t, body, "AGENT_VALIDATION_FAILED")
+	requireMCPToolErrorCode(t, body, "AGENT_VALIDATION_FAILED")
 	if strings.Contains(string(body), "leak-me") || strings.Contains(logs.String(), "leak-me") {
 		t.Fatalf("MCP validation detail leaked; body=%s logs=%s", string(body), logs.String())
 	}

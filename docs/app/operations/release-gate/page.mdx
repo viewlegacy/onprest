@@ -21,6 +21,8 @@ This gate verifies:
 - skip count is zero in required mode
 - testcontainers residue is zero
 
+Native service lifecycle CI additionally installs, starts, inspects, stops, and removes the built agent with systemd, launchd, and Windows Service on their respective operating systems. It verifies that install remains manual-start and that the reported native manager, installed state, runtime state, config path, and PID are real manager state rather than a mocked adapter.
+
 ## Requirements
 
 Release gate commands require a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.

@@ -23,8 +23,8 @@ gateway:
   agent_private_key: new-base64url-ed25519-private-key
 ```
 
-4. Restart gateway.
-5. Restart agent.
+4. In one maintenance window, restart gateway with the new public key.
+5. Immediately restart agent with the matching private key.
 6. Confirm `/healthz`, `/openapi.json`, REST, and MCP.
 
 ## Expected Behavior
@@ -39,3 +39,5 @@ After rotation:
 ## Compromise Response
 
 If a suspicious agent is already connected, gateway's one-agent connection limit prevents a second simultaneous agent from replacing it silently. Rotate the key and restart both sides to restore trust in the metadata source.
+
+The signature is also bound to a fresh WebSocket handshake key, and there is no legacy-signature fallback. Roll back the gateway and agent binaries as a pair if a release rollback is required.

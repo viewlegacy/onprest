@@ -24,16 +24,18 @@ The `/ws/agent` route must support WebSocket upgrade.
 
 By default, gateway uses the TCP connection source address, `RemoteAddr`, as the client IP.
 
-If `GATEWAY_TRUSTED_PROXY_CIDRS` is configured and the direct peer is inside those CIDRs, gateway may use:
+If `GATEWAY_TRUSTED_PROXY_CIDRS` is configured and the direct peer is inside those CIDRs, gateway uses `X-Forwarded-For` first and falls back to `X-Real-IP`:
 
 - `X-Forwarded-For`
 - `X-Real-IP`
 
 Forwarded headers from untrusted peers are ignored because they are spoofable.
 
+The trusted proxy must remove caller-supplied values and overwrite both headers from its authenticated connection metadata. Do not append to an inbound `X-Forwarded-For`: gateway intentionally selects its first valid address, so preserving a caller-controlled first value would turn proxy trust into an allow-list/rate-limit bypass.
+
 ## IP Allow List
 
-`GATEWAY_IP_ALLOW_LIST` applies after source IP detection.
+`GATEWAY_IP_ALLOW_LIST` applies after source IP detection to REST, MCP, OpenAPI, `/healthz`, and the agent WebSocket route. Per-source rate limiting applies to the same routes. `/healthz` is API-key-free, not exempt from these network controls.
 
 ```env
 GATEWAY_IP_ALLOW_LIST=203.0.113.0/24,198.51.100.10

@@ -24,6 +24,10 @@ type Config struct {
 	TrustedProxies      []*net.IPNet
 	RateLimit           RateLimitConfig
 	AgentTimeout        time.Duration
+	AgentWriteTimeout   time.Duration
+	AgentPingInterval   time.Duration
+	AgentPongTimeout    time.Duration
+	BodyReadTimeout     time.Duration
 	EmitOpenAPISnapshot bool
 }
 
@@ -85,7 +89,11 @@ func LoadConfigFromEnv() (Config, error) {
 			RequestsPerSecond: rps,
 			Burst:             burst,
 		},
-		AgentTimeout: 30 * time.Second,
+		AgentTimeout:      30 * time.Second,
+		AgentWriteTimeout: 5 * time.Second,
+		AgentPingInterval: 15 * time.Second,
+		AgentPongTimeout:  10 * time.Second,
+		BodyReadTimeout:   15 * time.Second,
 	}
 	publicURL, err := normalizePublicURL(os.Getenv("GATEWAY_PUBLIC_URL"))
 	if err != nil {
@@ -112,6 +120,9 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 	if len(cfg.APIKeys) == 0 {
 		return cfg, errors.New("at least one API key is required")
+	}
+	if len(cfg.APIKeys) > maxAPIKeys {
+		return cfg, fmt.Errorf("GATEWAY_API_KEYS_JSON supports at most %d keys", maxAPIKeys)
 	}
 	for _, key := range cfg.APIKeys {
 		if key.Name == "" {

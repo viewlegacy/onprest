@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 )
 
@@ -26,8 +27,16 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeMCPError(w, nil, -32700, errJSONRPCParseError, "invalid json rpc")
 		return
 	}
-	if req.JSONRPC != "2.0" || req.Method == "" || req.ID == nil {
+	if err := ensureJSONEOF(dec); err != nil {
+		writeMCPError(w, nil, -32700, errJSONRPCParseError, "invalid json rpc")
+		return
+	}
+	if req.JSONRPC != "2.0" || req.Method == "" {
 		writeMCPError(w, req.ID, -32600, errJSONRPCInvalidRequest, "invalid json rpc request")
+		return
+	}
+	if req.ID == nil {
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	switch req.Method {
@@ -44,7 +53,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		doc := cloneMap(s.openapi)
 		s.agentMu.RUnlock()
 		if doc == nil {
-			writeJSON(w, http.StatusServiceUnavailable, apiError(errGatewayAgentOffline, "agent metadata is not cached yet"))
+			writeMCPError(w, req.ID, -32000, errGatewayAgentOffline, "agent metadata is not cached yet")
 			return
 		}
 		filterOpenAPI(doc, key.Capabilities)
@@ -75,7 +84,13 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 			writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "tool is not defined")
 			return
 		}
-		writeJSON(w, result.Status, apiError(result.Code, result.Message))
+		writeMCP(w, id, map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": result.Message}},
+			"structuredContent": map[string]any{"error": map[string]any{
+				"code": result.Code, "message": result.Message,
+			}},
+			"isError": true,
+		}, nil)
 		return
 	}
 	var structured any
@@ -84,4 +99,16 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 		"content":           []any{map[string]any{"type": "text", "text": string(result.Payload)}},
 		"structuredContent": structured,
 	}, nil)
+}
+
+func ensureJSONEOF(dec *json.Decoder) error {
+	var extra any
+	err := dec.Decode(&extra)
+	if err == io.EOF {
+		return nil
+	}
+	if err == nil {
+		return io.ErrUnexpectedEOF
+	}
+	return err
 }

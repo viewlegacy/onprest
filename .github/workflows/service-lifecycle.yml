@@ -1,0 +1,100 @@
+name: service-lifecycle
+
+on:
+  push:
+    paths:
+      - 'cmd/agent/**'
+      - 'internal/agent/**'
+      - 'scripts/test_service_lifecycle_*'
+      - '.github/workflows/service-lifecycle.yml'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    paths:
+      - 'cmd/agent/**'
+      - 'internal/agent/**'
+      - 'scripts/test_service_lifecycle_*'
+      - '.github/workflows/service-lifecycle.yml'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-systemd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: make build
+      - name: Start isolated systemd and PostgreSQL
+        run: |
+          docker run --privileged --cgroupns=host -d --name onprest-service-test \
+            --tmpfs /run --tmpfs /run/lock \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$PWD:/workspace" ubuntu:24.04 /sbin/init
+          docker exec onprest-service-test bash -ec 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql'
+          docker exec onprest-service-test systemctl start postgresql
+          docker exec onprest-service-test runuser -u postgres -- psql -c "ALTER USER postgres PASSWORD 'onprest';"
+      - name: Exercise actual systemd lifecycle
+        run: |
+          private_key=$(./dist/onprest-gateway create-agent-secret | jq -r .agent_private_key)
+          sed "s|PRIVATE_KEY|$private_key|" scripts/service-test-capability.yaml > dist/capability.input.yaml
+          docker exec onprest-service-test bash -ec 'chmod +x /workspace/scripts/test_service_lifecycle_unix.sh && /workspace/scripts/test_service_lifecycle_unix.sh /workspace/dist/onprest-agent /workspace/dist/capability.input.yaml'
+      - if: always()
+        run: docker rm -f onprest-service-test || true
+
+  macos-launchd:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: make build
+      - name: Start PostgreSQL
+        run: |
+          brew install postgresql@16
+          brew services start postgresql@16
+          pg_bin="$(brew --prefix postgresql@16)/bin"
+          for _ in {1..40}; do "$pg_bin/pg_isready" && break; sleep 0.5; done
+          "$pg_bin/psql" postgres -c "CREATE ROLE onprest LOGIN PASSWORD 'onprest';"
+      - name: Exercise actual launchd lifecycle
+        run: |
+          private_key=$(./dist/onprest-gateway create-agent-secret | jq -r .agent_private_key)
+          sed -e "s|PRIVATE_KEY|$private_key|" -e 's/user: postgres/user: onprest/' scripts/service-test-capability.yaml > dist/capability.input.yaml
+          chmod +x scripts/test_service_lifecycle_unix.sh
+          ./scripts/test_service_lifecycle_unix.sh ./dist/onprest-agent ./dist/capability.input.yaml
+
+  windows-service:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build Windows binaries
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          go build -trimpath -o dist/onprest-gateway.exe ./cmd/gateway
+          go build -trimpath -o dist/onprest-agent.exe ./cmd/agent
+      - name: Install PostgreSQL
+        shell: powershell
+        run: |
+          choco install postgresql16 --params "'/Password:onprest'" --no-progress -y
+          for ($i = 0; $i -lt 60; $i++) {
+            if (Test-NetConnection 127.0.0.1 -Port 5432 -InformationLevel Quiet) { break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not (Test-NetConnection 127.0.0.1 -Port 5432 -InformationLevel Quiet)) { throw 'PostgreSQL did not start' }
+      - name: Exercise actual Windows Service lifecycle
+        shell: powershell
+        run: |
+          $privateKey = (& .\dist\onprest-gateway.exe create-agent-secret | ConvertFrom-Json).agent_private_key
+          (Get-Content scripts\service-test-capability.yaml -Raw).Replace('PRIVATE_KEY', $privateKey) | Set-Content dist\capability.input.yaml
+          .\scripts\test_service_lifecycle_windows.ps1 -AgentBin .\dist\onprest-agent.exe -CapabilityFile .\dist\capability.input.yaml

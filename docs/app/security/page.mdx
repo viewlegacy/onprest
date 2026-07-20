@@ -70,7 +70,17 @@ At runtime:
 
 If the agent private key leaks, rotate the key.
 
-During the WebSocket handshake, the gateway verifies the agent's Ed25519 signature over `path + timestamp + nonce` with the public key. Timestamp tolerance and nonce reuse rejection reduce replay risk.
+During each WebSocket handshake, the gateway verifies an Ed25519 signature over this exact UTF-8 byte sequence (with LF separators and no trailing LF):
+
+```text
+onprest-agent-v1
+<request path>
+<RFC3339 timestamp>
+<nonce>
+<Sec-WebSocket-Key>
+```
+
+The version prefix prevents cross-protocol reuse, and binding the signature to the handshake's fresh `Sec-WebSocket-Key` prevents a captured signature from authorizing another handshake. The gateway validates the signature before atomically consuming the nonce. Timestamp tolerance and nonce reuse rejection add defense in depth. There is no compatibility path for the former signature format; gateway and agent must be upgraded together.
 
 Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `GATEWAY_AGENT_ALREADY_CONNECTED`.
 

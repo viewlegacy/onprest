@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/viewlegacy/onprest/internal/protocol"
+	"github.com/viewlegacy/onprest/internal/ws"
 )
 
 func setAgentAuthHeaders(headers http.Header, privateKeyRaw, path string) error {
@@ -25,8 +26,13 @@ func setAgentAuthHeaders(headers http.Header, privateKeyRaw, path string) error 
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	timestamp := time.Now().UTC().Format(time.RFC3339)
-	message := protocol.AgentAuthMessage(path, timestamp, nonce)
+	handshakeKey, err := ws.NewHandshakeKey()
+	if err != nil {
+		return err
+	}
+	message := protocol.AgentAuthMessage(path, timestamp, nonce, handshakeKey)
 	signature := ed25519.Sign(ed25519.PrivateKey(privateKeyBytes), message)
+	headers.Set("Sec-WebSocket-Key", handshakeKey)
 	headers.Set("X-Agent-Timestamp", timestamp)
 	headers.Set("X-Agent-Nonce", nonce)
 	headers.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(signature))

@@ -1,9 +1,22 @@
 package gateway
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestLoadConfigFromEnvRejectsExcessiveAPIKeyCount(t *testing.T) {
+	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", testAgentPublicKey)
+	keys := make([]string, maxAPIKeys+1)
+	for i := range keys {
+		keys[i] = fmt.Sprintf(`{"name":"key-%d","key_hash":"hash","capabilities":["*"]}`, i)
+	}
+	t.Setenv("GATEWAY_API_KEYS_JSON", "["+strings.Join(keys, ",")+"]")
+	if _, err := LoadConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("LoadConfigFromEnv() error = %v, want API key count limit", err)
+	}
+}
 
 func TestLoadConfigFromEnvAcceptsQuotedAPIKeysJSON(t *testing.T) {
 	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", "TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8")

@@ -10,6 +10,10 @@ database:
   name: legacy
   user: readonly_user
   password: change-me
+  tls:
+    mode: verify-full
+    ca_file: C:\ProgramData\Onprest\db-ca.pem
+    server_name: sql.internal.example.com
 ```
 
 ## SQL Parameters
@@ -26,9 +30,14 @@ SQL Server startup validation uses `SHOWPLAN_TEXT` behavior for plan validation.
 
 This can have permission implications. Confirm the DB user has the permissions required for read capabilities and plan validation. If plan validation fails, the agent stops before connecting to gateway and writes detail locally.
 
-## Connection Note
+## TLS
 
-The current agent-generated SQL Server DSN includes `encrypt=disable`.
+`database.tls.mode` accepts `disable` (default), `require`, and `verify-full`.
+
+- `require` enables encryption but trusts the presented server certificate. It is useful only when encryption without identity verification is an explicit operational choice.
+- `verify-full` enables encryption and verifies the server certificate and name. Set `ca_file` for a private CA; otherwise the driver uses its normal trust roots. The name defaults to `database.host`; set `server_name` only when the certificate identity differs from the connection address.
+
+`verify-ca` and client certificate/key fields are rejected for SQL Server. Existing files with no `tls` section retain `encrypt=disable`.
 
 ## Integration Test
 

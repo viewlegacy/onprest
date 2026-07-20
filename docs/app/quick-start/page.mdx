@@ -181,7 +181,7 @@ The agent connects outbound to `/ws/agent`. During connection, the gateway verif
 curl -s http://localhost:8080/healthz
 ```
 
-`/healthz` can be called without an API key. It monitors the gateway process and agent connection state.
+`/healthz` can be called without an API key. It monitors the gateway process and agent connection state, while still honoring the gateway IP allow list and per-source rate limit when those controls are configured.
 
 ```json
 {

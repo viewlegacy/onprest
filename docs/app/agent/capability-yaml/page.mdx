@@ -21,6 +21,12 @@ database:
   name: legacy_db
   user: readonly_user
   password: ""
+  tls:
+    mode: verify-full
+    ca_file: /etc/onprest/db-ca.pem
+    cert_file: /etc/onprest/db-client.pem
+    key_file: /etc/onprest/db-client-key.pem
+    server_name: db.internal.example.com
 
 logging:
   max_size: 10MB
@@ -119,8 +125,21 @@ When `title` or `version` is empty, the agent fills in the default shown above a
 | `name` | Yes | Database, service, or schema name used by the driver |
 | `user` | Yes | DB username |
 | `password` | No | DB password; keep this only on the agent side |
+| `tls.mode` | No | TLS mode described below; defaults to `disable` for backward compatibility |
+| `tls.ca_file` | No | PEM CA certificate used to verify the DB server |
+| `tls.cert_file` | No | PostgreSQL PEM client certificate for mutual TLS |
+| `tls.key_file` | No | PostgreSQL PEM client private key; required together with `cert_file` |
+| `tls.server_name` | No | SQL Server certificate hostname override; otherwise `host` is verified |
 
-Current DSN generation adds `sslmode=disable` for PostgreSQL and `encrypt=disable` for SQL Server.
+TLS support is driver-specific:
+
+| Driver | Supported `tls.mode` | Behavior |
+|---|---|---|
+| PostgreSQL | `disable`, `require`, `verify-ca`, `verify-full` | Uses lib/pq TLS settings. Set `ca_file` for a private CA; client certificate and key are optional but must be supplied together. |
+| SQL Server | `disable`, `require`, `verify-full` | `require` encrypts while trusting the presented server certificate. `verify-full` verifies the certificate trust chain plus `server_name` or `host`; set `ca_file` for a private CA. |
+| MySQL / Oracle | `disable` only | Non-disabled TLS is rejected at startup; this avoids silently pretending that the generated connection is verified. |
+
+Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`. `cert_file` and `key_file` are PostgreSQL-only; `server_name` is SQL Server-only. The default remains `disable` so existing capability files retain their prior connection behavior. Prefer a verified mode on networks where the database connection can be intercepted.
 
 ## Logging
 
@@ -129,7 +148,7 @@ Current DSN generation adds `sslmode=disable` for PostgreSQL and `encrypt=disabl
 | `max_size` | `10MB` | Size threshold for rotating the local detail log |
 | `max_files` | `3` | Number of rotated files to retain |
 
-`max_size` accepts a byte size with an optional `B`, `KB`, `MB`, or `GB` suffix, such as `10MB`. A bare number is treated as bytes.
+`max_size` accepts a non-negative integer followed by an optional `B`, `KB`, `MB`, or `GB` suffix, such as `10MB`. A bare integer is treated as bytes. Fractions, unknown suffixes, trailing text, and values that overflow `int64` are rejected.
 
 The local detail log path is the agent executable path plus `.log`, for example `onprest-agent.log`.
 
@@ -177,7 +196,7 @@ Each entry under `capabilities` defines one externally callable operation. At le
 
 Unknown params are rejected.
 
-`minimum` and `maximum` are integer-valued bounds and apply to `integer` and `number` params. JSON numbers are accepted for numeric params; `integer` rejects fractional values.
+`minimum` and `maximum` are integer-valued bounds and apply to `integer` and `number` params. JSON integer tokens are converted exactly through signed 64-bit integers, including values above JavaScript's 2^53 precision boundary; fractional and int64-overflow values are rejected. `number` also rejects non-finite values.
 
 `format` accepts only the five values listed above; any other value is rejected at startup. `minLength` and `maxLength` must be `0` or greater, and `minLength` must not exceed `maxLength`.
 
@@ -187,7 +206,7 @@ Unknown params are rejected.
 
 | Field | Description |
 |---|---|
-| `readonly` | `true` allows read-only SQL only (the statement must begin with `SELECT`) |
+| `readonly` | `true` allows exactly one top-level `SELECT` statement; a second statement is rejected even after comments or quoted text |
 | `timeout` | execution timeout, such as `5s` |
 | `max_rows` | maximum rows returned |
 | `max_bytes` | maximum response size, such as `256KB` |
@@ -195,7 +214,7 @@ Unknown params are rejected.
 
 Use read-only DB users for read capabilities. YAML policy is an application guard; DB privileges should still enforce least privilege.
 
-`timeout` accepts a Go duration string such as `5s` or `500ms`. `max_bytes` accepts a byte size with an optional `B`, `KB`, `MB`, or `GB` suffix, such as `256KB`; a bare number is treated as bytes.
+`timeout` accepts a Go duration string such as `5s` or `500ms`. `max_bytes` uses the same exact non-negative integer byte-size grammar as `logging.max_size`.
 
 When `readonly` is `true`, startup lint rejects non-read-only SQL. `timeout`, `max_rows`, and `max_bytes` are enforced during capability execution.
 

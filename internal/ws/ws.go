@@ -14,15 +14,27 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
-const guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+const (
+	guid           = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	maxMessageSize = 16 << 20
+)
 
 type Conn struct {
 	c        net.Conn
 	br       *bufio.Reader
 	isClient bool
+
+	writeMu        sync.Mutex
+	closeFrameOnce sync.Once
+	closeOnce      sync.Once
+	closeErr       error
+
+	handlerMu   sync.RWMutex
+	pongHandler func()
 }
 
 func Accept(w http.ResponseWriter, r *http.Request) (*Conn, error) {
@@ -30,8 +42,8 @@ func Accept(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 		return nil, errors.New("missing websocket upgrade")
 	}
 	key := r.Header.Get("Sec-WebSocket-Key")
-	if key == "" {
-		return nil, errors.New("missing websocket key")
+	if !validHandshakeKey(key) {
+		return nil, errors.New("missing or invalid websocket key")
 	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -54,10 +66,13 @@ func Accept(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 	return &Conn{c: nc, br: rw.Reader}, nil
 }
 
-func Dial(ctxDeadline time.Duration, rawurl string, headers http.Header) (*Conn, error) {
+func Dial(handshakeTimeout time.Duration, rawurl string, headers http.Header) (*Conn, error) {
 	u, err := url.Parse(rawurl)
 	if err != nil {
 		return nil, err
+	}
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return nil, fmt.Errorf("unsupported websocket scheme %q", u.Scheme)
 	}
 	host := u.Host
 	if !strings.Contains(host, ":") {
@@ -67,7 +82,7 @@ func Dial(ctxDeadline time.Duration, rawurl string, headers http.Header) (*Conn,
 			host += ":80"
 		}
 	}
-	dialer := net.Dialer{Timeout: ctxDeadline}
+	dialer := net.Dialer{Timeout: handshakeTimeout}
 	var nc net.Conn
 	if u.Scheme == "wss" {
 		nc, err = tls.DialWithDialer(&dialer, "tcp", host, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12})
@@ -77,10 +92,22 @@ func Dial(ctxDeadline time.Duration, rawurl string, headers http.Header) (*Conn,
 	if err != nil {
 		return nil, err
 	}
-	key, err := randomKey()
-	if err != nil {
+	if handshakeTimeout > 0 {
+		if err := nc.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			_ = nc.Close()
+			return nil, err
+		}
+	}
+	key := headers.Get("Sec-WebSocket-Key")
+	if key == "" {
+		key, err = NewHandshakeKey()
+		if err != nil {
+			_ = nc.Close()
+			return nil, err
+		}
+	} else if !validHandshakeKey(key) {
 		_ = nc.Close()
-		return nil, err
+		return nil, errors.New("invalid Sec-WebSocket-Key")
 	}
 	path := u.RequestURI()
 	if path == "" {
@@ -93,6 +120,9 @@ func Dial(ctxDeadline time.Duration, rawurl string, headers http.Header) (*Conn,
 	req.Set("Sec-WebSocket-Version", "13")
 	req.Set("Sec-WebSocket-Key", key)
 	for k, values := range headers {
+		if isWebSocketHandshakeHeader(k) {
+			continue
+		}
 		for _, v := range values {
 			req.Add(k, v)
 		}
@@ -119,123 +149,238 @@ func Dial(ctxDeadline time.Duration, rawurl string, headers http.Header) (*Conn,
 		_ = nc.Close()
 		return nil, err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		_ = nc.Close()
 		return nil, fmt.Errorf("websocket upgrade failed: %s", resp.Status)
+	}
+	if !headerHasToken(resp.Header, "Connection", "upgrade") || !strings.EqualFold(resp.Header.Get("Upgrade"), "websocket") {
+		_ = nc.Close()
+		return nil, errors.New("invalid websocket upgrade response")
 	}
 	if resp.Header.Get("Sec-WebSocket-Accept") != acceptKey(key) {
 		_ = nc.Close()
 		return nil, errors.New("invalid websocket accept key")
 	}
+	if err := nc.SetDeadline(time.Time{}); err != nil {
+		_ = nc.Close()
+		return nil, err
+	}
 	return &Conn{c: nc, br: br, isClient: true}, nil
 }
 
 func (c *Conn) ReadText() ([]byte, error) {
+	var message []byte
+	fragmented := false
 	for {
-		op, payload, err := c.readFrame()
+		fin, op, payload, err := c.readFrame()
 		if err != nil {
 			return nil, err
 		}
 		switch op {
+		case 0:
+			if !fragmented {
+				return nil, errors.New("unexpected websocket continuation frame")
+			}
+			if len(message)+len(payload) > maxMessageSize {
+				return nil, errors.New("websocket message too large")
+			}
+			message = append(message, payload...)
+			if fin {
+				return message, nil
+			}
 		case 1:
-			return payload, nil
+			if fragmented {
+				return nil, errors.New("new websocket data frame during fragmented message")
+			}
+			if fin {
+				return payload, nil
+			}
+			fragmented = true
+			message = append(message, payload...)
+		case 2:
+			return nil, errors.New("binary websocket messages are not supported")
 		case 8:
+			if len(payload) == 1 {
+				return nil, errors.New("invalid websocket close payload")
+			}
+			c.writeClose(payload)
 			return nil, io.EOF
 		case 9:
-			_ = c.writeFrame(10, payload)
+			if err := c.writeFrame(10, payload); err != nil {
+				return nil, err
+			}
+		case 10:
+			c.handlerMu.RLock()
+			handler := c.pongHandler
+			c.handlerMu.RUnlock()
+			if handler != nil {
+				handler()
+			}
+		default:
+			return nil, fmt.Errorf("unsupported websocket opcode %d", op)
 		}
 	}
 }
 
-func (c *Conn) WriteText(payload []byte) error {
-	return c.writeFrame(1, payload)
+func (c *Conn) WriteText(payload []byte) error { return c.writeFrame(1, payload) }
+
+func (c *Conn) WritePing(payload []byte) error {
+	if len(payload) > 125 {
+		return errors.New("websocket ping payload too large")
+	}
+	return c.writeFrame(9, payload)
+}
+
+func (c *Conn) SetReadDeadline(deadline time.Time) error { return c.c.SetReadDeadline(deadline) }
+
+func (c *Conn) SetWriteDeadline(deadline time.Time) error { return c.c.SetWriteDeadline(deadline) }
+
+func (c *Conn) SetPongHandler(handler func()) {
+	c.handlerMu.Lock()
+	c.pongHandler = handler
+	c.handlerMu.Unlock()
 }
 
 func (c *Conn) Close() error {
-	_ = c.writeFrame(8, nil)
-	return c.c.Close()
+	c.closeOnce.Do(func() {
+		c.writeClose([]byte{0x03, 0xe8})
+		c.closeErr = c.c.Close()
+	})
+	return c.closeErr
 }
 
-func (c *Conn) readFrame() (byte, []byte, error) {
-	h := make([]byte, 2)
-	if _, err := io.ReadFull(c.br, h); err != nil {
-		return 0, nil, err
+func (c *Conn) writeClose(payload []byte) {
+	c.closeFrameOnce.Do(func() { _ = c.writeFrame(8, payload) })
+}
+
+func (c *Conn) readFrame() (bool, byte, []byte, error) {
+	var h [2]byte
+	if _, err := io.ReadFull(c.br, h[:]); err != nil {
+		return false, 0, nil, err
+	}
+	fin := h[0]&0x80 != 0
+	if h[0]&0x70 != 0 {
+		return false, 0, nil, errors.New("websocket extensions are not supported")
 	}
 	op := h[0] & 0x0f
 	masked := h[1]&0x80 != 0
+	if masked == c.isClient {
+		if c.isClient {
+			return false, 0, nil, errors.New("server websocket frame must not be masked")
+		}
+		return false, 0, nil, errors.New("client websocket frame must be masked")
+	}
 	l := uint64(h[1] & 0x7f)
 	if l == 126 {
 		var b [2]byte
 		if _, err := io.ReadFull(c.br, b[:]); err != nil {
-			return 0, nil, err
+			return false, 0, nil, err
 		}
 		l = uint64(binary.BigEndian.Uint16(b[:]))
+		if l < 126 {
+			return false, 0, nil, errors.New("non-canonical websocket frame length")
+		}
 	} else if l == 127 {
 		var b [8]byte
 		if _, err := io.ReadFull(c.br, b[:]); err != nil {
-			return 0, nil, err
+			return false, 0, nil, err
 		}
 		l = binary.BigEndian.Uint64(b[:])
+		if l&(uint64(1)<<63) != 0 || l <= 65535 {
+			return false, 0, nil, errors.New("invalid websocket frame length")
+		}
+	}
+	if op >= 8 && (!fin || l > 125) {
+		return false, 0, nil, errors.New("invalid websocket control frame")
+	}
+	if l > maxMessageSize {
+		return false, 0, nil, errors.New("websocket frame too large")
 	}
 	var mask [4]byte
 	if masked {
 		if _, err := io.ReadFull(c.br, mask[:]); err != nil {
-			return 0, nil, err
+			return false, 0, nil, err
 		}
 	}
-	if l > 16<<20 {
-		return 0, nil, errors.New("websocket frame too large")
-	}
-	payload := make([]byte, l)
+	payload := make([]byte, int(l))
 	if _, err := io.ReadFull(c.br, payload); err != nil {
-		return 0, nil, err
+		return false, 0, nil, err
 	}
 	if masked {
 		for i := range payload {
 			payload[i] ^= mask[i%4]
 		}
 	}
-	return op, payload, nil
+	return fin, op, payload, nil
 }
 
 func (c *Conn) writeFrame(op byte, payload []byte) error {
-	h := []byte{0x80 | op, 0}
+	if op >= 8 && len(payload) > 125 {
+		return errors.New("websocket control payload too large")
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	maskBit := byte(0)
 	if c.isClient {
 		maskBit = 0x80
 	}
-	l := len(payload)
+	headerLen := 2
 	switch {
-	case l < 126:
-		h[1] = maskBit | byte(l)
-	case l <= 65535:
-		h[1] = maskBit | 126
-		var b [2]byte
-		binary.BigEndian.PutUint16(b[:], uint16(l))
-		h = append(h, b[:]...)
+	case len(payload) < 126:
+	case len(payload) <= 65535:
+		headerLen += 2
 	default:
-		h[1] = maskBit | 127
-		var b [8]byte
-		binary.BigEndian.PutUint64(b[:], uint64(l))
-		h = append(h, b[:]...)
+		headerLen += 8
 	}
 	if c.isClient {
-		var mask [4]byte
-		if _, err := rand.Read(mask[:]); err != nil {
+		headerLen += 4
+	}
+	frame := make([]byte, headerLen+len(payload))
+	frame[0] = 0x80 | op
+	pos := 2
+	switch {
+	case len(payload) < 126:
+		frame[1] = maskBit | byte(len(payload))
+	case len(payload) <= 65535:
+		frame[1] = maskBit | 126
+		binary.BigEndian.PutUint16(frame[pos:pos+2], uint16(len(payload)))
+		pos += 2
+	default:
+		frame[1] = maskBit | 127
+		binary.BigEndian.PutUint64(frame[pos:pos+8], uint64(len(payload)))
+		pos += 8
+	}
+	if c.isClient {
+		mask := frame[pos : pos+4]
+		if _, err := rand.Read(mask); err != nil {
 			return err
 		}
-		h = append(h, mask[:]...)
-		masked := make([]byte, len(payload))
+		pos += 4
 		for i := range payload {
-			masked[i] = payload[i] ^ mask[i%4]
+			frame[pos+i] = payload[i] ^ mask[i%4]
 		}
-		payload = masked
+	} else {
+		copy(frame[pos:], payload)
 	}
-	if _, err := c.c.Write(h); err != nil {
-		return err
+	return writeFull(c.c, frame)
+}
+
+func writeFull(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if n > 0 {
+			p = p[n:]
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
 	}
-	_, err := c.c.Write(payload)
-	return err
+	return nil
 }
 
 func acceptKey(key string) string {
@@ -243,10 +388,35 @@ func acceptKey(key string) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
-func randomKey() (string, error) {
+func NewHandshakeKey() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(b[:]), nil
+}
+
+func validHandshakeKey(key string) bool {
+	b, err := base64.StdEncoding.DecodeString(key)
+	return err == nil && len(b) == 16
+}
+
+func isWebSocketHandshakeHeader(key string) bool {
+	switch http.CanonicalHeaderKey(key) {
+	case "Host", "Upgrade", "Connection", "Sec-Websocket-Version", "Sec-Websocket-Key":
+		return true
+	default:
+		return false
+	}
+}
+
+func headerHasToken(header http.Header, name, token string) bool {
+	for _, value := range header.Values(name) {
+		for _, part := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(part), token) {
+				return true
+			}
+		}
+	}
+	return false
 }

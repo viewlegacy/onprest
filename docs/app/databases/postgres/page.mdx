@@ -10,6 +10,11 @@ database:
   name: legacy
   user: readonly_user
   password: change-me
+  tls:
+    mode: verify-full
+    ca_file: /etc/onprest/db-ca.pem
+    cert_file: /etc/onprest/db-client.pem
+    key_file: /etc/onprest/db-client-key.pem
 ```
 
 ## SQL Parameters
@@ -26,9 +31,11 @@ PostgreSQL capabilities are checked with `EXPLAIN` during agent startup.
 
 If EXPLAIN fails, the agent does not connect to gateway. Detail stays in `onprest-agent.log`.
 
-## Connection Note
+## TLS
 
-The current agent-generated PostgreSQL DSN includes `sslmode=disable`.
+`database.tls.mode` accepts `disable` (default), `require`, `verify-ca`, and `verify-full`. Use `verify-full` for CA and hostname verification. Set `ca_file` when the signing CA is not available through the driver's default trust location. `cert_file` and `key_file` enable client-certificate authentication and must be supplied together. Certificate files are read by the PostgreSQL driver from the configured paths, so restrict their filesystem permissions to the agent service account.
+
+`require` encrypts the connection but does not provide the same server-identity guarantee as `verify-full`. Existing files with no `tls` section retain `sslmode=disable`.
 
 ## Integration Test
 

@@ -76,6 +76,52 @@ func TestContainerDBDriverSmoke(t *testing.T) {
 	}
 }
 
+func TestMySQLDSNSpecialCredentialsConnectToRealDatabase(t *testing.T) {
+	if !selectedDBForTest(t, "mysql") {
+		return
+	}
+	admin := selectedContainerDBConfig(t, "mysql")
+	seedCustomerTable(t, "mysql", admin)
+	root := admin
+	root.User = "root"
+	special := admin
+	special.User = "onprest@special/name"
+	special.Password = "p@ss:/word?&=#"
+	execDBStatements(t, "mysql", root, []string{
+		"CREATE USER IF NOT EXISTS 'onprest@special/name'@'%' IDENTIFIED BY 'p@ss:/word?&=#'",
+		"GRANT SELECT ON `" + admin.Name + "`.* TO 'onprest@special/name'@'%'",
+		"FLUSH PRIVILEGES",
+	})
+	t.Cleanup(func() {
+		execDBStatements(t, "mysql", root, []string{"DROP USER IF EXISTS 'onprest@special/name'@'%'"})
+	})
+
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	capabilityFile := writeContainerCapability(t, t.TempDir(), "mysql", special, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey,
+		"select id, name, email from onprest_it_customers where id = :id")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	baseURL := startInternalGateway(t, ctx, addr, secrets, 2*time.Second)
+	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatalf("NewRunner with special MySQL credentials: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- runner.Run(ctx) }()
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+	status, body := postCapability(t, baseURL, secrets.APIKey, "get_customer", `{"id":7}`)
+	if status != http.StatusOK || !strings.Contains(string(body), `"Ada"`) {
+		t.Fatalf("special MySQL credential query status=%d body=%s", status, body)
+	}
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent runner did not stop")
+	}
+}
+
 func TestContainerDBDriverErrorsAreHiddenFromGatewayResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -164,8 +210,8 @@ func TestContainerDBDriverTimeoutsAreNormalized(t *testing.T) {
 			waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
 
 			status, body := postCapability(t, baseURL, secrets.APIKey, "slow_query", `{}`)
-			if status != http.StatusBadGateway {
-				t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+			if status != http.StatusGatewayTimeout {
+				t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusGatewayTimeout, string(body))
 			}
 			requireAPIErrorCode(t, body, "AGENT_QUERY_TIMEOUT")
 			if strings.Contains(strings.ToLower(string(body)), "sleep") ||

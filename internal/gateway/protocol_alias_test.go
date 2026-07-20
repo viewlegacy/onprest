@@ -7,5 +7,5 @@ type agentResponse = protocol.Response
 type wireError = protocol.Error
 
 func agentAuthMessage(path, timestamp, nonce string) []byte {
-	return protocol.AgentAuthMessage(path, timestamp, nonce)
+	return protocol.AgentAuthMessage(path, timestamp, nonce, testHandshakeKey)
 }

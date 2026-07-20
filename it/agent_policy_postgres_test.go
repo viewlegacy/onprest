@@ -93,8 +93,8 @@ func TestPostgresPolicyAndQueryFailures(t *testing.T) {
 	}
 
 	status, body = postCapability(t, baseURL, secrets.APIKey, "slow_query", `{}`)
-	if status != http.StatusBadGateway {
-		t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+	if status != http.StatusGatewayTimeout {
+		t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusGatewayTimeout, string(body))
 	}
 	requireAPIErrorCode(t, body, "AGENT_QUERY_TIMEOUT")
 
@@ -114,6 +114,118 @@ func TestPostgresPolicyAndQueryFailures(t *testing.T) {
 	select {
 	case <-errCh:
 	case <-time.After(12 * time.Second):
+		t.Fatal("agent runner did not stop")
+	}
+}
+
+func TestReadonlyMultiStatementIsRejectedBeforeRealPostgresExecution(t *testing.T) {
+	dbConfig := postgresContainerConfig(t)
+	db, err := sql.Open("postgres", postgresDSN(dbConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, `create table if not exists onprest_readonly_guard (id integer primary key, value integer not null)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `insert into onprest_readonly_guard (id, value) values (1, 7) on conflict (id) do update set value = 7`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = db.ExecContext(cleanupCtx, `drop table if exists onprest_readonly_guard`)
+	})
+
+	secrets := newITSecrets(t)
+	capabilityFile := writePostgresCapability(t, t.TempDir(), dbConfig, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `  attempted_write:
+    sql: "select value from onprest_readonly_guard where id = 1; update onprest_readonly_guard set value = 99 where id = 1"
+    policy:
+      readonly: true
+      timeout: 2s
+      max_rows: 1
+      max_bytes: 128KB
+    result:
+      value:
+        type: integer`)
+	if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile}, nil); err == nil {
+		t.Fatal("NewRunner accepted readonly multi-statement SQL")
+	}
+	var value int
+	if err := db.QueryRowContext(ctx, `select value from onprest_readonly_guard where id = 1`).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value != 7 {
+		t.Fatalf("readonly rejected statement changed real DB value to %d", value)
+	}
+}
+
+func TestAgentExecutesIndependentRequestsConcurrentlyAgainstPostgres(t *testing.T) {
+	db := postgresContainerConfig(t)
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	capabilityFile := writePostgresCapability(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  blocking_query:
+    sql: /* onprest_it_parallel_block */ select 1::int as id from pg_sleep(1)
+    policy:
+      readonly: true
+      timeout: 2s
+      max_rows: 1
+      max_bytes: 128KB
+    result:
+      id:
+        type: integer
+  fast_query:
+    sql: select 2::int as id
+    policy:
+      readonly: true
+      timeout: 2s
+      max_rows: 1
+      max_bytes: 128KB
+    result:
+      id:
+        type: integer`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	baseURL := startInternalGateway(t, ctx, addr, secrets, 3*time.Second)
+	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- runner.Run(ctx) }()
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+	type result struct {
+		status int
+		body   []byte
+	}
+	blocking := make(chan result, 1)
+	go func() {
+		status, body := postCapability(t, baseURL, secrets.APIKey, "blocking_query", `{}`)
+		blocking <- result{status: status, body: body}
+	}()
+	waitForPostgresActiveQuery(t, db, "onprest_it_parallel_block")
+	start := time.Now()
+	status, body := postCapability(t, baseURL, secrets.APIKey, "fast_query", `{}`)
+	if status != http.StatusOK || !strings.Contains(string(body), `"id":2`) {
+		t.Fatalf("fast query status=%d body=%s", status, body)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("fast query was head-of-line blocked for %s", elapsed)
+	}
+	select {
+	case slow := <-blocking:
+		if slow.status != http.StatusOK || !strings.Contains(string(slow.body), `"id":1`) {
+			t.Fatalf("blocking query status=%d body=%s", slow.status, slow.body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("blocking query did not finish")
+	}
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
 		t.Fatal("agent runner did not stop")
 	}
 }

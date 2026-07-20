@@ -142,8 +142,13 @@ func signedAgentHeaders(t *testing.T, privateKey ed25519.PrivateKey, path string
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes[:])
 	timestamp := time.Now().UTC().Format(time.RFC3339)
-	signature := ed25519.Sign(privateKey, protocol.AgentAuthMessage(path, timestamp, nonce))
+	handshakeKey, err := ws.NewHandshakeKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := ed25519.Sign(privateKey, protocol.AgentAuthMessage(path, timestamp, nonce, handshakeKey))
 	headers := http.Header{}
+	headers.Set("Sec-WebSocket-Key", handshakeKey)
 	headers.Set("X-Agent-Timestamp", timestamp)
 	headers.Set("X-Agent-Nonce", nonce)
 	headers.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(signature))

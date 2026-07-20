@@ -1,11 +1,14 @@
 package gateway
 
 import (
+	"math"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 )
+
+const maxRateLimitBuckets = 10000
 
 func (s *Server) withAccess(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,6 +31,10 @@ func (s *Server) withAccess(next http.Handler) http.Handler {
 			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusTooManyRequests, errGatewayRateLimited, "too many requests", start)
 			writeJSON(w, http.StatusTooManyRequests, apiError(errGatewayRateLimited, "too many requests"))
 			return
+		}
+		if r.URL.Path != "/ws/agent" && r.Body != nil && r.Body != http.NoBody {
+			controller := http.NewResponseController(w)
+			_ = controller.SetReadDeadline(time.Now().Add(s.cfg.BodyReadTimeout))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -75,8 +82,15 @@ func (s *Server) take(ip string) bool {
 	s.rateMu.Lock()
 	defer s.rateMu.Unlock()
 	now := time.Now()
+	if s.rateLastCleanup.IsZero() || now.Sub(s.rateLastCleanup) >= time.Minute || len(s.rate) >= maxRateLimitBuckets {
+		s.cleanupRateBuckets(now)
+		s.rateLastCleanup = now
+	}
 	b := s.rate[ip]
 	if b == nil {
+		if len(s.rate) >= maxRateLimitBuckets {
+			s.evictOldestRateBucket()
+		}
 		s.rate[ip] = &bucket{tokens: float64(s.cfg.RateLimit.Burst - 1), last: now}
 		return true
 	}
@@ -91,6 +105,35 @@ func (s *Server) take(ip string) bool {
 	}
 	b.tokens--
 	return true
+}
+
+func (s *Server) cleanupRateBuckets(now time.Time) {
+	idleTTL := 10 * time.Minute
+	if s.cfg.RateLimit.RequestsPerSecond > 0 {
+		refill := time.Duration(math.Ceil(float64(s.cfg.RateLimit.Burst)/s.cfg.RateLimit.RequestsPerSecond)) * time.Second
+		if refill*2 > idleTTL {
+			idleTTL = refill * 2
+		}
+	}
+	cutoff := now.Add(-idleTTL)
+	for ip, b := range s.rate {
+		if b.last.Before(cutoff) {
+			delete(s.rate, ip)
+		}
+	}
+}
+
+func (s *Server) evictOldestRateBucket() {
+	var oldestIP string
+	var oldest time.Time
+	for ip, b := range s.rate {
+		if oldest.IsZero() || b.last.Before(oldest) {
+			oldestIP, oldest = ip, b.last
+		}
+	}
+	if oldestIP != "" {
+		delete(s.rate, oldestIP)
+	}
 }
 
 func remoteIP(r *http.Request) string {

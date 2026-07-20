@@ -62,3 +62,5 @@ The gateway logs the key `name`, not the plaintext API key.
 ```
 
 Choose stable names that identify the integration, team, or tenant using the key.
+
+Gateway accepts at most 100 configured API keys. This bound prevents a request from triggering an unbounded number of bcrypt comparisons. Successful authentication is cached for up to five minutes in a bounded 1,024-entry in-memory cache keyed by a SHA-256 digest; plaintext API keys are never stored in that cache or written to logs. Rotation or configuration changes require a gateway restart, which also clears the cache.

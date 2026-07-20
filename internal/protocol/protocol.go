@@ -23,8 +23,8 @@ type Error struct {
 	Message string `json:"message,omitempty"`
 }
 
-func AgentAuthMessage(path, timestamp, nonce string) []byte {
-	return []byte(AgentAuthVersion + "\n" + path + "\n" + timestamp + "\n" + nonce)
+func AgentAuthMessage(path, timestamp, nonce, handshakeKey string) []byte {
+	return []byte(AgentAuthVersion + "\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + handshakeKey)
 }
 
 func ResultResponse(id string, result any) Response {

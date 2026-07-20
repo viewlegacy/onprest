@@ -44,6 +44,11 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json body"))
 		return
 	}
+	if err := ensureJSONEOF(dec); err != nil {
+		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "invalid json body", start)
+		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json body"))
+		return
+	}
 	result := s.callAgent(r.Context(), name, params)
 	s.accessLog(reqID, key.Name, name, result.Status, result.Code, result.Message, start)
 	if !result.OK() {
