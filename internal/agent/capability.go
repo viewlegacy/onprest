@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -20,11 +22,16 @@ import (
 
 type CapabilityFile struct {
 	Service      ServiceDef               `json:"service" yaml:"service"`
+	Runtime      RuntimeDef               `json:"runtime" yaml:"runtime"`
 	Gateway      GatewayDef               `json:"gateway" yaml:"gateway"`
 	Database     DatabaseDef              `json:"database" yaml:"database"`
 	Logging      LoggingDef               `json:"logging" yaml:"logging"`
 	Defaults     PolicyDef                `json:"defaults" yaml:"defaults"`
 	Capabilities map[string]CapabilityDef `json:"capabilities" yaml:"capabilities"`
+}
+
+type RuntimeDef struct {
+	MaxConcurrentRequests *int `json:"max_concurrent_requests,omitempty" yaml:"max_concurrent_requests,omitempty"`
 }
 
 type ServiceDef struct {
@@ -105,7 +112,16 @@ func LoadCapabilityFile(path string) (*CapabilityFile, error) {
 		return nil, err
 	}
 	var cf CapabilityFile
-	if err := yaml.Unmarshal(b, &cf); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cf); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse capability.yaml: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("parse capability.yaml: multiple YAML documents are not allowed")
+		}
 		return nil, fmt.Errorf("parse capability.yaml: %w", err)
 	}
 	if err := cf.Lint(); err != nil {
@@ -115,6 +131,12 @@ func LoadCapabilityFile(path string) (*CapabilityFile, error) {
 }
 
 func (cf *CapabilityFile) Lint() error {
+	if cf.Runtime.MaxConcurrentRequests == nil {
+		defaultValue := 16
+		cf.Runtime.MaxConcurrentRequests = &defaultValue
+	} else if *cf.Runtime.MaxConcurrentRequests <= 0 {
+		return errors.New("runtime.max_concurrent_requests must be > 0")
+	}
 	if cf.Service.Title == "" {
 		cf.Service.Title = "Onprest Agent"
 	}

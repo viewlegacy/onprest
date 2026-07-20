@@ -19,8 +19,6 @@ import (
 	"github.com/viewlegacy/onprest/internal/ws"
 )
 
-const maxConcurrentAgentRequests = 16
-
 type Runner struct {
 	cfg             Config
 	cf              *CapabilityFile
@@ -65,7 +63,7 @@ func NewRunner(cfg Config, logOut io.Writer) (*Runner, error) {
 		return nil, startupFailure()
 	}
 	closeDetailLog = false
-	r.log("agent_ready", map[string]any{"capabilities": len(cf.Capabilities), "driver": cf.Database.Driver})
+	r.log("agent_ready", map[string]any{"capabilities": len(cf.Capabilities), "driver": cf.Database.Driver, "max_concurrent_requests": *cf.Runtime.MaxConcurrentRequests})
 	return r, nil
 }
 
@@ -124,7 +122,7 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 		}
 	}()
 	defer close(done)
-	sem := make(chan struct{}, maxConcurrentAgentRequests)
+	sem := make(chan struct{}, *r.cf.Runtime.MaxConcurrentRequests)
 	var workers sync.WaitGroup
 	defer func() {
 		cancel()

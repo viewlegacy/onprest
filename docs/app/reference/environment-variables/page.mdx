@@ -23,6 +23,7 @@ All optional gateway variables may be omitted. Empty values are treated the same
 | `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` | `10` | Per-source request rate |
 | `GATEWAY_RATE_LIMIT_BURST` | `20` | Per-source burst size |
 | `GATEWAY_EMIT_OPENAPI_SNAPSHOT` | `false` | When `true`, the gateway emits full cached OpenAPI metadata as an `openapi_snapshot` stdout event |
+| `GATEWAY_MAX_REQUEST_BODY_BYTES` | `1048576` | Maximum REST/MCP request body size in bytes; must be a positive integer |
 
 ## Example
 
@@ -40,6 +41,7 @@ GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$INgs32pPDl8EQAOTcQ1NN.e
 # GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
 # GATEWAY_RATE_LIMIT_BURST=20
 # GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
+# GATEWAY_MAX_REQUEST_BODY_BYTES=1048576
 ```
 
 ## Agent
@@ -63,3 +65,4 @@ Important fields:
 - `database.user`
 - `database.password`
 - `logging.max_size`
+- `runtime.max_concurrent_requests`

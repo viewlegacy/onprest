@@ -85,6 +85,9 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	if cfg.BodyReadTimeout <= 0 {
 		cfg.BodyReadTimeout = 15 * time.Second
 	}
+	if cfg.MaxRequestBodyBytes <= 0 {
+		cfg.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
+	}
 	s := &Server{cfg: cfg, logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)

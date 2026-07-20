@@ -6,6 +6,55 @@ import (
 	"testing"
 )
 
+func TestLoadConfigFromEnvRequestBodyLimitDefaultAndOverride(t *testing.T) {
+	setValidGatewayConfigEnv(t)
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxRequestBodyBytes != 1<<20 {
+		t.Fatalf("MaxRequestBodyBytes = %d, want %d", cfg.MaxRequestBodyBytes, 1<<20)
+	}
+
+	t.Setenv("GATEWAY_MAX_REQUEST_BODY_BYTES", "2097152")
+	cfg, err = LoadConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxRequestBodyBytes != 2<<20 {
+		t.Fatalf("MaxRequestBodyBytes = %d, want %d", cfg.MaxRequestBodyBytes, 2<<20)
+	}
+}
+
+func TestLoadConfigFromEnvRejectsInvalidRequestBodyLimit(t *testing.T) {
+	setValidGatewayConfigEnv(t)
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "zero", value: "0", want: "GATEWAY_MAX_REQUEST_BODY_BYTES must be > 0"},
+		{name: "negative", value: "-1", want: "GATEWAY_MAX_REQUEST_BODY_BYTES must be > 0"},
+		{name: "not integer", value: "1MB", want: "GATEWAY_MAX_REQUEST_BODY_BYTES must be an integer"},
+		{name: "overflow", value: "9223372036854775808", want: "GATEWAY_MAX_REQUEST_BODY_BYTES must be an integer"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GATEWAY_MAX_REQUEST_BODY_BYTES", tc.value)
+			if _, err := LoadConfigFromEnv(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadConfigFromEnv() error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func setValidGatewayConfigEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", testAgentPublicKey)
+	t.Setenv("GATEWAY_API_KEYS_JSON", `[{"name":"dev","key_hash":"hash","capabilities":["*"]}]`)
+}
+
 func TestLoadConfigFromEnvRejectsExcessiveAPIKeyCount(t *testing.T) {
 	t.Setenv("GATEWAY_AGENT_PUBLIC_KEY", testAgentPublicKey)
 	keys := make([]string, maxAPIKeys+1)

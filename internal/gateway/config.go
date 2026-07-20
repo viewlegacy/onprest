@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const defaultMaxRequestBodyBytes int64 = 1 << 20
+
 type Config struct {
 	Addr                string
 	PublicURL           string
@@ -28,6 +30,7 @@ type Config struct {
 	AgentPingInterval   time.Duration
 	AgentPongTimeout    time.Duration
 	BodyReadTimeout     time.Duration
+	MaxRequestBodyBytes int64
 	EmitOpenAPISnapshot bool
 }
 
@@ -63,6 +66,14 @@ func (c *capabilities) UnmarshalJSON(b []byte) error {
 }
 
 func LoadConfigFromEnv() (Config, error) {
+	maxRequestBodyBytes, err := envInt64("GATEWAY_MAX_REQUEST_BODY_BYTES", defaultMaxRequestBodyBytes)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxRequestBodyBytes <= 0 {
+		return Config{}, errors.New("GATEWAY_MAX_REQUEST_BODY_BYTES must be > 0")
+	}
+
 	rps, err := envFloat("GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND", 10)
 	if err != nil {
 		return Config{}, err
@@ -89,11 +100,12 @@ func LoadConfigFromEnv() (Config, error) {
 			RequestsPerSecond: rps,
 			Burst:             burst,
 		},
-		AgentTimeout:      30 * time.Second,
-		AgentWriteTimeout: 5 * time.Second,
-		AgentPingInterval: 15 * time.Second,
-		AgentPongTimeout:  10 * time.Second,
-		BodyReadTimeout:   15 * time.Second,
+		AgentTimeout:        30 * time.Second,
+		AgentWriteTimeout:   5 * time.Second,
+		AgentPingInterval:   15 * time.Second,
+		AgentPongTimeout:    10 * time.Second,
+		BodyReadTimeout:     15 * time.Second,
+		MaxRequestBodyBytes: maxRequestBodyBytes,
 	}
 	publicURL, err := normalizePublicURL(os.Getenv("GATEWAY_PUBLIC_URL"))
 	if err != nil {
@@ -214,6 +226,17 @@ func stripEnvQuotes(v string) string {
 func envInt(key string, fallback int) (int, error) {
 	if v := os.Getenv(key); v != "" {
 		n, err := strconv.Atoi(v)
+		if err != nil {
+			return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+		}
+		return n, nil
+	}
+	return fallback, nil
+}
+
+func envInt64(key string, fallback int64) (int64, error) {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			return 0, fmt.Errorf("%s must be an integer: %w", key, err)
 		}

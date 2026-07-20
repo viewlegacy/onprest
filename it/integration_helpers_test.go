@@ -64,14 +64,29 @@ func newITSecrets(t *testing.T) itSecrets {
 
 func writePostgresCapability(t *testing.T, dir string, db postgresConfig, gatewayURL, agentPrivateKey, capabilities string) string {
 	t.Helper()
-	return writePostgresCapabilityWithLogging(t, dir, db, gatewayURL, agentPrivateKey, "10MB", 3, capabilities)
+	return writePostgresCapabilityWithRuntimeAndLogging(t, dir, db, gatewayURL, agentPrivateKey, 0, "10MB", 3, capabilities)
 }
 
 func writePostgresCapabilityWithLogging(t *testing.T, dir string, db postgresConfig, gatewayURL, agentPrivateKey, maxSize string, maxFiles int, capabilities string) string {
 	t.Helper()
+	return writePostgresCapabilityWithRuntimeAndLogging(t, dir, db, gatewayURL, agentPrivateKey, 0, maxSize, maxFiles, capabilities)
+}
+
+func writePostgresCapabilityWithRuntime(t *testing.T, dir string, db postgresConfig, gatewayURL, agentPrivateKey string, maxConcurrentRequests int, capabilities string) string {
+	t.Helper()
+	return writePostgresCapabilityWithRuntimeAndLogging(t, dir, db, gatewayURL, agentPrivateKey, maxConcurrentRequests, "10MB", 3, capabilities)
+}
+
+func writePostgresCapabilityWithRuntimeAndLogging(t *testing.T, dir string, db postgresConfig, gatewayURL, agentPrivateKey string, maxConcurrentRequests int, maxSize string, maxFiles int, capabilities string) string {
+	t.Helper()
+	runtime := ""
+	if maxConcurrentRequests > 0 {
+		runtime = fmt.Sprintf("runtime:\n  max_concurrent_requests: %d\n", maxConcurrentRequests)
+	}
 	content := fmt.Sprintf(`service:
   title: Onprest PostgreSQL IT
   version: 0.1.0
+%s
 database:
   driver: postgres
   host: %s
@@ -87,7 +102,7 @@ logging:
   max_files: %d
 capabilities:
 %s
-`, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), maxSize, maxFiles, capabilities)
+`, runtime, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), maxSize, maxFiles, capabilities)
 	path := filepath.Join(dir, "capability.postgres.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write capability: %v", err)
@@ -166,19 +181,30 @@ func dialManualAgent(t *testing.T, gatewayURL string, privateKey ed25519.Private
 
 func postCapability(t *testing.T, baseURL, apiKey, name, payload string) (int, []byte) {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/v1/capabilities/"+name, strings.NewReader(payload))
+	status, body, err := postCapabilityRequest(baseURL, apiKey, name, payload)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return status, body
+}
+
+func postCapabilityRequest(baseURL, apiKey, name, payload string) (int, []byte, error) {
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/v1/capabilities/"+name, strings.NewReader(payload))
+	if err != nil {
+		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
+	return resp.StatusCode, body, nil
 }
 
 func requireAPIErrorCode(t *testing.T, body []byte, want string) {

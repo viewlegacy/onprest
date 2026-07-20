@@ -310,8 +310,31 @@ func TestCapabilityEndpointHTTPErrorCases(t *testing.T) {
 	}
 }
 
-func TestRESTAndMCPRejectBodiesOverOneMiB(t *testing.T) {
+func TestRESTAndMCPUseDefaultOneMiBBodyLimit(t *testing.T) {
 	s, _, apiKey := testServer(t)
+	if s.cfg.MaxRequestBodyBytes != 1<<20 {
+		t.Fatalf("default MaxRequestBodyBytes = %d, want %d", s.cfg.MaxRequestBodyBytes, 1<<20)
+	}
+	restExactBody := paddedJSONObject(t, `{"padding":"`, `"}`, int(s.cfg.MaxRequestBodyBytes))
+	restExact := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(restExactBody))
+	restExact.Header.Set("Authorization", "Bearer "+apiKey)
+	restExact.Header.Set("Content-Type", "application/json")
+	restExactRec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(restExactRec, restExact)
+	if restExactRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("REST default exact-limit status=%d, want offline response proving body was accepted; body=%s", restExactRec.Code, restExactRec.Body.String())
+	}
+
+	mcpExactBody := paddedJSONObject(t, `{"jsonrpc":"2.0","id":1,"method":"ping","padding":"`, `"}`, int(s.cfg.MaxRequestBodyBytes))
+	mcpExact := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpExactBody))
+	mcpExact.Header.Set("Authorization", "Bearer "+apiKey)
+	mcpExact.Header.Set("Content-Type", "application/json")
+	mcpExactRec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(mcpExactRec, mcpExact)
+	if mcpExactRec.Code != http.StatusOK || !strings.Contains(mcpExactRec.Body.String(), `"result"`) {
+		t.Fatalf("MCP default exact-limit status=%d body=%s", mcpExactRec.Code, mcpExactRec.Body.String())
+	}
+
 	largeString := strings.Repeat("x", (1<<20)+1)
 	rest := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{"value":"`+largeString+`"}`))
 	rest.Header.Set("Authorization", "Bearer "+apiKey)
@@ -332,6 +355,64 @@ func TestRESTAndMCPRejectBodiesOverOneMiB(t *testing.T) {
 		t.Fatalf("MCP oversized status=%d body=%s", mcpRec.Code, mcpRec.Body.String())
 	}
 	assertMCPErrorMessage(t, mcpRec.Body.Bytes(), -32700, errJSONRPCParseError, "invalid json rpc")
+}
+
+func TestRESTAndMCPApplyConfiguredBodyLimitAtExactBoundary(t *testing.T) {
+	s, _, apiKey := testServer(t)
+	s.cfg.MaxRequestBodyBytes = 96
+
+	restBody := paddedJSONObject(t, `{"padding":"`, `"}`, int(s.cfg.MaxRequestBodyBytes))
+	rest := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(restBody))
+	rest.Header.Set("Authorization", "Bearer "+apiKey)
+	rest.Header.Set("Content-Type", "application/json")
+	restRec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(restRec, rest)
+	if restRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("REST exact-limit status=%d, want offline response proving body was accepted; body=%s", restRec.Code, restRec.Body.String())
+	}
+
+	rest = httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(restBody+" "))
+	rest.Header.Set("Authorization", "Bearer "+apiKey)
+	rest.Header.Set("Content-Type", "application/json")
+	restRec = httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(restRec, rest)
+	if restRec.Code != http.StatusBadRequest {
+		t.Fatalf("REST over-limit status=%d, want 400; body=%s", restRec.Code, restRec.Body.String())
+	}
+	assertAPIErrorMessage(t, restRec.Body.Bytes(), errGatewayInvalidRequest, "invalid json body")
+
+	mcpBody := paddedJSONObject(t, `{"jsonrpc":"2.0","id":1,"method":"ping","padding":"`, `"}`, int(s.cfg.MaxRequestBodyBytes))
+	mcp := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpBody))
+	mcp.Header.Set("Authorization", "Bearer "+apiKey)
+	mcp.Header.Set("Content-Type", "application/json")
+	mcpRec := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(mcpRec, mcp)
+	if mcpRec.Code != http.StatusOK || !strings.Contains(mcpRec.Body.String(), `"result"`) {
+		t.Fatalf("MCP exact-limit status=%d body=%s", mcpRec.Code, mcpRec.Body.String())
+	}
+
+	mcp = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpBody+" "))
+	mcp.Header.Set("Authorization", "Bearer "+apiKey)
+	mcp.Header.Set("Content-Type", "application/json")
+	mcpRec = httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(mcpRec, mcp)
+	if mcpRec.Code != http.StatusOK {
+		t.Fatalf("MCP over-limit status=%d body=%s", mcpRec.Code, mcpRec.Body.String())
+	}
+	assertMCPErrorMessage(t, mcpRec.Body.Bytes(), -32700, errJSONRPCParseError, "invalid json rpc")
+}
+
+func paddedJSONObject(t *testing.T, prefix, suffix string, size int) string {
+	t.Helper()
+	padding := size - len(prefix) - len(suffix)
+	if padding < 0 {
+		t.Fatalf("requested JSON size %d is smaller than fixed content %d", size, len(prefix)+len(suffix))
+	}
+	body := prefix + strings.Repeat("x", padding) + suffix
+	if len(body) != size {
+		t.Fatalf("generated JSON body size = %d, want %d", len(body), size)
+	}
+	return body
 }
 
 func TestCapabilityEndpointUsesDirectParamsBody(t *testing.T) {

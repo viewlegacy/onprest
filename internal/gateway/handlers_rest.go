@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-const maxGatewayRequestBodyBytes int64 = 1 << 20
-
 func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqID := newID()
@@ -39,7 +37,7 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var params map[string]any
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxGatewayRequestBodyBytes))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes))
 	dec.UseNumber()
 	if err := dec.Decode(&params); err != nil {
 		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "invalid json body", start)

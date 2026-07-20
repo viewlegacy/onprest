@@ -87,6 +87,7 @@ GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabiliti
 # GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
 # GATEWAY_RATE_LIMIT_BURST=20
 # GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
+# GATEWAY_MAX_REQUEST_BODY_BYTES=1048576
 ```
 
 The `key_hash` value in `GATEWAY_API_KEYS_JSON` is a bcrypt hash, so it contains `$`. Single-quote the whole JSON value when loading it through a shell.
@@ -100,6 +101,9 @@ service:
   title: Example CRM Capabilities
   version: 0.1.0
   description: Example agent-defined capabilities for a legacy CRM database.
+
+runtime:
+  max_concurrent_requests: 16
 
 gateway:
   url: ws://localhost:8080/ws/agent

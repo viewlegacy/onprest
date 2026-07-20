@@ -57,6 +57,7 @@ Then decide whether to set:
 - `GATEWAY_TRUSTED_PROXY_CIDRS` when running behind a reverse proxy or load balancer.
 - `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` and `GATEWAY_RATE_LIMIT_BURST` for per-source rate limiting.
 - `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true` only when an operator needs the full OpenAPI document on gateway stdout for collection.
+- `GATEWAY_MAX_REQUEST_BODY_BYTES` when the default 1 MiB REST/MCP request body limit is unsuitable. Set a positive integer byte count and restart the gateway.
 
 For the agent, configure `capability.yaml` and pass it with `--config`. If `--config` and `AGENT_CAPABILITY_FILE` are both omitted, the agent reads `capability.yaml` next to the `onprest-agent` binary. `AGENT_CAPABILITY_FILE` remains available for environments that prefer env-based configuration:
 

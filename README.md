@@ -170,6 +170,7 @@ This makes MCP useful without turning the legacy database into an unrestricted A
 It defines:
 
 - service metadata
+- agent runtime limits, including concurrent request execution
 - gateway connection settings
 - database connection fields
 - agent private key

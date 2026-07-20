@@ -105,6 +105,7 @@ The gateway is a Go single binary. It has no persistent state and holds only the
 - agent WebSocket endpoint
 - stdout JSON logging
 - graceful shutdown
+- one request-body limit for both REST and MCP, configured by gateway env and defaulting to 1 MiB
 
 Agent connections are limited to one live connection. The gateway sends WebSocket ping frames and requires timely pong traffic, so a stale TCP session is closed and a replacement may connect. If another agent tries to connect while the existing session is still live, the gateway rejects it and writes a warning log.
 
@@ -126,7 +127,7 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - OpenAPI spec generation
 - runtime detail output to the local log
 - reconnect every 30 seconds
-- up to 16 concurrent capability executions per connection
+- up to `runtime.max_concurrent_requests` concurrent capability executions per connection (default 16)
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 

@@ -16,7 +16,7 @@ Content-Type: application/json
 
 `POST` is the only allowed HTTP method. Other methods return `GATEWAY_METHOD_NOT_ALLOWED`.
 
-The HTTP request body limit is 1 MiB (1,048,576 bytes). An oversized body, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The gateway also bounds body-read time.
+The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The gateway also bounds body-read time. See [Gateway Configuration](/gateway/configuration).
 
 ## Methods
 

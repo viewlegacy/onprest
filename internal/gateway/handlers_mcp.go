@@ -21,7 +21,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
 	}
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxGatewayRequestBodyBytes))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes))
 	dec.UseNumber()
 	if err := dec.Decode(&req); err != nil {
 		writeMCPError(w, nil, -32700, errJSONRPCParseError, "invalid json rpc")

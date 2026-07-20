@@ -28,7 +28,7 @@ The request body is the params object directly.
 
 Do not wrap params in a `params` field.
 
-The request body limit is 1 MiB (1,048,576 bytes). A larger body, malformed JSON, more than one top-level JSON value, or a non-JSON content type returns HTTP 400 with `GATEWAY_INVALID_REQUEST`. The gateway also applies a bounded body-read time so a client cannot occupy a connection indefinitely by sending the body too slowly.
+The request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, more than one top-level JSON value, or a non-JSON content type returns HTTP 400 with `GATEWAY_INVALID_REQUEST`. The gateway also applies a bounded body-read time so a client cannot occupy a connection indefinitely by sending the body too slowly. See [Gateway Configuration](/gateway/configuration).
 
 ## Success Response
 

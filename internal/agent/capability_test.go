@@ -52,6 +52,72 @@ capabilities:
 	if cf.Capabilities["get_customer"].Name != "get_customer" {
 		t.Fatalf("unexpected capability: %#v", cf.Capabilities["get_customer"])
 	}
+	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
+		t.Fatalf("runtime.max_concurrent_requests = %v, want default 16", cf.Runtime.MaxConcurrentRequests)
+	}
+}
+
+func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
+	cf, err := LoadCapabilityFile(filepath.Join("..", "..", "examples", "capability.postgres.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
+		t.Fatalf("example runtime.max_concurrent_requests = %v, want 16", cf.Runtime.MaxConcurrentRequests)
+	}
+}
+
+func TestCapabilityFileRuntimeMaxConcurrentRequests(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime string
+		want    int
+		wantErr string
+	}{
+		{name: "custom", runtime: "runtime:\n  max_concurrent_requests: 3\n", want: 3},
+		{name: "zero", runtime: "runtime:\n  max_concurrent_requests: 0\n", wantErr: "runtime.max_concurrent_requests must be > 0"},
+		{name: "negative", runtime: "runtime:\n  max_concurrent_requests: -1\n", wantErr: "runtime.max_concurrent_requests must be > 0"},
+		{name: "not integer", runtime: "runtime:\n  max_concurrent_requests: many\n", wantErr: "cannot unmarshal"},
+		{name: "unknown field", runtime: "runtime:\n  max_concurrent_request: 3\n", wantErr: "field max_concurrent_request not found"},
+		{name: "multiple documents", runtime: "runtime: {}\n---\n", wantErr: "multiple YAML documents"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "capability.yaml")
+			content := tc.runtime + `database:
+  driver: postgres
+  host: localhost
+  port: 5432
+  name: legacy
+  user: readonly_user
+gateway:
+  url: ws://localhost:8080/ws/agent
+  agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+capabilities:
+  get_customer:
+    sql: select 1 as id
+    result:
+      id:
+        type: integer
+`
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cf, err := LoadCapabilityFile(path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("LoadCapabilityFile() error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != tc.want {
+				t.Fatalf("runtime.max_concurrent_requests = %v, want %d", cf.Runtime.MaxConcurrentRequests, tc.want)
+			}
+		})
+	}
 }
 
 func TestCapabilityFileRejectsWriteSQLWhenReadonly(t *testing.T) {

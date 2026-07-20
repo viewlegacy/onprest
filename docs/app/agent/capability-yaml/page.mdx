@@ -10,6 +10,9 @@ service:
   version: 0.1.0
   description: Agent-defined capabilities for a legacy CRM database.
 
+runtime:
+  max_concurrent_requests: 16
+
 gateway:
   url: "wss://customer-abc.example.com/ws/agent"
   agent_private_key: "base64url-ed25519-private-key"
@@ -71,6 +74,7 @@ capabilities:
 | Section | Purpose |
 |---|---|
 | `service` | OpenAPI info metadata |
+| `runtime` | agent request execution limits |
 | `gateway` | gateway WebSocket URL and agent private key |
 | `database` | DB driver and connection settings |
 | `logging` | agent local detail log rotation settings |
@@ -107,6 +111,14 @@ For AI/MCP use, write descriptions as stable business-facing contract text. Do n
 | `description` | No | empty | OpenAPI service-level documentation |
 
 When `title` or `version` is empty, the agent fills in the default shown above at startup.
+
+## Runtime
+
+| Field | Required | Default | Description |
+|---|---:|---:|---|
+| `max_concurrent_requests` | No | `16` | Maximum capability requests executed concurrently on one gateway connection |
+
+The value must be a positive integer. Requests above the configured limit remain queued on the connection until a running request finishes; they are not sent to the database early. Higher values can increase throughput but also increase simultaneous database work and connection-pool demand. Lower values reduce database pressure and can introduce head-of-line waiting. Unknown YAML fields and multiple YAML documents are rejected at startup so a misspelled limit cannot silently fall back to `16`. Restart the agent to apply a change.
 
 ## Gateway
 
