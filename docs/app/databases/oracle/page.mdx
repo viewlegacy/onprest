@@ -2,7 +2,7 @@
 
 Use `database.driver: oracle`.
 
-Oracle support uses `godror`, so the agent environment must satisfy the Oracle runtime prerequisites required by that driver.
+Oracle support uses the pure-Go `go-ora` driver. The agent does not require Oracle Instant Client or another native Oracle client library.
 
 ```yaml
 database:

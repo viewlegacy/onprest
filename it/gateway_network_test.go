@@ -142,13 +142,21 @@ func TestGatewayCacheUpdatesWhenAgentReconnects(t *testing.T) {
 	}
 	_ = first.Close()
 	waitForAgentDisconnected(t, baseURL)
+	if status, body := getWithAPIKeyStatus(t, baseURL+"/openapi.json", secrets.APIKey); status != http.StatusServiceUnavailable || strings.Contains(string(body), "first_capability") {
+		t.Fatalf("disconnected OpenAPI status=%d body=%s", status, string(body))
+	}
 
 	second := dialManualAgent(t, "ws://"+addr+"/ws/agent", secrets.PrivateKey)
 	defer second.Close()
 	serveMetaOnce(t, second, openAPIDocFor("second_capability"))
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		got := string(getWithAPIKey(t, baseURL+"/openapi.json", secrets.APIKey))
+		status, body := getWithAPIKeyStatus(t, baseURL+"/openapi.json", secrets.APIKey)
+		got := string(body)
+		if status != http.StatusOK {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
 		if strings.Contains(got, "second_capability") && !strings.Contains(got, "first_capability") {
 			return
 		}

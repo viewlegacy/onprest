@@ -70,7 +70,20 @@ At runtime:
 
 If the agent private key leaks, rotate the key.
 
-During the WebSocket handshake, the gateway verifies the agent's Ed25519 signature over `path + timestamp + nonce` with the public key. Timestamp tolerance and nonce reuse rejection reduce replay risk.
+Before each WebSocket handshake, the agent obtains a one-time challenge with `POST /ws/agent/challenge`. The gateway then verifies an Ed25519 signature over this exact UTF-8 byte sequence (with LF separators and no trailing LF):
+
+```text
+onprest-agent-v2
+<request path>
+<RFC3339 timestamp>
+<nonce>
+<gateway challenge>
+<Sec-WebSocket-Key>
+```
+
+The gateway validates the signature before atomically consuming both the challenge and nonce. Challenges expire after one minute, are bounded in memory, and exist only in the gateway process that issued them. A captured complete handshake therefore fails both after first use and after a gateway restart. Binding `Sec-WebSocket-Key` prevents substitution of a different handshake key; it is not, by itself, a replay store.
+
+Use `wss://` for every non-loopback agent connection so challenges and authentication headers cannot be captured from the network. Plain `ws://` is accepted by default only for loopback development. `gateway.allow_insecure_non_loopback_ws: true` is an explicit escape hatch for an isolated development network and must not be used in production.
 
 Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `GATEWAY_AGENT_ALREADY_CONNECTED`.
 

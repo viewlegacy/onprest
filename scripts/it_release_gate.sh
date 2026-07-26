@@ -20,11 +20,6 @@ cleanup_logs() {
 }
 trap cleanup_logs EXIT
 
-run_plain() {
-	echo "==> $*"
-	"$@"
-}
-
 run_go_json_no_skip() {
 	local label="$1"
 	shift
@@ -34,9 +29,11 @@ run_go_json_no_skip() {
 	"$@" >"$log" 2>&1
 	local status=$?
 	set -e
-	if grep -q '"Action":"skip"' "$log"; then
+	# Package-level skip records have no Test field and are emitted for packages
+	# without test files. Only an actual test/subtest skip invalidates the gate.
+	if grep -Eq '"Action":"skip".*"Test":"[^"]+"' "$log"; then
 		echo "skip detected in $label; full log: $log" >&2
-		grep '"Action":"skip"' "$log" >&2 || true
+		grep -E '"Action":"skip".*"Test":"[^"]+"' "$log" >&2 || true
 		exit 1
 	fi
 	if [[ "$status" -ne 0 ]]; then
@@ -78,7 +75,7 @@ echo "integration release gate logs: $LOG_DIR"
 
 assert_docker_available
 
-run_plain go test ./...
+run_go_json_no_skip "unit" go test -json ./...
 
 run_go_json_no_skip "postgres-ci" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
@@ -91,6 +88,14 @@ run_go_json_no_skip "postgres-db-interruption-stability" \
 run_go_json_no_skip "all-db-smoke" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
 	go test -json -tags=integration ./it/... -run '^TestContainerDBDriver' -timeout 30m -count=1 -args -onprest-it-db=all
+
+run_go_json_no_skip "mysql-special-credentials" \
+	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
+	go test -json -tags=integration ./it/... -run '^TestMySQLDSNSpecialCredentialsConnectToRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=mysql
+
+run_go_json_no_skip "sqlserver-tls" \
+	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
+	go test -json -tags=integration ./it/... -run '^TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=sqlserver
 
 run_go_json_no_skip "docker-image-ops" \
 	env ONPREST_IT_DOCKER=1 \

@@ -18,6 +18,7 @@ GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabiliti
 # GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
 # GATEWAY_RATE_LIMIT_BURST=20
 # GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
+# GATEWAY_MAX_REQUEST_BODY_BYTES=1048576
 ```
 
 ## Variables
@@ -27,6 +28,10 @@ The full list of gateway environment variables, with defaults and descriptions, 
 All optional variables may be omitted. Empty values are treated the same as omitted values. Invalid configured values are startup errors; the gateway does not silently fall back to defaults when a configured value is invalid.
 
 The sections below explain the most operationally important variables in more detail.
+
+## Request Body Limit
+
+`GATEWAY_MAX_REQUEST_BODY_BYTES` applies to both `POST /api/v1/capabilities/{name}` and `POST /mcp`. The default is `1048576` bytes (1 MiB). The value must be a positive base-10 integer; non-integers, zero, negative values, and values larger than a signed 64-bit integer are startup errors rather than silent fallback. A restart is required after changing the environment. Size it for the largest legitimate JSON request while keeping a finite ingress memory bound; capability result limits such as `policy.max_bytes` are separate agent-side output controls.
 
 ## Listen Address
 

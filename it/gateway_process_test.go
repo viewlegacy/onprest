@@ -43,6 +43,57 @@ func TestBuiltGatewayRunsOutsideSourceTree(t *testing.T) {
 	waitForHTTP(t, "http://"+addr+"/healthz", "", http.StatusOK)
 }
 
+func TestGatewayProcessAppliesEnvRequestBodyLimit(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	gatewayBin := filepath.Join(tmp, "onprest-gateway")
+	buildBinary(t, repo, gatewayBin, "./cmd/gateway")
+
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := startProcessInDir(t, ctx, tmp, gatewayBin, nil, []string{
+		"GATEWAY_ADDR=" + addr,
+		"GATEWAY_AGENT_PUBLIC_KEY=" + secrets.AgentPublicKey,
+		"GATEWAY_API_KEYS_JSON=" + secrets.APIKeysJSON,
+		"GATEWAY_MAX_REQUEST_BODY_BYTES=96",
+		"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=50",
+		"GATEWAY_RATE_LIMIT_BURST=50",
+	})
+	defer stopProcess(t, cmd)
+	baseURL := "http://" + addr
+	waitForHTTP(t, baseURL+"/healthz", "", http.StatusOK)
+
+	restPrefix := `{"padding":"`
+	restSuffix := `"}`
+	restExactBody := restPrefix + strings.Repeat("x", 96-len(restPrefix)-len(restSuffix)) + restSuffix
+	if len(restExactBody) != 96 {
+		t.Fatalf("REST exact body length = %d, want 96", len(restExactBody))
+	}
+	if status, body := postCapability(t, baseURL, secrets.APIKey, "offline_capability", restExactBody); status != http.StatusServiceUnavailable {
+		t.Fatalf("REST exact-limit status=%d, want 503 proving request parsing passed; body=%s", status, body)
+	}
+	if status, body := postCapability(t, baseURL, secrets.APIKey, "offline_capability", restExactBody+" "); status != http.StatusBadRequest {
+		t.Fatalf("REST over-limit status=%d, want 400; body=%s", status, body)
+	} else {
+		requireAPIErrorCode(t, body, "GATEWAY_INVALID_REQUEST")
+	}
+
+	prefix := `{"jsonrpc":"2.0","id":1,"method":"ping","padding":"`
+	suffix := `"}`
+	exactBody := prefix + strings.Repeat("x", 96-len(prefix)-len(suffix)) + suffix
+	if len(exactBody) != 96 {
+		t.Fatalf("exact body length = %d, want 96", len(exactBody))
+	}
+	if body := postMCPPayload(t, baseURL, secrets.APIKey, exactBody); !strings.Contains(string(body), `"result"`) {
+		t.Fatalf("exact-limit MCP request was not accepted: %s", body)
+	}
+	if body := postMCPPayload(t, baseURL, secrets.APIKey, exactBody+" "); !strings.Contains(string(body), `"code":-32700`) || !strings.Contains(string(body), `"code":"PARSE_ERROR"`) {
+		t.Fatalf("over-limit MCP request did not return parse error: %s", body)
+	}
+}
+
 func TestGatewayReturnsTimeoutWhenConnectedAgentDoesNotRespond(t *testing.T) {
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
@@ -128,5 +179,5 @@ func waitForHealthAgentState(t *testing.T, baseURL string, want bool) {
 
 func wsDialForError(t *testing.T, gatewayURL string, privateKey ed25519.PrivateKey) (*ws.Conn, error) {
 	t.Helper()
-	return ws.Dial(2*time.Second, gatewayURL, signedAgentHeaders(t, privateKey, "/ws/agent"))
+	return ws.Dial(2*time.Second, gatewayURL, signedAgentHeaders(t, gatewayURL, privateKey, "/ws/agent"))
 }

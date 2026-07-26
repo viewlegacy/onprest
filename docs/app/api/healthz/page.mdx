@@ -1,6 +1,6 @@
 # Healthz
 
-`/healthz` is the gateway health endpoint. It is intentionally unauthenticated so process managers, load balancers, and monitors can check gateway liveness.
+`/healthz` is the gateway health endpoint. It does not require an API key, so process managers, load balancers, and monitors can check gateway liveness. It is still subject to `GATEWAY_IP_ALLOW_LIST` and per-source rate limiting; monitoring sources must be allowed and must stay within the configured rate/burst.
 
 ## Endpoint
 

@@ -3,10 +3,13 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 const testAgentPrivateKey = "keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw"
@@ -49,6 +52,72 @@ capabilities:
 	if cf.Capabilities["get_customer"].Name != "get_customer" {
 		t.Fatalf("unexpected capability: %#v", cf.Capabilities["get_customer"])
 	}
+	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
+		t.Fatalf("runtime.max_concurrent_requests = %v, want default 16", cf.Runtime.MaxConcurrentRequests)
+	}
+}
+
+func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
+	cf, err := LoadCapabilityFile(filepath.Join("..", "..", "examples", "capability.postgres.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
+		t.Fatalf("example runtime.max_concurrent_requests = %v, want 16", cf.Runtime.MaxConcurrentRequests)
+	}
+}
+
+func TestCapabilityFileRuntimeMaxConcurrentRequests(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime string
+		want    int
+		wantErr string
+	}{
+		{name: "custom", runtime: "runtime:\n  max_concurrent_requests: 3\n", want: 3},
+		{name: "zero", runtime: "runtime:\n  max_concurrent_requests: 0\n", wantErr: "runtime.max_concurrent_requests must be > 0"},
+		{name: "negative", runtime: "runtime:\n  max_concurrent_requests: -1\n", wantErr: "runtime.max_concurrent_requests must be > 0"},
+		{name: "not integer", runtime: "runtime:\n  max_concurrent_requests: many\n", wantErr: "cannot unmarshal"},
+		{name: "unknown field", runtime: "runtime:\n  max_concurrent_request: 3\n", wantErr: "field max_concurrent_request not found"},
+		{name: "multiple documents", runtime: "runtime: {}\n---\n", wantErr: "multiple YAML documents"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "capability.yaml")
+			content := tc.runtime + `database:
+  driver: postgres
+  host: localhost
+  port: 5432
+  name: legacy
+  user: readonly_user
+gateway:
+  url: ws://localhost:8080/ws/agent
+  agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+capabilities:
+  get_customer:
+    sql: select 1 as id
+    result:
+      id:
+        type: integer
+`
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cf, err := LoadCapabilityFile(path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("LoadCapabilityFile() error = %v, want containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != tc.want {
+				t.Fatalf("runtime.max_concurrent_requests = %v, want %d", cf.Runtime.MaxConcurrentRequests, tc.want)
+			}
+		})
+	}
 }
 
 func TestCapabilityFileRejectsWriteSQLWhenReadonly(t *testing.T) {
@@ -85,20 +154,37 @@ capabilities:
 
 func TestReadOnlySQLRejectsWithAndAllowsSelect(t *testing.T) {
 	tests := []struct {
-		name  string
-		query string
-		want  bool
+		name   string
+		driver string
+		query  string
+		want   bool
 	}{
-		{name: "select", query: "select id from customers where id = :id", want: true},
-		{name: "leading comments select", query: "-- comment\n/* block */\nSELECT id FROM customers", want: true},
-		{name: "with select", query: "with recent as (select id from customers) select id from recent", want: false},
-		{name: "with insert cte", query: "with inserted as (insert into customers(name) values (:name) returning id) select id from inserted", want: false},
-		{name: "update", query: "update customers set name = :name", want: false},
+		{name: "select", driver: "postgres", query: "select id from customers where id = :id", want: true},
+		{name: "leading comments select", driver: "postgres", query: "-- comment\n/* block */\nSELECT id FROM customers", want: true},
+		{name: "with select", driver: "postgres", query: "with recent as (select id from customers) select id from recent", want: false},
+		{name: "with insert cte", driver: "postgres", query: "with inserted as (insert into customers(name) values (:name) returning id) select id from inserted", want: false},
+		{name: "update", driver: "postgres", query: "update customers set name = :name", want: false},
+		{name: "multiple statements", driver: "postgres", query: "select 1; update customers set name = 'x'", want: false},
+		{name: "semicolon in string", driver: "postgres", query: "select ';' as value", want: true},
+		{name: "semicolon in escaped string", driver: "postgres", query: `select 'it''s;fine' as value`, want: true},
+		{name: "semicolon in line comment", driver: "postgres", query: "select 1 -- ; ignored\n", want: true},
+		{name: "semicolon in block comment", driver: "postgres", query: "select /* ; ignored */ 1", want: true},
+		{name: "semicolon in dollar quote", driver: "postgres", query: "select $$; ignored$$", want: true},
+		{name: "trailing semicolon", driver: "postgres", query: "select 1; -- trailing comment", want: true},
+		{name: "second empty statement", driver: "postgres", query: "select 1;;", want: false},
+		{name: "postgres standard string backslash does not escape quote", driver: "postgres", query: `SELECT '\'; UPDATE protected_table SET value = 99`, want: false},
+		{name: "postgres explicit escape string", driver: "postgres", query: `SELECT E'escaped\'; still string'`, want: true},
+		{name: "sqlserver backslash does not escape quote", driver: "sqlserver", query: `SELECT '\'; UPDATE protected_table SET value = 99`, want: false},
+		{name: "oracle backslash does not escape quote", driver: "oracle", query: `SELECT '\' FROM dual; UPDATE protected_table SET value = 99`, want: false},
+		{name: "mysql conservative across sql modes", driver: "mysql", query: `SELECT '\'; UPDATE protected_table SET value = 99`, want: false},
+		{name: "mysql backtick identifier", driver: "mysql", query: "select `semi;colon` from customers", want: true},
+		{name: "sqlserver bracket identifier", driver: "sqlserver", query: "select [semi;colon] from customers", want: true},
+		{name: "oracle alternative quote", driver: "oracle", query: "select q'[semi;colon]' from dual", want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isReadOnlySQL(tc.query); got != tc.want {
-				t.Fatalf("isReadOnlySQL(%q) = %t, want %t", tc.query, got, tc.want)
+			if got := isReadOnlySQL(tc.driver, tc.query); got != tc.want {
+				t.Fatalf("isReadOnlySQL(%q, %q) = %t, want %t", tc.driver, tc.query, got, tc.want)
 			}
 		})
 	}
@@ -172,6 +258,33 @@ func TestCapabilityFileLintRequiredFieldsAndPolicy(t *testing.T) {
 	}
 }
 
+func TestGatewayURLRequiresWSSOutsideLoopback(t *testing.T) {
+	tests := []struct {
+		name          string
+		url           string
+		allowInsecure bool
+		wantErr       bool
+	}{
+		{name: "production wss", url: "wss://gateway.example.com/ws/agent"},
+		{name: "loopback hostname", url: "ws://localhost:8080/ws/agent"},
+		{name: "loopback ipv4", url: "ws://127.0.0.1:8080/ws/agent"},
+		{name: "loopback ipv6", url: "ws://[::1]:8080/ws/agent"},
+		{name: "non-loopback plaintext", url: "ws://10.0.0.8:8080/ws/agent", wantErr: true},
+		{name: "development override", url: "ws://gateway:8080/ws/agent", allowInsecure: true},
+		{name: "wrong path", url: "wss://gateway.example.com/agent", wantErr: true},
+		{name: "query forbidden", url: "wss://gateway.example.com/ws/agent?token=x", wantErr: true},
+		{name: "credentials forbidden", url: "wss://user@gateway.example.com/ws/agent", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := lintGatewayURL(tc.url, tc.allowInsecure)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("lintGatewayURL(%q, %t) error = %v, wantErr %t", tc.url, tc.allowInsecure, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestCapabilityFileDefaultsLogging(t *testing.T) {
 	cf := validCapabilityFile()
 	if err := cf.Lint(); err != nil {
@@ -182,7 +295,7 @@ func TestCapabilityFileDefaultsLogging(t *testing.T) {
 	}
 }
 
-func TestDatabaseDSNCurrentConnectionPolicy(t *testing.T) {
+func TestDatabaseDSNConnectionPolicy(t *testing.T) {
 	tests := []struct {
 		name string
 		db   DatabaseDef
@@ -194,9 +307,23 @@ func TestDatabaseDSNCurrentConnectionPolicy(t *testing.T) {
 			want: "postgres://readonly:secret@db.example:5432/legacy?sslmode=disable",
 		},
 		{
+			name: "postgres verify full TLS",
+			db: DatabaseDef{Driver: "postgres", Host: "db.example", Port: 5432, Name: "legacy", User: "readonly", Password: "secret", TLS: DatabaseTLSDef{
+				Mode: "verify-full", CAFile: "/certs/ca.pem", CertFile: "/certs/client.pem", KeyFile: "/certs/client.key",
+			}},
+			want: "postgres://readonly:secret@db.example:5432/legacy?sslcert=%2Fcerts%2Fclient.pem&sslkey=%2Fcerts%2Fclient.key&sslmode=verify-full&sslrootcert=%2Fcerts%2Fca.pem",
+		},
+		{
 			name: "sqlserver disables encrypt",
 			db:   DatabaseDef{Driver: "sqlserver", Host: "db.example", Port: 1433, Name: "legacy", User: "readonly", Password: "secret"},
 			want: "sqlserver://readonly:secret@db.example:1433?database=legacy&encrypt=disable",
+		},
+		{
+			name: "sqlserver verified TLS",
+			db: DatabaseDef{Driver: "sqlserver", Host: "db.example", Port: 1433, Name: "legacy", User: "readonly", Password: "secret", TLS: DatabaseTLSDef{
+				Mode: "verify-full", CAFile: "/certs/ca.pem", ServerName: "sql.internal.example",
+			}},
+			want: "sqlserver://readonly:secret@db.example:1433?TrustServerCertificate=false&certificate=%2Fcerts%2Fca.pem&database=legacy&encrypt=true&hostNameInCertificate=sql.internal.example",
 		},
 	}
 	for _, tc := range tests {
@@ -205,6 +332,31 @@ func TestDatabaseDSNCurrentConnectionPolicy(t *testing.T) {
 				t.Fatalf("DSN() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestMySQLDSNRoundTripsSpecialCredentials(t *testing.T) {
+	db := DatabaseDef{Driver: "mysql", Host: "db.example", Port: 3306, Name: "legacy/name", User: "reader@domain/name", Password: `p@ss:/word?&=#`}
+	dsn := db.DSN()
+	parsed, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("ParseDSN(%q): %v", dsn, err)
+	}
+	if parsed.User != db.User || parsed.Passwd != db.Password || parsed.Addr != "db.example:3306" || parsed.DBName != db.Name {
+		t.Fatalf("round-trip = user:%q password:%q addr:%q db:%q", parsed.User, parsed.Passwd, parsed.Addr, parsed.DBName)
+	}
+}
+
+func TestDatabaseTLSLintRejectsInvalidOrUnsupportedConfiguration(t *testing.T) {
+	tests := []DatabaseDef{
+		{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "optional"}},
+		{Driver: "mysql", Host: "db", Port: 3306, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "require"}},
+		{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "verify-full", CertFile: "client.pem"}},
+	}
+	for _, db := range tests {
+		if err := db.lint(); err == nil {
+			t.Fatalf("lint(%#v) error = nil", db.TLS)
+		}
 	}
 }
 
@@ -262,6 +414,36 @@ func TestValidateParamsAppliesContract(t *testing.T) {
 	}
 	if _, err := validateParams(cap, map[string]any{"limit": int64(501)}); err == nil {
 		t.Fatal("validateParams() error = nil, want maximum error")
+	}
+}
+
+func TestValidateIntegerParamsPreservesInt64AndEnumBoundaries(t *testing.T) {
+	cap := CapabilityDef{Params: map[string]ParamDef{
+		"id": {Type: "integer", Required: true, Enum: []any{json.Number("9007199254740993"), json.Number("9223372036854775807")}},
+	}}
+	for _, raw := range []string{"9007199254740993", "9223372036854775807"} {
+		params, err := validateParams(cap, map[string]any{"id": json.Number(raw)})
+		if err != nil {
+			t.Fatalf("validate %s: %v", raw, err)
+		}
+		want, _ := json.Number(raw).Int64()
+		if params["id"] != want {
+			t.Fatalf("id %s = %#v, want %d", raw, params["id"], want)
+		}
+	}
+	for _, value := range []any{json.Number("9223372036854775808"), json.Number("-9223372036854775809"), float64(9007199254740994)} {
+		if _, err := validateParams(cap, map[string]any{"id": value}); err == nil {
+			t.Fatalf("overflow/imprecise id %#v accepted", value)
+		}
+	}
+}
+
+func TestNumericParamsRejectNonFiniteValues(t *testing.T) {
+	cap := CapabilityDef{Params: map[string]ParamDef{"value": {Type: "number", Required: true}}}
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, err := validateParams(cap, map[string]any{"value": value}); err == nil {
+			t.Fatalf("non-finite value %v accepted", value)
+		}
 	}
 }
 

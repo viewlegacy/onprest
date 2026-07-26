@@ -105,8 +105,11 @@ The gateway is a Go single binary. It has no persistent state and holds only the
 - agent WebSocket endpoint
 - stdout JSON logging
 - graceful shutdown
+- one request-body limit for both REST and MCP, configured by gateway env and defaulting to 1 MiB
 
-Agent connections are limited to one active connection. If another agent tries to connect while one is already connected, the gateway rejects it and writes a warning log.
+Agent connections are limited to one live connection. Before upgrade, the gateway issues a one-time, one-minute challenge that is included in the Ed25519-signed handshake and consumed atomically. Issued challenges do not survive a gateway restart, so a complete pre-restart handshake cannot be replayed afterward. Non-loopback agent transport requires `wss://` by default. The gateway sends WebSocket ping frames and requires timely pong traffic, so a stale TCP session is closed and a replacement may connect. If another agent tries to connect while the existing session is still live, the gateway rejects it and writes a warning log.
+
+All outbound agent messages pass through one bounded writer queue with write deadlines. Each request has independent pending state; disconnect or write failure releases affected callers immediately instead of waiting for the request timeout. Meta retrieval is retried with bounded backoff only for the current connection generation, and disconnected metadata is not served as current state.
 
 ## Agent Responsibilities
 
@@ -124,8 +127,11 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - OpenAPI spec generation
 - runtime detail output to the local log
 - reconnect every 30 seconds
+- up to `runtime.max_concurrent_requests` concurrent capability executions per connection (default 16), with an equally bounded waiting queue
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
+
+Request IDs correlate responses, so concurrent responses may arrive out of request order. Execution workers do not own the WebSocket reader, allowing ping/pong processing while all workers are busy. One bounded writer sends response frames in sequence; each network write has five seconds to finish after it starts. A full execution wait queue returns `AGENT_BUSY`. The transport handles fragmentation, ping/pong/close control frames, mask-direction validation, bounded messages, and handshake deadlines.
 
 ## Capability Tunnel
 
@@ -141,7 +147,7 @@ A normal gateway-to-agent request contains only a capability name and params.
 }
 ```
 
-The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB.
+The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Read-only capabilities accept one `SELECT` statement, including nested subqueries. Integer JSON tokens remain exact through signed 64-bit conversion, and response values must be finite and representable by the declared result type.
 
 ## Dedicated Gateway Model
 
@@ -153,7 +159,9 @@ In this model, API keys, the agent public key, OpenAPI cache, and stdout logs ar
 
 TLS termination and reverse proxy / load balancer choice are owned by the operating environment.
 
-The gateway works when directly exposed or when placed behind any compatible reverse proxy / LB. Forwarded headers are trusted only when they arrive from a source included in `GATEWAY_TRUSTED_PROXY_CIDRS`.
+The gateway works when directly exposed or when placed behind any compatible reverse proxy / LB. Forwarded headers are trusted only when they arrive from a source included in `GATEWAY_TRUSTED_PROXY_CIDRS`. A trusted proxy must overwrite, rather than append to, caller-provided forwarding headers.
+
+Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. The default is `disable`. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
 
 ## Managed Dashboard
 
