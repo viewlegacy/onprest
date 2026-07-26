@@ -16,6 +16,8 @@ Content-Type: application/json
 
 `POST` is the only allowed HTTP method. Other methods return `GATEWAY_METHOD_NOT_ALLOWED`.
 
+The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The gateway also bounds body-read time. See [Gateway Configuration](/gateway/configuration).
+
 ## Methods
 
 | Method | Purpose |
@@ -55,6 +57,33 @@ The gateway builds the tool list from cached OpenAPI metadata and filters it by 
 
 The tool name maps to a capability name. `arguments` maps to capability params.
 
+Successful calls return both a text `content` item and the decoded value in `structuredContent`.
+
+## Notifications
+
+A structurally valid JSON-RPC message with no `id` is a notification. The gateway accepts it with HTTP 202 and an empty body; clients must not wait for a JSON-RPC response. This includes lifecycle notifications such as `notifications/initialized`.
+
 ## Errors
 
-JSON parse and JSON-RPC structure errors are returned as MCP JSON-RPC errors with HTTP 200. Gateway auth, IP, rate limit, offline agent, and capability authorization failures use HTTP errors.
+JSON parse/shape errors, unsupported methods, and an unknown tool name are JSON-RPC errors with HTTP 200. `tools/list` without usable agent metadata is also HTTP 200 with JSON-RPC error `-32000` and `error.data.code: GATEWAY_AGENT_OFFLINE`.
+
+Once a known tool has been invoked, an agent/runtime failure is a normal JSON-RPC result with HTTP 200 and this shape:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [{"type": "text", "text": "query exceeded policy.timeout"}],
+    "structuredContent": {
+      "error": {
+        "code": "AGENT_QUERY_TIMEOUT",
+        "message": "query exceeded policy.timeout"
+      }
+    },
+    "isError": true
+  }
+}
+```
+
+Authentication, source-IP/rate-limit checks, and capability authorization happen at the HTTP boundary and therefore retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.

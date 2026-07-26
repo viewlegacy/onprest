@@ -16,6 +16,8 @@ func (s *Server) log(event string, fields map[string]any) {
 	if s.logOut == nil {
 		return
 	}
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
 	if fields == nil {
 		fields = map[string]any{}
 	}

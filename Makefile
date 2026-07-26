@@ -1,9 +1,11 @@
 .PHONY: build build-cross quickstart-db quickstart-db-down test test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
 
+DIST_DIR ?= dist
+
 build:
-	mkdir -p dist
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o dist/onprest-gateway ./cmd/gateway
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o dist/onprest-agent ./cmd/agent
+	mkdir -p "$(DIST_DIR)"
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$(DIST_DIR)/onprest-gateway" ./cmd/gateway
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$(DIST_DIR)/onprest-agent" ./cmd/agent
 
 build-cross:
 	bash scripts/cross_build.sh
@@ -43,4 +45,4 @@ vet:
 	go vet ./...
 
 clean:
-	rm -rf dist
+	rm -rf "$(DIST_DIR)"

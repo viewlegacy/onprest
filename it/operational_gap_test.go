@@ -70,7 +70,7 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 		`{"id":1,"code":"ABC","secret":"leak-me"}`,
 	} {
 		status, body = postCapability(t, baseURL, secrets.APIKey, "validated_lookup", payload)
-		if status != http.StatusBadGateway {
+		if status != http.StatusBadRequest {
 			t.Fatalf("invalid REST payload %s status=%d body=%s", payload, status, string(body))
 		}
 		requireAPIErrorCode(t, body, "AGENT_VALIDATION_FAILED")
@@ -80,10 +80,10 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 	}
 
 	status, body = postMCPStatus(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"validated_lookup","arguments":{"id":1,"code":"leak-me"}}}`)
-	if status != http.StatusBadGateway {
+	if status != http.StatusOK {
 		t.Fatalf("invalid MCP status=%d body=%s", status, string(body))
 	}
-	requireAPIErrorCode(t, body, "AGENT_VALIDATION_FAILED")
+	requireMCPToolErrorCode(t, body, "AGENT_VALIDATION_FAILED")
 	if strings.Contains(string(body), "leak-me") || strings.Contains(logs.String(), "leak-me") {
 		t.Fatalf("MCP validation detail leaked; body=%s logs=%s", string(body), logs.String())
 	}
@@ -103,6 +103,12 @@ func TestAgentRejectsUnknownCapabilityFromCompromisedGateway(t *testing.T) {
 	responseCh := make(chan protocol.Response, 1)
 	srv := &http.Server{Addr: addr}
 	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/ws/agent/challenge" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"challenge":"compromised-gateway-challenge"}`)
+			return
+		}
 		conn, err := ws.Accept(w, r)
 		if err != nil {
 			t.Errorf("accept fake gateway websocket: %v", err)

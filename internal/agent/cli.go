@@ -22,6 +22,10 @@ func HandleCLI(args []string, stdout, stderr io.Writer) (bool, int) {
 }
 
 func handleServiceCLI(args []string, stdout, stderr io.Writer) int {
+	return handleServiceCLIWithFactory(args, stdout, stderr, newServiceManager)
+}
+
+func handleServiceCLIWithFactory(args []string, stdout, stderr io.Writer, factory func(ServiceOptions) serviceManager) int {
 	if len(args) == 0 {
 		printServiceUsage(stderr)
 		return 2
@@ -44,7 +48,7 @@ func handleServiceCLI(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "service install: %v\n", err)
 			return 1
 		}
-		if err := newServiceManager(opts).Install(); err != nil {
+		if err := factory(opts).Install(); err != nil {
 			fmt.Fprintf(stderr, "service install: %v\n", err)
 			return 1
 		}
@@ -54,7 +58,7 @@ func handleServiceCLI(args []string, stdout, stderr io.Writer) int {
 		if rejectServiceArgs("service start", args[1:], stderr) {
 			return 2
 		}
-		if err := newServiceManager(defaultServiceIdentity()).Start(); err != nil {
+		if err := factory(defaultServiceIdentity()).Start(); err != nil {
 			fmt.Fprintf(stderr, "service start: %v\n", err)
 			return 1
 		}
@@ -64,7 +68,7 @@ func handleServiceCLI(args []string, stdout, stderr io.Writer) int {
 		if rejectServiceArgs("service stop", args[1:], stderr) {
 			return 2
 		}
-		if err := newServiceManager(defaultServiceIdentity()).Stop(); err != nil {
+		if err := factory(defaultServiceIdentity()).Stop(); err != nil {
 			fmt.Fprintf(stderr, "service stop: %v\n", err)
 			return 1
 		}
@@ -74,7 +78,7 @@ func handleServiceCLI(args []string, stdout, stderr io.Writer) int {
 		if rejectServiceArgs("service status", args[1:], stderr) {
 			return 2
 		}
-		status, err := newServiceManager(defaultServiceIdentity()).Status()
+		status, err := factory(defaultServiceIdentity()).Status()
 		if err != nil {
 			fmt.Fprintf(stderr, "service status: %v\n", err)
 			return 1
@@ -85,7 +89,7 @@ func handleServiceCLI(args []string, stdout, stderr io.Writer) int {
 		if rejectServiceArgs("service uninstall", args[1:], stderr) {
 			return 2
 		}
-		if err := newServiceManager(defaultServiceIdentity()).Uninstall(); err != nil {
+		if err := factory(defaultServiceIdentity()).Uninstall(); err != nil {
 			fmt.Fprintf(stderr, "service uninstall: %v\n", err)
 			return 1
 		}

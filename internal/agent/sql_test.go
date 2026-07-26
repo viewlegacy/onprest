@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"encoding/json"
+	"math"
+	"testing"
+)
 
 func TestBuildSQLSkipsQuotedTextAndCasts(t *testing.T) {
 	got, args, err := buildSQL("postgres", "select ':skip' as s, now()::date as d, id from customers where id = :id and note <> $$:skip$$", map[string]any{"id": int64(42)})
@@ -71,7 +75,6 @@ func TestBuildExplainSQL(t *testing.T) {
 	}{
 		{driver: "postgres", want: "EXPLAIN select 1"},
 		{driver: "mysql", want: "EXPLAIN select 1"},
-		{driver: "sqlserver", want: "SET SHOWPLAN_TEXT ON; select 1; SET SHOWPLAN_TEXT OFF;"},
 		{driver: "oracle", want: "EXPLAIN PLAN FOR select 1"},
 	}
 	for _, tc := range tests {
@@ -85,6 +88,9 @@ func TestBuildExplainSQL(t *testing.T) {
 			}
 		})
 	}
+	if _, ok := buildExplainSQL("sqlserver", "select 1"); ok {
+		t.Fatal("buildExplainSQL(sqlserver) unexpectedly returned unreachable SHOWPLAN SQL")
+	}
 }
 
 func TestMaxBytesParsesAndRejectsInvalidValues(t *testing.T) {
@@ -95,7 +101,25 @@ func TestMaxBytesParsesAndRejectsInvalidValues(t *testing.T) {
 	if got != 256<<10 {
 		t.Fatalf("maxBytes() = %d, want %d", got, 256<<10)
 	}
-	if _, err := maxBytes(PolicyDef{MaxBytes: "0B"}); err == nil {
-		t.Fatal("maxBytes() error = nil, want error")
+	for _, invalid := range []string{"0B", "-1KB", "bad", "10xyz", "1.5MB", "9223372036854775807GB", "MB"} {
+		if _, err := maxBytes(PolicyDef{MaxBytes: invalid}); err == nil {
+			t.Fatalf("maxBytes(%q) error = nil, want error", invalid)
+		}
+	}
+}
+
+func TestResultNumberAndIntegerConversionsRejectNonFiniteAndOverflow(t *testing.T) {
+	for _, value := range []any{math.NaN(), math.Inf(1), math.Inf(-1), float64(9223372036854775808.0), uint64(math.MaxInt64) + 1} {
+		if _, err := coerceInteger(value); err == nil {
+			t.Fatalf("coerceInteger(%v) error = nil", value)
+		}
+	}
+	if got, err := coerceInteger(float64(-9223372036854775808.0)); err != nil || got != int64(math.MinInt64) {
+		t.Fatalf("MinInt64 conversion = %#v, %v", got, err)
+	}
+	for _, value := range []any{math.NaN(), math.Inf(1), math.Inf(-1), json.Number("1e10000")} {
+		if _, err := coerceNumber(value); err == nil {
+			t.Fatalf("coerceNumber(%v) error = nil", value)
+		}
 	}
 }
