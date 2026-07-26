@@ -18,7 +18,11 @@ func (s *Server) withRecovery(next http.Handler) http.Handler {
 				if recovered == http.ErrAbortHandler {
 					panic(recovered)
 				}
-				s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusInternalServerError, errGatewayInternal, "unexpected gateway error", start)
+				if r.URL.Path == "/mcp" {
+					s.mcpHTTPRejected(http.StatusInternalServerError, errGatewayInternal, "unexpected gateway error")
+				} else {
+					s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusInternalServerError, errGatewayInternal, "unexpected gateway error", start)
+				}
 				writeJSON(w, http.StatusInternalServerError, apiError(errGatewayInternal, "unexpected gateway error"))
 			}
 		}()
@@ -39,12 +43,20 @@ func (s *Server) withAccess(next http.Handler) http.Handler {
 			return
 		}
 		if len(s.cfg.IPAllowList) > 0 && !s.ipAllowed(r) {
-			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed", start)
+			if r.URL.Path == "/mcp" {
+				s.mcpHTTPRejected(http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed")
+			} else {
+				s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed", start)
+			}
 			writeJSON(w, http.StatusForbidden, apiError(errGatewayIPDenied, "source ip is not allowed"))
 			return
 		}
 		if s.cfg.RateLimit.RequestsPerSecond > 0 && !s.take(s.clientIP(r)) {
-			s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusTooManyRequests, errGatewayRateLimited, "too many requests", start)
+			if r.URL.Path == "/mcp" {
+				s.mcpHTTPRejected(http.StatusTooManyRequests, errGatewayRateLimited, "too many requests")
+			} else {
+				s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusTooManyRequests, errGatewayRateLimited, "too many requests", start)
+			}
 			writeJSON(w, http.StatusTooManyRequests, apiError(errGatewayRateLimited, "too many requests"))
 			return
 		}

@@ -8,6 +8,7 @@ Request event fields:
 
 | Field | Description |
 |---|---|
+| `protocol` | `rest` or `mcp` |
 | `request_id` | ULID request identifier |
 | `timestamp` | event time |
 | `event` | `request` or control event name |
@@ -20,12 +21,15 @@ Request event fields:
 
 Gateway stdout excludes submitted param values, SQL, DB credentials, agent raw detail, plaintext API keys, and agent private keys.
 
+REST capability calls and parsed MCP `tools/call` calls each produce one `request` event. MCP requests rejected before `tools/call` identification produce no request event; IP, rate-limit, and recovery diagnostics use the non-counted `mcp_http_rejected` control event. This separation keeps request metrics aligned with actual tool calls and prevents middleware plus handler double counting.
+
 OpenAPI metadata events:
 
 | Event | Fields | Description |
 |---|---|---|
 | `openapi_cached` | `paths` | Emitted after gateway caches agent metadata. This is always summary-only. |
 | `openapi_snapshot` | `paths`, `openapi` | Emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`. `openapi` contains the full cached OpenAPI document, including gateway-added `servers`, `securitySchemes`, and `security`. |
+| `mcp_http_rejected` | `http_status`, `error_code`, `error_message` | Safe MCP HTTP-boundary diagnostic. It is a control event, not a request event. |
 
 `openapi_snapshot` contains unfiltered OpenAPI metadata for the connected agent. It still must not contain SQL or DB credentials, but it may contain public descriptions, parameter names, and result schema names from `capability.yaml`.
 

@@ -6,6 +6,7 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
 
 ```json
 {
+  "protocol": "rest",
   "request_id": "01J5ABCDEF1234567890ABCDEF",
   "timestamp": "2026-04-11T10:30:00.000Z",
   "event": "request",
@@ -20,6 +21,12 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
 
 The request log is intentionally small. It is useful for observability without turning gateway into a sensitive data sink.
 
+`protocol` is `rest` for REST capability calls and `mcp` for parsed MCP `tools/call` calls. An MCP `tools/call` emits exactly one request event after the gateway has identified the method, whether the call succeeds or fails. Its `capability` is the tool name, or an empty string when invalid params do not contain a usable name.
+
+MCP traffic that fails before `tools/call` is identified does not emit a request event. This includes HTTP method/body errors, authentication, source-IP and rate-limit rejection, malformed JSON/JSON-RPC, notifications, initialization, ping, tool listing, and unsupported methods. When operational diagnosis is useful, HTTP middleware rejection is emitted as an `mcp_http_rejected` control event instead, so request-count metrics are not inflated.
+
+For MCP, an HTTP boundary error records its actual HTTP status. A JSON-RPC error or tool execution error keeps HTTP status 200 and records the public application code/message returned in `error.data` or `result.structuredContent.error`. Request IDs are non-empty ULIDs and are shared unchanged with downstream collectors.
+
 ## Control Events
 
 When gateway receives OpenAPI metadata from the agent, it logs a control event with counts or status, not the full spec.
@@ -31,6 +38,7 @@ OpenAPI cache contents are held in memory and filtered per API key on request.
 Gateway stdout must not contain:
 
 - request params
+- URL paths
 - agent error detail
 - SQL text
 - DB host, user, password, or DSN

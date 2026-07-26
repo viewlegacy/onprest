@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"time"
 )
 
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
@@ -60,31 +61,35 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		filterOpenAPI(doc, key.Capabilities)
 		writeMCP(w, req.ID, map[string]any{"tools": toolsFromOpenAPI(doc)}, nil)
 	case "tools/call":
-		s.handleMCPToolCall(w, r, req.ID, req.Params, key)
+		s.handleMCPToolCall(w, r, req.ID, req.Params, key, newID(), time.Now())
 	default:
 		writeMCPError(w, req.ID, -32601, errJSONRPCMethodNotFound, "unsupported MCP method")
 	}
 }
 
-func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id any, rawParams json.RawMessage, key APIKey) {
+func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id any, rawParams json.RawMessage, key APIKey, requestID string, start time.Time) {
 	var params struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := decodeJSONNumber(rawParams, &params); err != nil || params.Name == "" {
+		s.accessLogProtocol("mcp", requestID, key.Name, "", http.StatusOK, errJSONRPCInvalidParams, "invalid tools/call params", start)
 		writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "invalid tools/call params")
 		return
 	}
 	if !allowed(key, params.Name) {
+		s.accessLogProtocol("mcp", requestID, key.Name, params.Name, http.StatusForbidden, errGatewayCapabilityDenied, "capability not allowed", start)
 		writeJSON(w, http.StatusForbidden, apiError(errGatewayCapabilityDenied, "capability not allowed"))
 		return
 	}
 	result := s.callAgent(r.Context(), params.Name, params.Arguments)
 	if !result.OK() {
 		if result.Code == errGatewayCapabilityNotFound {
+			s.accessLogProtocol("mcp", requestID, key.Name, params.Name, http.StatusOK, errJSONRPCInvalidParams, "tool is not defined", start)
 			writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "tool is not defined")
 			return
 		}
+		s.accessLogProtocol("mcp", requestID, key.Name, params.Name, http.StatusOK, result.Code, result.Message, start)
 		writeMCP(w, id, map[string]any{
 			"content": []any{map[string]any{"type": "text", "text": result.Message}},
 			"structuredContent": map[string]any{"error": map[string]any{
@@ -96,6 +101,7 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 	}
 	var structured any
 	_ = decodeJSONNumber(result.Payload, &structured)
+	s.accessLogProtocol("mcp", requestID, key.Name, params.Name, http.StatusOK, "", "", start)
 	writeMCP(w, id, map[string]any{
 		"content":           []any{map[string]any{"type": "text", "text": string(result.Payload)}},
 		"structuredContent": structured,
