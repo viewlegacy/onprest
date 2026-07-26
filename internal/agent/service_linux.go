@@ -21,7 +21,14 @@ func newServiceManager(opts ServiceOptions) serviceManager {
 }
 
 func (m platformServiceManager) Install() error {
-	unit := fmt.Sprintf(`[Unit]
+	if err := os.WriteFile(linuxServicePath, []byte(linuxServiceUnit(m.opts)), 0o644); err != nil {
+		return err
+	}
+	return runCommand("systemctl", "daemon-reload")
+}
+
+func linuxServiceUnit(opts ServiceOptions) string {
+	return fmt.Sprintf(`[Unit]
 Description=%s
 After=network-online.target
 Wants=network-online.target
@@ -38,11 +45,7 @@ WantedBy=multi-user.target
 
 # OnprestConfig=%s
 # OnprestBinary=%s
-`, m.opts.Description, systemdQuote(m.opts.WorkDir), systemdQuote(m.opts.BinaryPath), systemdQuote(m.opts.ConfigPath), m.opts.ConfigPath, m.opts.BinaryPath)
-	if err := os.WriteFile(linuxServicePath, []byte(unit), 0o644); err != nil {
-		return err
-	}
-	return runCommand("systemctl", "daemon-reload")
+`, opts.Description, systemdPath(opts.WorkDir), systemdQuote(opts.BinaryPath), systemdQuote(opts.ConfigPath), opts.ConfigPath, opts.BinaryPath)
 }
 
 func (m platformServiceManager) Start() error {
@@ -101,7 +104,12 @@ func (m platformServiceManager) serviceUnit() string {
 }
 
 func systemdQuote(s string) string {
+	s = strings.ReplaceAll(s, `%`, `%%`)
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
+}
+
+func systemdPath(s string) string {
+	return strings.ReplaceAll(s, `%`, `%%`)
 }
 
 func metadataValue(content, key string) string {

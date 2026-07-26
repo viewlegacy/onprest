@@ -64,11 +64,10 @@ func coerce(def ParamDef, v any) (any, error) {
 		}
 		return s, nil
 	case "integer":
-		n, ok := number(v)
-		if !ok || math.Trunc(n) != n {
+		i, ok := integer(v)
+		if !ok {
 			return nil, fmt.Errorf("must be integer")
 		}
-		i := int64(n)
 		if def.Minimum != nil && i < *def.Minimum {
 			return nil, fmt.Errorf("below minimum")
 		}
@@ -78,7 +77,7 @@ func coerce(def ParamDef, v any) (any, error) {
 		return i, nil
 	case "number":
 		n, ok := number(v)
-		if !ok {
+		if !ok || math.IsNaN(n) || math.IsInf(n, 0) {
 			return nil, fmt.Errorf("must be number")
 		}
 		if def.Minimum != nil && n < float64(*def.Minimum) {
@@ -97,6 +96,54 @@ func coerce(def ParamDef, v any) (any, error) {
 	default:
 		return nil, fmt.Errorf("unsupported type")
 	}
+}
+
+func integer(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int8:
+		return int64(n), true
+	case int16:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case uint:
+		if uint64(n) > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(n), true
+	case uint8:
+		return int64(n), true
+	case uint16:
+		return int64(n), true
+	case uint32:
+		return int64(n), true
+	case uint64:
+		if n > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	case float32:
+		return exactFloatInteger(float64(n))
+	case float64:
+		return exactFloatInteger(n)
+	default:
+		return 0, false
+	}
+}
+
+func exactFloatInteger(n float64) (int64, bool) {
+	const maxExactInteger = float64(1 << 53)
+	if math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n || n > maxExactInteger || n < -maxExactInteger {
+		return 0, false
+	}
+	return int64(n), true
 }
 
 func validateEnum(def ParamDef, value any) error {
@@ -130,7 +177,7 @@ func number(v any) (float64, bool) {
 		return float64(n), true
 	case json.Number:
 		f, err := n.Float64()
-		return f, err == nil
+		return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
 	default:
 		return 0, false
 	}

@@ -118,6 +118,9 @@ func TestAgentCapabilityRestartUpdatesGatewayMetadata(t *testing.T) {
 		t.Fatal("first agent did not stop")
 	}
 	waitForAgentDisconnected(t, baseURL)
+	if status, body := getWithAPIKeyStatus(t, baseURL+"/openapi.json", secrets.APIKey); status != http.StatusServiceUnavailable || strings.Contains(string(body), "first_capability") {
+		t.Fatalf("disconnected OpenAPI status=%d body=%s", status, string(body))
+	}
 
 	writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, capabilityBlock("second_capability", "select 2::int as id"))
 	runner, err = agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
@@ -130,7 +133,12 @@ func TestAgentCapabilityRestartUpdatesGatewayMetadata(t *testing.T) {
 	go func() { errCh <- runner.Run(runCtx) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		got := string(getWithAPIKey(t, baseURL+"/openapi.json", secrets.APIKey))
+		status, body := getWithAPIKeyStatus(t, baseURL+"/openapi.json", secrets.APIKey)
+		got := string(body)
+		if status != http.StatusOK {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 		if strings.Contains(got, "second_capability") && !strings.Contains(got, "first_capability") {
 			tools := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
 			if !strings.Contains(string(tools), "second_capability") || strings.Contains(string(tools), "first_capability") {

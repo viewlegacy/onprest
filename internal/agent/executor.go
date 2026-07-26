@@ -126,6 +126,9 @@ func coerceInteger(v any) (any, error) {
 	case int64:
 		return n, nil
 	case uint:
+		if uint64(n) > math.MaxInt64 {
+			return nil, fmt.Errorf("integer overflows int64")
+		}
 		return int64(n), nil
 	case uint8:
 		return int64(n), nil
@@ -152,48 +155,62 @@ func coerceInteger(v any) (any, error) {
 }
 
 func floatToInteger(n float64) (int64, error) {
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, fmt.Errorf("number must be finite")
+	}
 	if math.Trunc(n) != n {
 		return 0, fmt.Errorf("number is not an integer")
 	}
-	if n > math.MaxInt64 || n < math.MinInt64 {
+	const int64UpperExclusive = 9223372036854775808.0
+	const int64LowerInclusive = -9223372036854775808.0
+	if n >= int64UpperExclusive || n < int64LowerInclusive {
 		return 0, fmt.Errorf("integer overflows int64")
 	}
 	return int64(n), nil
 }
 
 func coerceNumber(v any) (any, error) {
+	var value float64
+	var err error
 	switch n := v.(type) {
 	case int:
-		return float64(n), nil
+		value = float64(n)
 	case int8:
-		return float64(n), nil
+		value = float64(n)
 	case int16:
-		return float64(n), nil
+		value = float64(n)
 	case int32:
-		return float64(n), nil
+		value = float64(n)
 	case int64:
-		return float64(n), nil
+		value = float64(n)
 	case uint:
-		return float64(n), nil
+		value = float64(n)
 	case uint8:
-		return float64(n), nil
+		value = float64(n)
 	case uint16:
-		return float64(n), nil
+		value = float64(n)
 	case uint32:
-		return float64(n), nil
+		value = float64(n)
 	case uint64:
-		return float64(n), nil
+		value = float64(n)
 	case float32:
-		return float64(n), nil
+		value = float64(n)
 	case float64:
-		return n, nil
+		value = n
 	case json.Number:
-		return n.Float64()
+		value, err = n.Float64()
 	case string:
-		return strconv.ParseFloat(n, 64)
+		value, err = strconv.ParseFloat(n, 64)
 	default:
 		return nil, fmt.Errorf("cannot coerce %T to number", v)
 	}
+	if err != nil {
+		return nil, err
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, fmt.Errorf("number must be finite")
+	}
+	return value, nil
 }
 
 func coerceBoolean(v any) (any, error) {

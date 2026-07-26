@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type platformServiceManager struct {
@@ -42,7 +43,8 @@ func (m platformServiceManager) Status() (ServiceStatus, error) {
 	out, err := exec.Command("sc.exe", "query", defaultServiceName).CombinedOutput()
 	text := string(out)
 	if err != nil {
-		if strings.Contains(strings.ToLower(text), "does not exist") {
+		lower := strings.ToLower(text)
+		if strings.Contains(lower, "does not exist") || strings.Contains(lower, "marked for deletion") {
 			return status, nil
 		}
 		return ServiceStatus{}, fmt.Errorf("sc.exe query %s: %w: %s", defaultServiceName, err, strings.TrimSpace(text))
@@ -57,7 +59,20 @@ func (m platformServiceManager) Status() (ServiceStatus, error) {
 
 func (m platformServiceManager) Uninstall() error {
 	_ = m.Stop()
-	return runCommand("sc.exe", "delete", defaultServiceName)
+	if err := runCommand("sc.exe", "delete", defaultServiceName); err != nil {
+		return err
+	}
+	for i := 0; i < 40; i++ {
+		out, err := exec.Command("sc.exe", "query", defaultServiceName).CombinedOutput()
+		if err != nil {
+			lower := strings.ToLower(string(out))
+			if strings.Contains(lower, "does not exist") || strings.Contains(lower, "marked for deletion") {
+				return nil
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("service %s was not deleted within 10s", defaultServiceName)
 }
 
 func windowsServiceState(text string) string {

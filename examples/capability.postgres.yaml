@@ -3,6 +3,9 @@ service:
   version: 0.1.0
   description: Example agent-defined capabilities for a legacy CRM database.
 
+runtime:
+  max_concurrent_requests: 16
+
 gateway:
   url: ws://localhost:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw

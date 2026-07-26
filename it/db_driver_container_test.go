@@ -76,6 +76,152 @@ func TestContainerDBDriverSmoke(t *testing.T) {
 	}
 }
 
+func TestContainerDBDriverMCPInt64BoundaryReachesRealDatabaseExactly(t *testing.T) {
+	const boundary = "9007199254740993"
+	for _, tc := range []struct {
+		driver string
+		sql    string
+	}{
+		{driver: "postgres", sql: "select :id::bigint as id, 'boundary'::text as name, 'x'::text as email"},
+		{driver: "mysql", sql: "select cast(:id as signed) as id, 'boundary' as name, 'x' as email"},
+		{driver: "sqlserver", sql: "select cast(:id as bigint) as id, cast('boundary' as nvarchar(20)) as name, cast('x' as nvarchar(20)) as email"},
+		{driver: "oracle", sql: `select cast(:id as number(19)) as "id", 'boundary' as "name", 'x' as "email" from dual`},
+	} {
+		if !selectedDBForTest(t, tc.driver) {
+			continue
+		}
+		t.Run(tc.driver, func(t *testing.T) {
+			db := selectedContainerDBConfig(t, tc.driver)
+			secrets := newITSecrets(t)
+			addr := freeAddr(t)
+			capabilityFile := writeContainerCapability(t, t.TempDir(), tc.driver, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, tc.sql)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			baseURL := startInternalGateway(t, ctx, addr, secrets, 3*time.Second)
+			runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			errCh := make(chan error, 1)
+			go func() { errCh <- runner.Run(ctx) }()
+			waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+			body := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":`+boundary+`}}}`)
+			if !strings.Contains(string(body), `"id":`+boundary) {
+				t.Fatalf("MCP -> agent -> %s changed int64 boundary: %s", tc.driver, body)
+			}
+			cancel()
+			select {
+			case <-errCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("agent runner did not stop")
+			}
+		})
+	}
+}
+
+func TestMySQLDSNSpecialCredentialsConnectToRealDatabase(t *testing.T) {
+	if !selectedDBForTest(t, "mysql") {
+		return
+	}
+	admin := selectedContainerDBConfig(t, "mysql")
+	seedCustomerTable(t, "mysql", admin)
+	root := admin
+	root.User = "root"
+	special := admin
+	special.User = "onprest@special/name"
+	special.Password = "p@ss:/word?&=#"
+	execDBStatements(t, "mysql", root, []string{
+		"CREATE USER IF NOT EXISTS 'onprest@special/name'@'%' IDENTIFIED BY 'p@ss:/word?&=#'",
+		"GRANT SELECT ON `" + admin.Name + "`.* TO 'onprest@special/name'@'%'",
+		"FLUSH PRIVILEGES",
+	})
+	t.Cleanup(func() {
+		execDBStatements(t, "mysql", root, []string{"DROP USER IF EXISTS 'onprest@special/name'@'%'"})
+	})
+
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	capabilityFile := writeContainerCapability(t, t.TempDir(), "mysql", special, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey,
+		"select id, name, email from onprest_it_customers where id = :id")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	baseURL := startInternalGateway(t, ctx, addr, secrets, 2*time.Second)
+	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	if err != nil {
+		t.Fatalf("NewRunner with special MySQL credentials: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- runner.Run(ctx) }()
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+	status, body := postCapability(t, baseURL, secrets.APIKey, "get_customer", `{"id":7}`)
+	if status != http.StatusOK || !strings.Contains(string(body), `"Ada"`) {
+		t.Fatalf("special MySQL credential query status=%d body=%s", status, body)
+	}
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent runner did not stop")
+	}
+}
+
+func TestContainerDBDriverReadonlyBackslashQuoteCannotExecuteSecondStatement(t *testing.T) {
+	for _, tc := range []struct {
+		driver string
+		attack string
+		setup  []string
+	}{
+		{driver: "postgres", attack: `SELECT '\'; UPDATE onprest_readonly_guard SET value = 99 WHERE id = 1`, setup: []string{
+			"drop table if exists onprest_readonly_guard",
+			"create table onprest_readonly_guard (id integer primary key, value integer not null)",
+			"insert into onprest_readonly_guard values (1, 7)",
+		}},
+		{driver: "mysql", attack: `SELECT '\'; UPDATE onprest_readonly_guard SET value = 99 WHERE id = 1`, setup: []string{
+			"drop table if exists onprest_readonly_guard",
+			"create table onprest_readonly_guard (id integer primary key, value integer not null)",
+			"insert into onprest_readonly_guard values (1, 7)",
+		}},
+		{driver: "sqlserver", attack: `SELECT '\'; UPDATE dbo.onprest_readonly_guard SET value = 99 WHERE id = 1`, setup: []string{
+			"if object_id('dbo.onprest_readonly_guard', 'U') is not null drop table dbo.onprest_readonly_guard",
+			"create table dbo.onprest_readonly_guard (id int primary key, value int not null)",
+			"insert into dbo.onprest_readonly_guard values (1, 7)",
+		}},
+		{driver: "oracle", attack: `SELECT '\' FROM dual; UPDATE onprest_readonly_guard SET value = 99 WHERE id = 1`, setup: []string{
+			"begin execute immediate 'drop table onprest_readonly_guard purge'; exception when others then if sqlcode != -942 then raise; end if; end;",
+			"create table onprest_readonly_guard (id number(10) primary key, value number(10) not null)",
+			"insert into onprest_readonly_guard values (1, 7)",
+		}},
+	} {
+		if !selectedDBForTest(t, tc.driver) {
+			continue
+		}
+		t.Run(tc.driver, func(t *testing.T) {
+			cfg := selectedContainerDBConfig(t, tc.driver)
+			execDBStatements(t, tc.driver, cfg, tc.setup)
+			secrets := newITSecrets(t)
+			path := writeContainerCapability(t, t.TempDir(), tc.driver, cfg, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, tc.attack)
+			if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: path, ReconnectEvery: time.Second}, nil); err == nil {
+				t.Fatal("readonly lint accepted a backslash-quote multi-statement attack")
+			}
+
+			db, err := sql.Open(sqlDriverName(tc.driver), integrationDBDSN(tc.driver, cfg))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			var value int
+			if err := db.QueryRowContext(ctx, "select value from onprest_readonly_guard where id = 1").Scan(&value); err != nil {
+				t.Fatal(err)
+			}
+			if value != 7 {
+				t.Fatalf("protected real DB value changed to %d", value)
+			}
+		})
+	}
+}
+
 func TestContainerDBDriverErrorsAreHiddenFromGatewayResponse(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -164,8 +310,8 @@ func TestContainerDBDriverTimeoutsAreNormalized(t *testing.T) {
 			waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
 
 			status, body := postCapability(t, baseURL, secrets.APIKey, "slow_query", `{}`)
-			if status != http.StatusBadGateway {
-				t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+			if status != http.StatusGatewayTimeout {
+				t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusGatewayTimeout, string(body))
 			}
 			requireAPIErrorCode(t, body, "AGENT_QUERY_TIMEOUT")
 			if strings.Contains(strings.ToLower(string(body)), "sleep") ||

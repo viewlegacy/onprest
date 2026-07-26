@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
@@ -17,6 +18,8 @@ import (
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 )
+
+const agentResponseWriteTimeout = 5 * time.Second
 
 type Runner struct {
 	cfg             Config
@@ -62,7 +65,7 @@ func NewRunner(cfg Config, logOut io.Writer) (*Runner, error) {
 		return nil, startupFailure()
 	}
 	closeDetailLog = false
-	r.log("agent_ready", map[string]any{"capabilities": len(cf.Capabilities), "driver": cf.Database.Driver})
+	r.log("agent_ready", map[string]any{"capabilities": len(cf.Capabilities), "driver": cf.Database.Driver, "max_concurrent_requests": *cf.Runtime.MaxConcurrentRequests})
 	return r, nil
 }
 
@@ -91,8 +94,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer r.detailLogCloser.Close()
 	}
 	for ctx.Err() == nil {
+		challengeCtx, challengeCancel := context.WithTimeout(ctx, 10*time.Second)
+		challenge, err := fetchAgentChallenge(challengeCtx, r.cf.Gateway.URL)
+		challengeCancel()
+		if err != nil {
+			r.log("gateway_connect_failed", map[string]any{"error": err.Error()})
+			sleep(ctx, r.cfg.ReconnectEvery)
+			continue
+		}
 		headers := http.Header{}
-		if err := setAgentAuthHeaders(headers, r.cf.Gateway.AgentPrivateKey, "/ws/agent"); err != nil {
+		if err := setAgentAuthHeaders(headers, r.cf.Gateway.AgentPrivateKey, "/ws/agent", challenge); err != nil {
 			r.log("agent_auth_failed", map[string]any{"error": err.Error()})
 			return err
 		}
@@ -110,17 +121,61 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
-	defer conn.Close()
+	connCtx, cancel := context.WithCancel(ctx)
+	maxConcurrent := *r.cf.Runtime.MaxConcurrentRequests
+	requests := make(chan protocol.Request, maxConcurrent)
+	responses := make(chan protocol.Response, maxConcurrent*2+1)
 	done := make(chan struct{})
 	go func() {
 		select {
-		case <-ctx.Done():
+		case <-connCtx.Done():
 			_ = conn.Close()
 		case <-done:
 		}
 	}()
-	defer close(done)
-	for ctx.Err() == nil {
+	var workers sync.WaitGroup
+	workers.Add(maxConcurrent + 1)
+	for range maxConcurrent {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case req := <-requests:
+					resp := r.handle(connCtx, req)
+					select {
+					case responses <- resp:
+					case <-connCtx.Done():
+						return
+					}
+				case <-connCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer workers.Done()
+		for {
+			select {
+			case resp := <-responses:
+				if err := conn.WriteTextWithDeadline(protocol.MustJSON(resp), agentResponseWriteTimeout); err != nil {
+					r.log("gateway_write_failed", map[string]any{"error": err.Error()})
+					cancel()
+					_ = conn.Close()
+					return
+				}
+			case <-connCtx.Done():
+				return
+			}
+		}
+	}()
+	defer func() {
+		cancel()
+		_ = conn.Close()
+		workers.Wait()
+		close(done)
+	}()
+	for connCtx.Err() == nil {
 		msg, err := conn.ReadText()
 		if err != nil {
 			r.log("gateway_disconnected", map[string]any{"error": err.Error()})
@@ -131,13 +186,27 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 		dec.UseNumber()
 		if err := dec.Decode(&req); err != nil {
 			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request", "invalid gateway request: "+err.Error(), "")
-			_ = conn.WriteText(protocol.MustJSON(protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}))
+			select {
+			case responses <- protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
+			case <-connCtx.Done():
+				return
+			}
 			continue
 		}
-		resp := r.handle(ctx, req)
-		if err := conn.WriteText(protocol.MustJSON(resp)); err != nil {
-			r.log("gateway_write_failed", map[string]any{"error": err.Error()})
+		select {
+		case requests <- req:
+		case <-connCtx.Done():
 			return
+		default:
+			select {
+			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_BUSY", Message: "agent request queue is full"}}:
+			case <-connCtx.Done():
+				return
+			default:
+				cancel()
+				_ = conn.Close()
+				return
+			}
 		}
 	}
 }

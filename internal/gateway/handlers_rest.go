@@ -11,9 +11,13 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqID := newID()
 	name := capabilityFromPath(r.URL.Path)
-	key, ok := s.authenticate(w, r)
-	if !ok {
-		s.accessLog(reqID, "", name, http.StatusUnauthorized, errGatewayAuthFailed, "invalid api key", start)
+	key, authStatus := s.authenticate(w, r)
+	if authStatus != 0 {
+		code, message := errGatewayAuthFailed, "invalid api key"
+		if authStatus == http.StatusTooManyRequests {
+			code, message = errGatewayRateLimited, "authentication is busy; retry later"
+		}
+		s.accessLog(reqID, "", name, authStatus, code, message, start)
 		return
 	}
 	if name == "" || strings.Contains(name, "/") {
@@ -37,9 +41,14 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var params map[string]any
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes))
 	dec.UseNumber()
 	if err := dec.Decode(&params); err != nil {
+		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "invalid json body", start)
+		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json body"))
+		return
+	}
+	if err := ensureJSONEOF(dec); err != nil {
 		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "invalid json body", start)
 		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json body"))
 		return
@@ -55,8 +64,8 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.authenticate(w, r)
-	if !ok {
+	key, authStatus := s.authenticate(w, r)
+	if authStatus != 0 {
 		return
 	}
 	s.agentMu.RLock()

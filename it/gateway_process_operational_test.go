@@ -5,6 +5,7 @@ package it
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/viewlegacy/onprest/internal/protocol"
 )
 
 func TestGatewayProcessEnvFileMCPLogsAndShutdown(t *testing.T) {
@@ -156,29 +159,102 @@ func TestGatewayProcessRollingShutdownDuringInFlightRequest(t *testing.T) {
 	serveMetaOnce(t, conn, openAPIDocFor("slow_capability"))
 	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
 
-	done := make(chan struct{}, 1)
+	type clientResult struct {
+		status int
+		body   []byte
+		err    error
+	}
+	done := make(chan clientResult, 1)
 	go func() {
+		result := clientResult{}
 		req, err := http.NewRequest(http.MethodPost, baseURL+"/api/v1/capabilities/slow_capability", strings.NewReader(`{}`))
 		if err == nil {
 			req.Header.Set("Authorization", "Bearer "+secrets.APIKey)
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := http.DefaultClient.Do(req)
 			if err == nil {
-				_, _ = io.ReadAll(resp.Body)
+				result.status = resp.StatusCode
+				result.body, _ = io.ReadAll(resp.Body)
 				_ = resp.Body.Close()
+			} else {
+				result.err = err
 			}
+		} else {
+			result.err = err
 		}
-		done <- struct{}{}
+		done <- result
 	}()
-	_ = readAgentRequest(t, conn, "slow_capability")
+	agentReq := readAgentRequest(t, conn, "slow_capability")
 	_ = cmd.Process.Signal(os.Interrupt)
+	if err := conn.WriteText(protocol.MustJSON(protocol.ResultResponse(agentReq.ID, map[string]any{"rows": []any{map[string]any{"id": 7}}, "count": 1}))); err != nil {
+		t.Fatalf("write in-flight response: %v", err)
+	}
+	start := time.Now()
 	if err := waitForExit(t, cmd, 12*time.Second); err != nil {
 		t.Fatalf("gateway did not exit cleanly during in-flight request: %v\n%s", err, output.String())
 	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("graceful shutdown waited %s after in-flight response", time.Since(start))
+	}
 	select {
-	case <-done:
+	case result := <-done:
+		if result.err != nil || result.status != http.StatusOK || !strings.Contains(string(result.body), `"id":7`) {
+			t.Fatalf("in-flight response = status:%d body:%s err:%v", result.status, result.body, result.err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("in-flight REST client did not return after gateway shutdown")
+	}
+}
+
+func TestGatewayProcessShutdownEnforcesTenSecondTimeout(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	gatewayBin := filepath.Join(tmp, "onprest-gateway")
+	buildBinary(t, repo, gatewayBin, "./cmd/gateway")
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	cmd, output := startProcessWithOutput(t, tmp, gatewayBin, nil, []string{
+		"GATEWAY_ADDR=" + addr,
+		"GATEWAY_AGENT_PUBLIC_KEY=" + secrets.AgentPublicKey,
+		"GATEWAY_API_KEYS_JSON=" + secrets.APIKeysJSON,
+		"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=100",
+		"GATEWAY_RATE_LIMIT_BURST=100",
+	})
+	baseURL := "http://" + addr
+	waitForHTTP(t, baseURL+"/healthz", "", http.StatusOK)
+	conn := dialManualAgent(t, "ws://"+addr+"/ws/agent", secrets.PrivateKey)
+	defer conn.Close()
+	serveMetaOnce(t, conn, openAPIDocFor("never_finishes"))
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+	clientDone := make(chan error, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/capabilities/never_finishes", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+secrets.APIKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			err = fmt.Errorf("unexpected HTTP response %d", resp.StatusCode)
+		}
+		clientDone <- err
+	}()
+	_ = readAgentRequest(t, conn, "never_finishes")
+	start := time.Now()
+	_ = cmd.Process.Signal(os.Interrupt)
+	if err := waitForExit(t, cmd, 12*time.Second); err != nil {
+		t.Fatalf("gateway did not enforce shutdown timeout: %v\n%s", err, output.String())
+	}
+	elapsed := time.Since(start)
+	if elapsed < 9*time.Second || elapsed > 12*time.Second {
+		t.Fatalf("shutdown timeout elapsed = %s, want approximately 10s", elapsed)
+	}
+	select {
+	case err := <-clientDone:
+		if err == nil {
+			t.Fatal("in-flight client unexpectedly completed successfully")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight client remained blocked after forced shutdown")
 	}
 }
 

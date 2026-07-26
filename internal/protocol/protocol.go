@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 )
 
-const AgentAuthVersion = "onprest-agent-v1"
+const AgentAuthVersion = "onprest-agent-v2"
 
 type Request struct {
 	ID         string         `json:"id"`
@@ -23,8 +23,8 @@ type Error struct {
 	Message string `json:"message,omitempty"`
 }
 
-func AgentAuthMessage(path, timestamp, nonce string) []byte {
-	return []byte(AgentAuthVersion + "\n" + path + "\n" + timestamp + "\n" + nonce)
+func AgentAuthMessage(path, timestamp, nonce, challenge, handshakeKey string) []byte {
+	return []byte(AgentAuthVersion + "\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + challenge + "\n" + handshakeKey)
 }
 
 func ResultResponse(id string, result any) Response {
