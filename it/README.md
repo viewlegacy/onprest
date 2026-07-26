@@ -24,7 +24,7 @@ PostgreSQL operation-readiness gate. This runs the PostgreSQL integration suite 
 make test-it-release-gate
 ```
 
-Final OSS core release gate. This runs unit tests, PostgreSQL CI, PostgreSQL DB interruption stability, all-DB smoke, Docker image operations, Docker Compose operations, skip detection, and testcontainers leftover detection.
+Final OSS core release gate. This runs unit tests, PostgreSQL CI, PostgreSQL DB interruption stability, all-DB smoke, the MySQL special-credential connection, SQL Server real TLS verification, Docker image operations, Docker Compose operations, test/subtest skip detection, and testcontainers leftover detection. Package-level `go test -json` skip records without a `Test` field are not test skips.
 
 ## Support Commands
 

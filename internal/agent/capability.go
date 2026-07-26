@@ -1,28 +1,37 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"gopkg.in/yaml.v3"
 )
 
 type CapabilityFile struct {
 	Service      ServiceDef               `json:"service" yaml:"service"`
+	Runtime      RuntimeDef               `json:"runtime" yaml:"runtime"`
 	Gateway      GatewayDef               `json:"gateway" yaml:"gateway"`
 	Database     DatabaseDef              `json:"database" yaml:"database"`
 	Logging      LoggingDef               `json:"logging" yaml:"logging"`
 	Defaults     PolicyDef                `json:"defaults" yaml:"defaults"`
 	Capabilities map[string]CapabilityDef `json:"capabilities" yaml:"capabilities"`
+}
+
+type RuntimeDef struct {
+	MaxConcurrentRequests *int `json:"max_concurrent_requests,omitempty" yaml:"max_concurrent_requests,omitempty"`
 }
 
 type ServiceDef struct {
@@ -32,17 +41,27 @@ type ServiceDef struct {
 }
 
 type GatewayDef struct {
-	URL             string `json:"url" yaml:"url"`
-	AgentPrivateKey string `json:"agent_private_key" yaml:"agent_private_key"`
+	URL                      string `json:"url" yaml:"url"`
+	AgentPrivateKey          string `json:"agent_private_key" yaml:"agent_private_key"`
+	AllowInsecureNonLoopback bool   `json:"allow_insecure_non_loopback_ws,omitempty" yaml:"allow_insecure_non_loopback_ws,omitempty"`
 }
 
 type DatabaseDef struct {
-	Driver   string `json:"driver" yaml:"driver"`
-	Host     string `json:"host" yaml:"host"`
-	Port     int    `json:"port" yaml:"port"`
-	Name     string `json:"name" yaml:"name"`
-	User     string `json:"user" yaml:"user"`
-	Password string `json:"password" yaml:"password"`
+	Driver   string         `json:"driver" yaml:"driver"`
+	Host     string         `json:"host" yaml:"host"`
+	Port     int            `json:"port" yaml:"port"`
+	Name     string         `json:"name" yaml:"name"`
+	User     string         `json:"user" yaml:"user"`
+	Password string         `json:"password" yaml:"password"`
+	TLS      DatabaseTLSDef `json:"tls,omitempty" yaml:"tls,omitempty"`
+}
+
+type DatabaseTLSDef struct {
+	Mode       string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	CAFile     string `json:"ca_file,omitempty" yaml:"ca_file,omitempty"`
+	CertFile   string `json:"cert_file,omitempty" yaml:"cert_file,omitempty"`
+	KeyFile    string `json:"key_file,omitempty" yaml:"key_file,omitempty"`
+	ServerName string `json:"server_name,omitempty" yaml:"server_name,omitempty"`
 }
 
 type LoggingDef struct {
@@ -94,7 +113,16 @@ func LoadCapabilityFile(path string) (*CapabilityFile, error) {
 		return nil, err
 	}
 	var cf CapabilityFile
-	if err := yaml.Unmarshal(b, &cf); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cf); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse capability.yaml: %w", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("parse capability.yaml: multiple YAML documents are not allowed")
+		}
 		return nil, fmt.Errorf("parse capability.yaml: %w", err)
 	}
 	if err := cf.Lint(); err != nil {
@@ -104,6 +132,12 @@ func LoadCapabilityFile(path string) (*CapabilityFile, error) {
 }
 
 func (cf *CapabilityFile) Lint() error {
+	if cf.Runtime.MaxConcurrentRequests == nil {
+		defaultValue := 16
+		cf.Runtime.MaxConcurrentRequests = &defaultValue
+	} else if *cf.Runtime.MaxConcurrentRequests <= 0 {
+		return errors.New("runtime.max_concurrent_requests must be > 0")
+	}
 	if cf.Service.Title == "" {
 		cf.Service.Title = "Onprest Agent"
 	}
@@ -112,6 +146,9 @@ func (cf *CapabilityFile) Lint() error {
 	}
 	if cf.Gateway.URL == "" {
 		return errors.New("gateway.url is required")
+	}
+	if err := lintGatewayURL(cf.Gateway.URL, cf.Gateway.AllowInsecureNonLoopback); err != nil {
+		return err
 	}
 	if cf.Gateway.AgentPrivateKey == "" {
 		return errors.New("gateway.agent_private_key is required")
@@ -144,7 +181,7 @@ func (cf *CapabilityFile) Lint() error {
 		if err := cap.Policy.lint(name + ".policy"); err != nil {
 			return err
 		}
-		if readonly(cap.Policy) && !isReadOnlySQL(cap.SQL) {
+		if readonly(cap.Policy) && !isReadOnlySQL(cf.Database.Driver, cap.SQL) {
 			return fmt.Errorf("%s.sql must be read-only when policy.readonly is true", name)
 		}
 		for pname, p := range cap.Params {
@@ -158,6 +195,28 @@ func (cf *CapabilityFile) Lint() error {
 			}
 		}
 		cf.Capabilities[name] = cap
+	}
+	return nil
+}
+
+func lintGatewayURL(raw string, allowInsecureNonLoopback bool) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return errors.New("gateway.url must be a valid ws:// or wss:// URL")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "/ws/agent" {
+		return errors.New("gateway.url must use the exact /ws/agent path without credentials, query, or fragment")
+	}
+	if u.Scheme == "wss" {
+		return nil
+	}
+	if u.Scheme != "ws" {
+		return errors.New("gateway.url must use ws:// or wss://")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) && !allowInsecureNonLoopback {
+		return errors.New("gateway.url must use wss:// for non-loopback hosts; the explicit insecure override is for isolated development only")
 	}
 	return nil
 }
@@ -193,7 +252,39 @@ func (db DatabaseDef) lint() error {
 	if db.Port <= 0 {
 		return errors.New("database.port is required")
 	}
+	mode := db.tlsMode()
+	switch mode {
+	case "disable", "require", "verify-ca", "verify-full":
+	default:
+		return fmt.Errorf("database.tls.mode must be one of disable, require, verify-ca, verify-full")
+	}
+	if db.Driver != "postgres" && db.Driver != "sqlserver" && mode != "disable" {
+		return fmt.Errorf("database.tls is currently supported only for postgres and sqlserver")
+	}
+	if db.Driver == "sqlserver" && mode == "verify-ca" {
+		return fmt.Errorf("database.tls.mode verify-ca is not supported for sqlserver; use require or verify-full")
+	}
+	if (db.TLS.CertFile == "") != (db.TLS.KeyFile == "") {
+		return fmt.Errorf("database.tls.cert_file and key_file must be set together")
+	}
+	if db.Driver != "postgres" && (db.TLS.CertFile != "" || db.TLS.KeyFile != "") {
+		return fmt.Errorf("database.tls client certificates are supported only for postgres")
+	}
+	if db.Driver != "sqlserver" && db.TLS.ServerName != "" {
+		return fmt.Errorf("database.tls.server_name is supported only for sqlserver")
+	}
+	if mode == "disable" && (db.TLS.CAFile != "" || db.TLS.CertFile != "" || db.TLS.KeyFile != "" || db.TLS.ServerName != "") {
+		return fmt.Errorf("database.tls certificate fields require an enabled TLS mode")
+	}
 	return nil
+}
+
+func (db DatabaseDef) tlsMode() string {
+	mode := strings.ToLower(strings.TrimSpace(db.TLS.Mode))
+	if mode == "" {
+		return "disable"
+	}
+	return mode
 }
 
 func (db DatabaseDef) DSN() string {
@@ -207,11 +298,18 @@ func (db DatabaseDef) DSN() string {
 			Path:   "/" + db.Name,
 		}
 		q := u.Query()
-		q.Set("sslmode", "disable")
+		q.Set("sslmode", db.tlsMode())
+		if db.TLS.CAFile != "" {
+			q.Set("sslrootcert", db.TLS.CAFile)
+		}
+		if db.TLS.CertFile != "" {
+			q.Set("sslcert", db.TLS.CertFile)
+			q.Set("sslkey", db.TLS.KeyFile)
+		}
 		u.RawQuery = q.Encode()
 		return u.String()
 	case "mysql":
-		return fmt.Sprintf("%s:%s@tcp(%s)/%s", db.User, db.Password, hostPort, db.Name)
+		return (&mysql.Config{User: db.User, Passwd: db.Password, Net: "tcp", Addr: hostPort, DBName: db.Name}).FormatDSN()
 	case "sqlserver":
 		u := url.URL{
 			Scheme: "sqlserver",
@@ -220,7 +318,26 @@ func (db DatabaseDef) DSN() string {
 		}
 		q := u.Query()
 		q.Set("database", db.Name)
-		q.Set("encrypt", "disable")
+		switch db.tlsMode() {
+		case "disable":
+			q.Set("encrypt", "disable")
+		case "require":
+			q.Set("encrypt", "true")
+			q.Set("TrustServerCertificate", "true")
+		case "verify-ca", "verify-full":
+			q.Set("encrypt", "true")
+			q.Set("TrustServerCertificate", "false")
+			if db.TLS.CAFile != "" {
+				q.Set("certificate", db.TLS.CAFile)
+			}
+			if db.tlsMode() == "verify-full" {
+				serverName := db.TLS.ServerName
+				if serverName == "" {
+					serverName = db.Host
+				}
+				q.Set("hostNameInCertificate", serverName)
+			}
+		}
 		u.RawQuery = q.Encode()
 		return u.String()
 	case "oracle":
@@ -385,19 +502,171 @@ func parseByteSize(raw string) (int64, error) {
 			break
 		}
 	}
-	var n int64
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+	if s == "" {
+		return 0, errors.New("missing integer value")
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
 		return 0, err
 	}
 	if n <= 0 {
 		return 0, errors.New("must be > 0")
 	}
+	if n > (int64(^uint64(0)>>1) / multiplier) {
+		return 0, errors.New("size overflows int64")
+	}
 	return n * multiplier, nil
 }
 
-func isReadOnlySQL(query string) bool {
+func isReadOnlySQL(driver, query string) bool {
 	keyword := firstSQLKeyword(query)
-	return keyword == "select"
+	return keyword == "select" && hasSingleSQLStatement(driver, query)
+}
+
+func hasSingleSQLStatement(driver, query string) bool {
+	for i := 0; i < len(query); {
+		switch {
+		case query[i] == '\'':
+			backslashEscapes := driver == "postgres" && isPostgresEscapeStringPrefix(query, i)
+			i = skipSQLQuoted(query, i, '\'', backslashEscapes)
+		case query[i] == '"':
+			i = skipSQLQuoted(query, i, '"', false)
+		case driver == "mysql" && query[i] == '`':
+			i = skipSQLQuoted(query, i, '`', false)
+		case driver == "sqlserver" && query[i] == '[':
+			i = skipSQLBracketIdentifier(query, i)
+		case driver == "oracle" && isOracleAlternativeQuotePrefix(query, i):
+			i = skipOracleAlternativeQuote(query, i)
+		case i+1 < len(query) && query[i:i+2] == "--":
+			i = skipSQLLineComment(query, i)
+		case i+1 < len(query) && query[i:i+2] == "/*":
+			i = skipSQLBlockComment(query, i)
+		case driver == "postgres" && query[i] == '$':
+			if next, ok := skipSQLDollarQuote(query, i); ok {
+				i = next
+			} else {
+				i++
+			}
+		case query[i] == ';':
+			return onlySQLTrivia(query[i+1:])
+		default:
+			i++
+		}
+	}
+	return true
+}
+
+func skipSQLQuoted(query string, start int, quote byte, backslashEscapes bool) int {
+	for i := start + 1; i < len(query); i++ {
+		if backslashEscapes && query[i] == '\\' && i+1 < len(query) {
+			i++
+			continue
+		}
+		if query[i] != quote {
+			continue
+		}
+		if i+1 < len(query) && query[i+1] == quote {
+			i++
+			continue
+		}
+		return i + 1
+	}
+	return len(query)
+}
+
+func isPostgresEscapeStringPrefix(query string, quote int) bool {
+	if quote == 0 || (query[quote-1] != 'e' && query[quote-1] != 'E') {
+		return false
+	}
+	return quote == 1 || !isIdent(query[quote-2])
+}
+
+func skipSQLBracketIdentifier(query string, start int) int {
+	for i := start + 1; i < len(query); i++ {
+		if query[i] != ']' {
+			continue
+		}
+		if i+1 < len(query) && query[i+1] == ']' {
+			i++
+			continue
+		}
+		return i + 1
+	}
+	return len(query)
+}
+
+func isOracleAlternativeQuotePrefix(query string, quote int) bool {
+	if quote+2 >= len(query) || (query[quote] != 'q' && query[quote] != 'Q') || query[quote+1] != '\'' {
+		return false
+	}
+	return quote == 0 || !isIdent(query[quote-1])
+}
+
+func skipOracleAlternativeQuote(query string, start int) int {
+	opening := query[start+2]
+	closing := opening
+	switch opening {
+	case '[':
+		closing = ']'
+	case '(':
+		closing = ')'
+	case '{':
+		closing = '}'
+	case '<':
+		closing = '>'
+	}
+	for i := start + 3; i+1 < len(query); i++ {
+		if query[i] == closing && query[i+1] == '\'' {
+			return i + 2
+		}
+	}
+	return len(query)
+}
+
+func skipSQLLineComment(query string, start int) int {
+	if end := strings.IndexByte(query[start+2:], '\n'); end >= 0 {
+		return start + 2 + end + 1
+	}
+	return len(query)
+}
+
+func skipSQLBlockComment(query string, start int) int {
+	if end := strings.Index(query[start+2:], "*/"); end >= 0 {
+		return start + 2 + end + 2
+	}
+	return len(query)
+}
+
+func skipSQLDollarQuote(query string, start int) (int, bool) {
+	endTag := start + 1
+	for endTag < len(query) && (isIdent(query[endTag]) || isDigit(query[endTag])) {
+		endTag++
+	}
+	if endTag >= len(query) || query[endTag] != '$' {
+		return start, false
+	}
+	tag := query[start : endTag+1]
+	end := strings.Index(query[endTag+1:], tag)
+	if end < 0 {
+		return len(query), true
+	}
+	return endTag + 1 + end + len(tag), true
+}
+
+func onlySQLTrivia(query string) bool {
+	for i := 0; i < len(query); {
+		switch {
+		case query[i] == ' ' || query[i] == '\t' || query[i] == '\r' || query[i] == '\n':
+			i++
+		case i+1 < len(query) && query[i:i+2] == "--":
+			i = skipSQLLineComment(query, i)
+		case i+1 < len(query) && query[i:i+2] == "/*":
+			i = skipSQLBlockComment(query, i)
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func firstSQLKeyword(query string) string {

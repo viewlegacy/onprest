@@ -42,7 +42,7 @@ func TestCreateAgentSecretEmitsUsableEd25519Keys(t *testing.T) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		t.Fatalf("private key size = %d, want %d", len(privateKey), ed25519.PrivateKeySize)
 	}
-	msg := []byte("onprest-agent-v1 test")
+	msg := []byte("onprest-agent-v2 test")
 	sig := ed25519.Sign(ed25519.PrivateKey(privateKey), msg)
 	if !ed25519.Verify(ed25519.PublicKey(publicKey), msg, sig) {
 		t.Fatal("generated public key did not verify signature from private key")

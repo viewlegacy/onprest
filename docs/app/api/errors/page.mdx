@@ -2,7 +2,7 @@
 
 Onprest returns stable error codes with public client-facing messages, and keeps sensitive detail out of external responses.
 
-## REST / MCP Shared HTTP Errors
+## HTTP Boundary Errors
 
 | HTTP | Code | Meaning |
 |---:|---|---|
@@ -12,12 +12,15 @@ Onprest returns stable error codes with public client-facing messages, and keeps
 | 429 | `GATEWAY_RATE_LIMITED` | Rate limit exceeded |
 | 500 | `GATEWAY_INTERNAL_ERROR` | Unexpected gateway error |
 | 503 | `GATEWAY_AGENT_OFFLINE` | Agent is not connected |
+| 503 | `AGENT_BUSY` | Agent execution slots and bounded waiting queue are full |
 | 504 | `GATEWAY_TIMEOUT` | Agent response timed out |
-| 502 | `AGENT_VALIDATION_FAILED` | Agent rejected params |
+| 400 | `AGENT_VALIDATION_FAILED` | Agent rejected params (REST) |
 | 502 | `AGENT_QUERY_FAILED` | SQL execution failed |
-| 502 | `AGENT_QUERY_TIMEOUT` | Query exceeded timeout |
+| 504 | `AGENT_QUERY_TIMEOUT` | Query exceeded timeout (REST) |
 | 502 | `AGENT_DB_UNREACHABLE` | Agent cannot reach the DB |
 | 502 | `AGENT_INTERNAL_ERROR` | Unexpected agent error |
+
+The agent-originated rows above are REST mappings. MCP `tools/call` returns those runtime failures as HTTP 200 tool results with `isError: true`. Gateway boundary errors use the HTTP status shown above.
 
 ## Endpoint HTTP Errors
 
@@ -38,6 +41,9 @@ These are returned as JSON-RPC errors with HTTP 200.
 | -32600 | `INVALID_REQUEST` | Invalid JSON-RPC shape |
 | -32601 | `METHOD_NOT_FOUND` | Unsupported method |
 | -32602 | `INVALID_PARAMS` | Invalid `tools/call` name or arguments |
+| -32000 | `GATEWAY_AGENT_OFFLINE` | `tools/list` metadata is unavailable |
+
+Known-tool execution failures are not JSON-RPC errors. They are MCP results whose `isError` is `true`, with the stable agent code/message under `structuredContent.error` and one text content item. A valid notification has no `id` and returns HTTP 202 with an empty body.
 
 ## Public Error Body
 
@@ -68,6 +74,7 @@ For agent errors, gateway returns the agent's public `code` and `message` unchan
 | `AGENT_QUERY_TIMEOUT` | `query exceeded policy.timeout` |
 | `AGENT_DB_UNREACHABLE` | `database is unreachable` |
 | `AGENT_INTERNAL_ERROR` | `agent internal error` |
+| `AGENT_BUSY` | `agent request queue is full` |
 
 Validation messages use the parameter name but never the submitted value.
 

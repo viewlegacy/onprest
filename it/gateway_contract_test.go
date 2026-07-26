@@ -185,7 +185,7 @@ func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 	done := make(chan []byte, 1)
 	go func() {
 		status, body := postCapability(t, baseURL, secrets.APIKey, "echo_customer", `{"id":7,"secret":"dont-log-me"}`)
-		if status != http.StatusBadGateway {
+		if status != http.StatusBadRequest {
 			body = []byte("status=" + http.StatusText(status) + " body=" + string(body))
 		}
 		done <- body
@@ -224,7 +224,7 @@ func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 	mcpDone := make(chan []byte, 1)
 	go func() {
 		status, body := postMCPStatus(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo_customer","arguments":{"secret":"dont-log-me-too"}}}`)
-		if status != http.StatusBadGateway {
+		if status != http.StatusOK {
 			body = []byte("status=" + http.StatusText(status) + " body=" + string(body))
 		}
 		mcpDone <- body
@@ -251,7 +251,7 @@ func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 		t.Fatalf("write MCP agent error: %v", err)
 	}
 	mcpBody := <-mcpDone
-	requireAPIErrorCode(t, mcpBody, "AGENT_VALIDATION_FAILED")
+	requireMCPToolErrorCode(t, mcpBody, "AGENT_VALIDATION_FAILED")
 	if !strings.Contains(string(mcpBody), mcpAgentMessage) || !strings.Contains(logs.String(), mcpAgentMessage) {
 		t.Fatalf("MCP agent message not propagated; body=%s logs=%s", string(mcpBody), logs.String())
 	}
@@ -309,6 +309,15 @@ func openAPIDocFor(caps ...string) map[string]any {
 
 func getWithAPIKey(t *testing.T, url, apiKey string) []byte {
 	t.Helper()
+	status, body := getWithAPIKeyStatus(t, url, apiKey)
+	if status != http.StatusOK {
+		t.Fatalf("GET %s status=%d body=%s", url, status, string(body))
+	}
+	return body
+}
+
+func getWithAPIKeyStatus(t *testing.T, url, apiKey string) (int, []byte) {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -320,10 +329,7 @@ func getWithAPIKey(t *testing.T, url, apiKey string) []byte {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status=%d body=%s", url, resp.StatusCode, string(body))
-	}
-	return body
+	return resp.StatusCode, body
 }
 
 func postMCPPayload(t *testing.T, baseURL, apiKey, payload string) []byte {
@@ -350,6 +356,26 @@ func postMCPStatus(t *testing.T, baseURL, apiKey, payload string) (int, []byte) 
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, body
+}
+
+func requireMCPToolErrorCode(t *testing.T, body []byte, want string) {
+	t.Helper()
+	var response struct {
+		Result struct {
+			IsError           bool `json:"isError"`
+			StructuredContent struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode MCP tool error: %v; body=%s", err, body)
+	}
+	if !response.Result.IsError || response.Result.StructuredContent.Error.Code != want {
+		t.Fatalf("MCP tool error code=%q isError=%t, want %q; body=%s", response.Result.StructuredContent.Error.Code, response.Result.IsError, want, body)
+	}
 }
 
 func quoteJSON(v string) string {

@@ -199,8 +199,6 @@ func buildExplainSQL(driver, query string) (string, bool) {
 	switch driver {
 	case "postgres", "mysql":
 		return "EXPLAIN " + query, true
-	case "sqlserver":
-		return "SET SHOWPLAN_TEXT ON; " + query + "; SET SHOWPLAN_TEXT OFF;", true
 	case "oracle":
 		return "EXPLAIN PLAN FOR " + query, true
 	default:

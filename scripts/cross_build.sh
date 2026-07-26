@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+DIST_DIR="${DIST_DIR:-dist}"
 
 TARGETS=(
 	"linux/amd64"
@@ -21,7 +22,7 @@ build_one() {
 	if [[ "$goos" == "windows" ]]; then
 		ext=".exe"
 	fi
-	local out_dir="dist/$goos-$goarch"
+	local out_dir="$DIST_DIR/$goos-$goarch"
 	mkdir -p "$out_dir"
 	echo "==> $goos/$goarch $name"
 	CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \

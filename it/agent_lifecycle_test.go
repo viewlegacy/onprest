@@ -139,6 +139,68 @@ func TestAgentReconnectsAfterGatewayStarts(t *testing.T) {
 	}
 }
 
+func TestSameAgentRunnerReconnectsAfterGatewayProcessRestart(t *testing.T) {
+	db := postgresContainerConfig(t)
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	gatewayBin := filepath.Join(tmp, "onprest-gateway")
+	buildBinary(t, repo, gatewayBin, "./cmd/gateway")
+
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	baseURL := "http://" + addr
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, capabilityBlock("reconnect_capability", "select 1::int as id"))
+	gatewayEnv := []string{
+		"GATEWAY_ADDR=" + addr,
+		"GATEWAY_AGENT_PUBLIC_KEY=" + secrets.AgentPublicKey,
+		"GATEWAY_API_KEYS_JSON=" + secrets.APIKeysJSON,
+		"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=100",
+		"GATEWAY_RATE_LIMIT_BURST=100",
+	}
+
+	gatewayCmd, _ := startProcessWithOutput(t, tmp, gatewayBin, nil, gatewayEnv)
+	defer func() { stopProcess(t, gatewayCmd) }()
+	waitForHTTP(t, baseURL+"/healthz", "", http.StatusOK)
+
+	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerCtx, cancelRunner := context.WithCancel(context.Background())
+	runnerErr := make(chan error, 1)
+	go func() { runnerErr <- runner.Run(runnerCtx) }()
+	defer func() {
+		cancelRunner()
+		select {
+		case <-runnerErr:
+		case <-time.After(5 * time.Second):
+			t.Error("agent runner did not stop after gateway restart test")
+		}
+	}()
+
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+	status, body := postCapability(t, baseURL, secrets.APIKey, "reconnect_capability", `{}`)
+	if status != http.StatusOK || !strings.Contains(string(body), `"id":1`) {
+		t.Fatalf("pre-restart capability status=%d body=%s", status, body)
+	}
+
+	stopProcess(t, gatewayCmd)
+	gatewayCmd = nil
+	select {
+	case err := <-runnerErr:
+		t.Fatalf("agent runner exited after gateway stopped instead of reconnecting: %v", err)
+	default:
+	}
+
+	gatewayCmd, _ = startProcessWithOutput(t, tmp, gatewayBin, nil, gatewayEnv)
+	waitForHTTP(t, baseURL+"/healthz", "", http.StatusOK)
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+	status, body = postCapability(t, baseURL, secrets.APIKey, "reconnect_capability", `{}`)
+	if status != http.StatusOK || !strings.Contains(string(body), `"id":1`) {
+		t.Fatalf("post-restart capability status=%d body=%s", status, body)
+	}
+}
+
 func TestAgentDefaultReconnectIntervalIsThirtySeconds(t *testing.T) {
 	cfg, err := agentpkg.LoadConfigFromEnv()
 	if err != nil {

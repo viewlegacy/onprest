@@ -23,8 +23,8 @@ gateway:
   agent_private_key: new-base64url-ed25519-private-key
 ```
 
-4. Restart gateway.
-5. Restart agent.
+4. In one maintenance window, restart gateway with the new public key.
+5. Immediately restart agent with the matching private key.
 6. Confirm `/healthz`, `/openapi.json`, REST, and MCP.
 
 ## Expected Behavior
