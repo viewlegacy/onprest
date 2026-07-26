@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/moby/moby/api/types/network"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 	agentpkg "github.com/viewlegacy/onprest/internal/agent"
@@ -53,8 +54,8 @@ forceencryption = 1
 			WaitingFor: wait.ForAll(
 				wait.ForListeningPort("1433/tcp"),
 				wait.ForLog("SQL Server is now ready for client connections"),
-				wait.ForSQL("1433/tcp", "sqlserver", func(host, port string) string {
-					mappedPort, _ := strconv.Atoi(strings.TrimSuffix(port, "/tcp"))
+				wait.ForSQL("1433/tcp", "sqlserver", func(host string, port network.Port) string {
+					mappedPort := int(port.Num())
 					return (agentpkg.DatabaseDef{
 						Driver:   "sqlserver",
 						Host:     host,
