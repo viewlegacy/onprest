@@ -59,8 +59,6 @@ The tool name maps to a capability name. `arguments` maps to capability params.
 
 Successful calls return both a text `content` item and the decoded value in `structuredContent`.
 
-After the gateway identifies a request as `tools/call`, it assigns a ULID and writes exactly one `protocol: "mcp"` request event for success, invalid params, capability denial, an undefined tool, agent unavailable/timeout/busy, or tool execution failure. Calls that have not reached this point—such as authentication, malformed JSON-RPC, lifecycle methods, notifications, or middleware rejection—do not count as tool-call request events. See [Gateway Logs](/gateway/logs).
-
 ## Notifications
 
 A structurally valid JSON-RPC message with no `id` is a notification. The gateway accepts it with HTTP 202 and an empty body; clients must not wait for a JSON-RPC response. This includes lifecycle notifications such as `notifications/initialized`.
