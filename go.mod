@@ -13,7 +13,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/mssql v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/mysql v0.43.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.43.0
-	golang.org/x/crypto v0.53.0
+	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
