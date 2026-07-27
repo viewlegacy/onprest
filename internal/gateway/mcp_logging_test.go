@@ -69,38 +69,75 @@ func TestMCPPreToolCallBranchesEmitNoRequestEvent(t *testing.T) {
 }
 
 func TestMCPMiddlewareRejectionsUseControlEventsNotRequestEvents(t *testing.T) {
-	allow, err := parseIPBlocks("198.51.100.0/24")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var logs bytes.Buffer
-	s := NewServer(Config{IPAllowList: allow}, &logs)
-	recorder := serveMCPForLogTest(s, "", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("IP rejection status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
-	if entries := requestLogEntries(t, &logs); len(entries) != 0 {
-		t.Fatalf("IP rejection emitted request events: %#v", entries)
-	}
-	entries := logEntries(t, &logs)
-	if len(entries) != 1 || entries[0]["event"] != "mcp_http_rejected" || entries[0]["error_code"] != errGatewayIPDenied {
-		t.Fatalf("IP rejection control event=%#v", entries)
-	}
+	t.Run("IP allow list", func(t *testing.T) {
+		allow, err := parseIPBlocks("198.51.100.0/24")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var logs bytes.Buffer
+		s := NewServer(Config{IPAllowList: allow}, &logs)
+		recorder := serveMCPForLogTest(s, "", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("IP rejection status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		if entries := requestLogEntries(t, &logs); len(entries) != 0 {
+			t.Fatalf("IP rejection emitted request events: %#v", entries)
+		}
+		entries := logEntries(t, &logs)
+		if len(entries) != 1 || entries[0]["event"] != "mcp_http_rejected" || entries[0]["error_code"] != errGatewayIPDenied {
+			t.Fatalf("IP rejection control event=%#v", entries)
+		}
+	})
 
-	s, logsPtr, apiKey := testServer(t)
-	s.cfg.RateLimit.RequestsPerSecond = 0.000001
-	s.cfg.RateLimit.Burst = 1
-	serveMCPForLogTest(s, apiKey, http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
-	rateLimited := serveMCPForLogTest(s, apiKey, http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{}}`)
-	if rateLimited.Code != http.StatusTooManyRequests {
-		t.Fatalf("rate limit status=%d body=%s", rateLimited.Code, rateLimited.Body.String())
-	}
-	if requests := requestLogEntries(t, logsPtr); len(requests) != 0 {
-		t.Fatalf("rate limit emitted request event: %#v", requests)
-	}
-	if entries := logEntries(t, logsPtr); entries[len(entries)-1]["event"] != "mcp_http_rejected" || entries[len(entries)-1]["error_code"] != errGatewayRateLimited {
-		t.Fatalf("rate limit control event=%#v", entries)
-	}
+	t.Run("rate limit", func(t *testing.T) {
+		s, logs, apiKey := testServer(t)
+		s.cfg.RateLimit.RequestsPerSecond = 0.000001
+		s.cfg.RateLimit.Burst = 1
+		serveMCPForLogTest(s, apiKey, http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+		rateLimited := serveMCPForLogTest(s, apiKey, http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{}}`)
+		if rateLimited.Code != http.StatusTooManyRequests {
+			t.Fatalf("rate limit status=%d body=%s", rateLimited.Code, rateLimited.Body.String())
+		}
+		if requests := requestLogEntries(t, logs); len(requests) != 0 {
+			t.Fatalf("rate limit emitted request event: %#v", requests)
+		}
+		entries := logEntries(t, logs)
+		if entries[len(entries)-1]["event"] != "mcp_http_rejected" || entries[len(entries)-1]["error_code"] != errGatewayRateLimited {
+			t.Fatalf("rate limit control event=%#v", entries)
+		}
+	})
+
+	t.Run("recovery", func(t *testing.T) {
+		const panicDetail = "sensitive MCP panic detail and stack marker"
+		var logs bytes.Buffer
+		s := NewServer(Config{}, &logs)
+		handler := s.withRecovery(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic(panicDetail)
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusInternalServerError {
+			t.Fatalf("recovery status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+		assertAPIErrorMessage(t, recorder.Body.Bytes(), errGatewayInternal, "unexpected gateway error")
+		if requests := requestLogEntries(t, &logs); len(requests) != 0 {
+			t.Fatalf("MCP recovery emitted request events: %#v", requests)
+		}
+		entries := logEntries(t, &logs)
+		if len(entries) != 1 || entries[0]["event"] != "mcp_http_rejected" ||
+			entries[0]["http_status"] != float64(http.StatusInternalServerError) ||
+			entries[0]["error_code"] != errGatewayInternal || entries[0]["error_message"] != "unexpected gateway error" {
+			t.Fatalf("MCP recovery control event=%#v", entries)
+		}
+		published := recorder.Body.String() + logs.String()
+		for _, forbidden := range []string{panicDetail, "goroutine ", "runtime/debug", "stack trace"} {
+			if strings.Contains(published, forbidden) {
+				t.Fatalf("MCP recovery leaked %q: response=%q logs=%q", forbidden, recorder.Body.String(), logs.String())
+			}
+		}
+	})
 }
 
 func TestMCPToolsCallBranchesEmitExactlyOneCompleteRequestEvent(t *testing.T) {
