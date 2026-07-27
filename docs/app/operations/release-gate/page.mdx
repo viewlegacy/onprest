@@ -12,6 +12,7 @@ make test-it-release-gate
 
 This gate verifies:
 
+- Go vulnerability analysis reports zero reachable known vulnerabilities for `./...`
 - unit tests
 - PostgreSQL integration tests 3 consecutive times
 - PostgreSQL DB interruption stability 5 consecutive times
@@ -40,7 +41,7 @@ The three service checks use the native OS managers and a real PostgreSQL instan
 
 ## Requirements
 
-Release gate commands require a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
+Release gate commands require Go 1.26.5 or later as declared in `go.mod`. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.5 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
 
 Container-backed tests require Docker daemon access. To make container availability mandatory, use:
 
@@ -54,6 +55,7 @@ If Docker is unavailable and mandatory mode is not enabled, container-backed tes
 
 A release candidate should pass `integration-linux` and all three native service checks, and preserve the architecture boundaries:
 
+- zero reachable known vulnerabilities reported by `govulncheck ./...`
 - two deployable binaries: `onprest-gateway` and `onprest-agent`
 - no gateway SQL construction
 - no gateway DB credentials

@@ -88,6 +88,7 @@ Normal `make test-it` does not cover:
 
 `make test-it-release-gate` runs:
 
+- `govulncheck ./...` using the scanner version pinned in `go.mod`
 - `go test ./...`
 - PostgreSQL integration suite, three consecutive runs, no skips
 - PostgreSQL DB interruption stability, five consecutive runs, no skips
