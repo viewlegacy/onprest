@@ -6,6 +6,7 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
 
 ```json
 {
+  "protocol": "rest",
   "request_id": "01J5ABCDEF1234567890ABCDEF",
   "timestamp": "2026-04-11T10:30:00.000Z",
   "event": "request",
@@ -20,17 +21,37 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
 
 The request log is intentionally small. It is useful for observability without turning gateway into a sensitive data sink.
 
+`protocol` is `rest` for REST capability calls and `mcp` for MCP `tools/call` calls. Each REST capability call emits one request event; its status and public error code/message match the HTTP response.
+
+After the gateway identifies an ID-bearing request as MCP `tools/call`, each handled outcome emits exactly one request event. Its `capability` is the tool name, or an empty string when invalid params do not contain a usable name.
+
+| `tools/call` outcome | Logged `http_status` | Logged error fields |
+|---|---:|---|
+| Success | 200 | `error_code` and `error_message` are `null` |
+| HTTP rejection after identification, such as capability denial | Actual HTTP status | Public HTTP `error.code` and `error.message` |
+| JSON-RPC error, such as invalid params or an undefined tool | 200 | Public `error.data.code` and `error.message` |
+| Tool execution error | 200 | Public `result.structuredContent.error.code` and `result.structuredContent.error.message` |
+
+Traffic rejected before `tools/call` is identified does not emit a request event. This includes HTTP method/body errors, authentication, source-IP and rate-limit rejection, malformed JSON/JSON-RPC, notifications, initialization, ping, tool listing, and unsupported methods. IP, rate-limit, and recovery diagnostics use an `mcp_http_rejected` control event instead, so they do not inflate tool-call request counts.
+
+The request event's `request_id` is a gateway-generated ULID for log collection. It is separate from the client-supplied MCP JSON-RPC `id`.
+
 ## Control Events
 
-When gateway receives OpenAPI metadata from the agent, it logs a control event with counts or status, not the full spec.
+Control events describe gateway operations and are not request events:
 
-OpenAPI cache contents are held in memory and filtered per API key on request.
+- `openapi_cached` contains only the cached path count.
+- `openapi_snapshot` contains the completed OpenAPI document and is emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`.
+- `mcp_http_rejected` contains a safe HTTP status and public code/message for MCP middleware rejection or recovery.
+
+OpenAPI cache contents are held in memory and filtered per API key when clients request them. The optional `openapi_snapshot` event is unfiltered operational metadata and may include public descriptions and schema names from `capability.yaml`.
 
 ## Not Logged
 
 Gateway stdout must not contain:
 
 - request params
+- URL paths
 - agent error detail
 - SQL text
 - DB host, user, password, or DSN

@@ -8,24 +8,28 @@ Request event fields:
 
 | Field | Description |
 |---|---|
-| `request_id` | ULID request identifier |
-| `timestamp` | event time |
-| `event` | `request` or control event name |
+| `protocol` | `rest` or `mcp` |
+| `request_id` | Gateway-generated ULID; separate from an MCP JSON-RPC `id` |
+| `timestamp` | UTC event time in RFC 3339 format |
+| `event` | Always `request` for a request event |
 | `capability` | capability name when available |
 | `api_key_name` | API key name from config |
 | `http_status` | response status |
-| `error_code` | stable error code or null |
-| `error_message` | same public value as the API response `error.message`, or null |
-| `duration_ms` | request duration |
+| `error_code` | Public application code returned to the caller, or null |
+| `error_message` | Matching public response message, or null on success |
+| `duration_ms` | Non-negative request duration in milliseconds |
 
-Gateway stdout excludes submitted param values, SQL, DB credentials, agent raw detail, plaintext API keys, and agent private keys.
+For REST and HTTP-level MCP errors, `error_code` and `error_message` match the HTTP `error.code` and `error.message`. For MCP JSON-RPC errors they match `error.data.code` and `error.message`; for MCP tool execution errors they match `result.structuredContent.error.code` and `result.structuredContent.error.message`.
 
-OpenAPI metadata events:
+Gateway stdout excludes submitted param values, URL paths, SQL, DB credentials, agent raw detail, plaintext API keys, and agent private keys. See [Gateway Logs](/gateway/logs) for the rules that determine when REST, MCP, and control events are emitted.
+
+Control events:
 
 | Event | Fields | Description |
 |---|---|---|
 | `openapi_cached` | `paths` | Emitted after gateway caches agent metadata. This is always summary-only. |
 | `openapi_snapshot` | `paths`, `openapi` | Emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`. `openapi` contains the full cached OpenAPI document, including gateway-added `servers`, `securitySchemes`, and `security`. |
+| `mcp_http_rejected` | `http_status`, `error_code`, `error_message` | Safe MCP HTTP-boundary diagnostic. It is a control event, not a request event. |
 
 `openapi_snapshot` contains unfiltered OpenAPI metadata for the connected agent. It still must not contain SQL or DB credentials, but it may contain public descriptions, parameter names, and result schema names from `capability.yaml`.
 

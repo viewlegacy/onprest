@@ -1,4 +1,4 @@
-.PHONY: build build-cross quickstart-db quickstart-db-down test test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
+.PHONY: build build-cross quickstart-db quickstart-db-down test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
 
 DIST_DIR ?= dist
 
@@ -18,6 +18,9 @@ quickstart-db-down:
 
 test:
 	go test ./...
+
+vulncheck:
+	go tool govulncheck ./...
 
 test-it:
 	go test -tags=integration ./it/...

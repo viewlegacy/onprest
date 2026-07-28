@@ -2,19 +2,20 @@
 
 This page is the canonical reference for Onprest test commands and what each one verifies. Other pages link here instead of repeating the command list.
 
-Test commands require a Go toolchain compatible with the version declared in `go.mod`.
+Test commands require Go 1.26.5 or later as declared in `go.mod`.
 
 ## Command Summary
 
 | Command | What it runs |
 |---|---|
 | `go test ./...` / `make test` | Unit tests only. No database or Docker required. |
+| `make vulncheck` | Runs the `govulncheck` version pinned in `go.mod` and fails on reachable known vulnerabilities in `./...`. |
 | `go test -tags=integration ./it/...` / `make test-it` | Full integration suite against a database. Requires Docker for Testcontainers-backed databases. |
 | `make test-it-postgres-ci` | PostgreSQL integration tests, excluding Docker image build tests, run 3 times in a row to catch flakiness. Containers are mandatory. |
 | `make test-it-postgres-stability` | DB-interruption stability test (`TestPostgresDBUnreachableDuringQuery`) run 5 times in a row to confirm the agent handles a database that drops mid-query. |
 | `make test-it-all-db` | Cross-driver smoke test (`TestContainerDBDriver`) across PostgreSQL, MySQL, SQL Server, and Oracle, with a 30-minute timeout. |
 | `make test-it-docker-ops` | Operational tests for the Docker image build and Docker Compose env-file handling (verifies `GATEWAY_API_KEYS_JSON` and bcrypt `$` survive env-file loading). |
-| `make test-it-release-gate` | Full release gate. Runs unit, integration, stability, all-DB, MySQL special-credential, SQL Server TLS, and Docker operational checks, and asserts zero test/subtest skips and zero leftover Testcontainers resources. See [Release Gate](/operations/release-gate). |
+| `make test-it-release-gate` | Full release gate. Runs vulnerability analysis, unit, integration, stability, all-DB, MySQL special-credential, SQL Server TLS, and Docker operational checks, and asserts zero reachable vulnerabilities, zero test/subtest skips, and zero leftover Testcontainers resources. See [Release Gate](/operations/release-gate). |
 
 ## Unit
 
@@ -50,6 +51,7 @@ go test -tags=integration ./it/... -args -onprest-it-db=all
 
 ```bash
 make test                        # unit tests
+make vulncheck                   # reachable vulnerability analysis
 make test-it                     # integration suite
 make test-it-postgres-ci         # PostgreSQL CI run, 3x, no Docker build tests
 make test-it-postgres-stability  # DB-interruption stability, 5x

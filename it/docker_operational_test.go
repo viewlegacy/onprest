@@ -136,7 +136,7 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
       POSTGRES_USER: `+itDBUser+`
       POSTGRES_PASSWORD: `+itDBPassword+`
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U `+itDBUser+` -d `+itDBName+`"]
+      test: ["CMD-SHELL", "psql -U `+itDBUser+` -d `+itDBName+` -c 'SELECT 1' >/dev/null"]
       interval: 1s
       timeout: 5s
       retries: 30

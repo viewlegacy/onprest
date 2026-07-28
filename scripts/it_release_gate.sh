@@ -75,6 +75,10 @@ echo "integration release gate logs: $LOG_DIR"
 
 assert_docker_available
 
+echo "==> govulncheck"
+make vulncheck
+echo "PASS: govulncheck"
+
 run_go_json_no_skip "unit" go test -json ./...
 
 run_go_json_no_skip "postgres-ci" \
