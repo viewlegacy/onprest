@@ -76,7 +76,19 @@ type CapabilityDef struct {
 	Params      map[string]ParamDef `json:"params" yaml:"params"`
 	Policy      PolicyDef           `json:"policy" yaml:"policy"`
 	Result      ResultDef           `json:"result,omitempty" yaml:"result,omitempty"`
+	Operation   sqlOperation        `json:"-" yaml:"-"`
 }
+
+type sqlOperation string
+
+const (
+	sqlOperationSelect sqlOperation = "select"
+	sqlOperationInsert sqlOperation = "insert"
+	sqlOperationUpdate sqlOperation = "update"
+	sqlOperationDelete sqlOperation = "delete"
+)
+
+func (o sqlOperation) mutation() bool { return o != "" && o != sqlOperationSelect }
 
 type ParamDef struct {
 	Type        string `json:"type" yaml:"type"`
@@ -181,9 +193,23 @@ func (cf *CapabilityFile) Lint() error {
 		if err := cap.Policy.lint(name + ".policy"); err != nil {
 			return err
 		}
-		if readonly(cap.Policy) && !isReadOnlySQL(cf.Database.Driver, cap.SQL) {
-			return fmt.Errorf("%s.sql must be read-only when policy.readonly is true", name)
+		classification := classifySQL(cf.Database.Driver, cap.SQL)
+		if !classification.single {
+			return fmt.Errorf("%s.sql must contain exactly one statement", name)
 		}
+		if classification.operation == "" {
+			return fmt.Errorf("%s.sql operation %s is not supported", name, classification.keyword)
+		}
+		if readonly(cap.Policy) && classification.operation != sqlOperationSelect {
+			return fmt.Errorf("%s.sql must be SELECT when policy.readonly is true", name)
+		}
+		if classification.operation.mutation() && classification.returnsRows {
+			return fmt.Errorf("%s.sql returning rows from DML is not supported", name)
+		}
+		if classification.operation.mutation() && cap.Result != nil {
+			return fmt.Errorf("%s.result is only supported for SELECT", name)
+		}
+		cap.Operation = classification.operation
 		for pname, p := range cap.Params {
 			if err := p.lint(name + ".params." + pname); err != nil {
 				return err
@@ -519,8 +545,89 @@ func parseByteSize(raw string) (int64, error) {
 }
 
 func isReadOnlySQL(driver, query string) bool {
-	keyword := firstSQLKeyword(query)
-	return keyword == "select" && hasSingleSQLStatement(driver, query)
+	c := classifySQL(driver, query)
+	return c.operation == sqlOperationSelect && c.single
+}
+
+type sqlClassification struct {
+	keyword     string
+	operation   sqlOperation
+	single      bool
+	returnsRows bool
+}
+
+func classifySQL(driver, query string) sqlClassification {
+	tokens, single := scanSQLTokens(driver, query)
+	c := sqlClassification{single: single}
+	if len(tokens) == 0 {
+		return c
+	}
+	c.keyword = tokens[0]
+	switch c.keyword {
+	case "select":
+		c.operation = sqlOperationSelect
+	case "insert":
+		c.operation = sqlOperationInsert
+	case "update":
+		c.operation = sqlOperationUpdate
+	case "delete":
+		c.operation = sqlOperationDelete
+	}
+	if c.operation.mutation() {
+		for _, token := range tokens[1:] {
+			if token == "returning" || (driver == "sqlserver" && token == "output") {
+				c.returnsRows = true
+				break
+			}
+		}
+	}
+	return c
+}
+
+// scanSQLTokens returns top-level lexical tokens outside quoted/comment regions.
+// It intentionally does not parse SQL grammar: the first token and row-returning
+// DML clauses are the only syntax facts required by the public contract.
+func scanSQLTokens(driver, query string) ([]string, bool) {
+	tokens := []string{}
+	single := true
+	for i := 0; i < len(query); {
+		switch {
+		case query[i] == '\'':
+			i = skipSQLQuoted(query, i, '\'', driver == "postgres" && isPostgresEscapeStringPrefix(query, i))
+		case query[i] == '"':
+			i = skipSQLQuoted(query, i, '"', false)
+		case driver == "mysql" && query[i] == '`':
+			i = skipSQLQuoted(query, i, '`', false)
+		case driver == "sqlserver" && query[i] == '[':
+			i = skipSQLBracketIdentifier(query, i)
+		case driver == "oracle" && isOracleAlternativeQuotePrefix(query, i):
+			i = skipOracleAlternativeQuote(query, i)
+		case i+1 < len(query) && query[i:i+2] == "--":
+			i = skipSQLLineComment(query, i)
+		case i+1 < len(query) && query[i:i+2] == "/*":
+			i = skipSQLBlockComment(driver, query, i)
+		case driver == "postgres" && query[i] == '$':
+			if next, ok := skipSQLDollarQuote(query, i); ok {
+				i = next
+			} else {
+				i++
+			}
+		case query[i] == ';':
+			if !onlySQLTrivia(driver, query[i+1:]) {
+				single = false
+			}
+			i++
+		case isIdent(query[i]):
+			start := i
+			for i < len(query) && (isIdent(query[i]) || isDigit(query[i])) {
+				i++
+			}
+			tokens = append(tokens, strings.ToLower(query[start:i]))
+		default:
+			i++
+		}
+	}
+	return tokens, single
 }
 
 func hasSingleSQLStatement(driver, query string) bool {
@@ -540,7 +647,7 @@ func hasSingleSQLStatement(driver, query string) bool {
 		case i+1 < len(query) && query[i:i+2] == "--":
 			i = skipSQLLineComment(query, i)
 		case i+1 < len(query) && query[i:i+2] == "/*":
-			i = skipSQLBlockComment(query, i)
+			i = skipSQLBlockComment(driver, query, i)
 		case driver == "postgres" && query[i] == '$':
 			if next, ok := skipSQLDollarQuote(query, i); ok {
 				i = next
@@ -548,7 +655,7 @@ func hasSingleSQLStatement(driver, query string) bool {
 				i++
 			}
 		case query[i] == ';':
-			return onlySQLTrivia(query[i+1:])
+			return onlySQLTrivia(driver, query[i+1:])
 		default:
 			i++
 		}
@@ -630,9 +737,26 @@ func skipSQLLineComment(query string, start int) int {
 	return len(query)
 }
 
-func skipSQLBlockComment(query string, start int) int {
-	if end := strings.Index(query[start+2:], "*/"); end >= 0 {
-		return start + 2 + end + 2
+func skipSQLBlockComment(driver, query string, start int) int {
+	// PostgreSQL and SQL Server accept nested block comments. Treating the
+	// first */ as the end would expose text that is still comment trivia to
+	// the classifier and can turn a writable statement into an apparent
+	// SELECT. MySQL and Oracle retain their non-nesting lexical behavior.
+	depth := 1
+	for i := start + 2; i+1 < len(query); i++ {
+		pair := query[i : i+2]
+		if pair == "/*" && (driver == "postgres" || driver == "sqlserver") {
+			depth++
+			i++
+			continue
+		}
+		if pair == "*/" {
+			depth--
+			i++
+			if depth == 0 {
+				return i + 1
+			}
+		}
 	}
 	return len(query)
 }
@@ -653,7 +777,7 @@ func skipSQLDollarQuote(query string, start int) (int, bool) {
 	return endTag + 1 + end + len(tag), true
 }
 
-func onlySQLTrivia(query string) bool {
+func onlySQLTrivia(driver, query string) bool {
 	for i := 0; i < len(query); {
 		switch {
 		case query[i] == ' ' || query[i] == '\t' || query[i] == '\r' || query[i] == '\n':
@@ -661,7 +785,7 @@ func onlySQLTrivia(query string) bool {
 		case i+1 < len(query) && query[i:i+2] == "--":
 			i = skipSQLLineComment(query, i)
 		case i+1 < len(query) && query[i:i+2] == "/*":
-			i = skipSQLBlockComment(query, i)
+			i = skipSQLBlockComment(driver, query, i)
 		default:
 			return false
 		}
@@ -680,8 +804,9 @@ func firstSQLKeyword(query string) string {
 			}
 			return ""
 		case strings.HasPrefix(s, "/*"):
-			if i := strings.Index(s, "*/"); i >= 0 {
-				s = strings.TrimSpace(s[i+2:])
+			i := skipSQLBlockComment("postgres", s, 0)
+			if i < len(s) {
+				s = strings.TrimSpace(s[i:])
 				continue
 			}
 			return ""

@@ -16,12 +16,14 @@ The gateway forwards capability names and params. DB connection information, SQL
 
 Even if the gateway is compromised, the attacker cannot make the agent run operations that do not exist in `capability.yaml`.
 
+For mutations, grant the agent DB user only the required table-level INSERT, UPDATE, or DELETE privileges. Do not grant schema/DDL or unrestricted database privileges. `readonly` lint is a syntactic guardrail and cannot prove that a SELECT-invoked DB function has no side effect, so least privilege remains the final boundary. DML is never retried automatically after a timeout or disconnect because the transaction outcome may be unknown.
+
 - SQL text does not exist in the gateway.
 - DB credentials do not exist in the gateway.
 - The OpenAPI cache does not include SQL or DB connection information.
 - The agent rejects unknown capabilities.
 - The agent rejects inputs outside the params contract with `AGENT_VALIDATION_FAILED`.
-- Columns not included in the result allow-list are not returned externally.
+- SELECT columns not included in the `result` allow-list are not returned externally. DML forbids `result` and returns affected count only.
 
 The gateway only knows which API key can call which capability. The attack surface is reduced to the explicit capability contract.
 
@@ -62,9 +64,9 @@ At runtime:
 
 - It checks whether the capability is defined.
 - It rejects unknown params, invalid types, enum violations, out-of-range values, and invalid formats.
-- It applies policy timeout, max_rows, and max_bytes.
+- It applies timeout and max-bytes policy to every operation, and max rows only to SELECT.
 - It passes parameters through prepared statements.
-- It limits returned columns with the result allow-list.
+- It limits SELECT columns with the `result` allow-list; DML has no row result and returns native affected count only.
 
 ## Agent Secret Leakage
 

@@ -1087,6 +1087,8 @@ func TestAgentErrorStatusMapping(t *testing.T) {
 		{errAgentQueryTimeout, http.StatusGatewayTimeout, errAgentQueryTimeout},
 		{errAgentDBUnreachable, http.StatusBadGateway, errAgentDBUnreachable},
 		{errAgentInternal, http.StatusBadGateway, errAgentInternal},
+		{errAgentConstraintViolation, http.StatusConflict, errAgentConstraintViolation},
+		{errAgentTransactionOutcomeUnknown, http.StatusBadGateway, errAgentTransactionOutcomeUnknown},
 		{"UNKNOWN", http.StatusBadGateway, "UNKNOWN"},
 	}
 	for _, tc := range tests {

@@ -4,6 +4,8 @@ Integration tests are build-tagged and do not run with the default unit test com
 
 DB-backed integration tests always start temporary DB containers with testcontainers, render the container connection details into the test capability YAML, and then run the agent against that YAML. Self-hosted DB overrides through `ONPREST_IT_POSTGRES_*`, `ONPREST_IT_MYSQL_*`, `ONPREST_IT_SQLSERVER_*`, `ONPREST_IT_ORACLE_*`, or `ONPREST_IT_POSTGRES_READONLY_*` are intentionally not supported.
 
+The four-database matrix includes SELECT compatibility plus INSERT/UPDATE/DELETE native affected counts, zero-row success, MCP mutation, constraint normalization, startup EXPLAIN behavior, and persisted DB state. Container-required gates must use `ONPREST_IT_REQUIRE_CONTAINERS=1`; a skipped DB is not a release pass.
+
 ## Main Commands
 
 Use these for normal development and release decisions.
@@ -40,9 +42,9 @@ Runs `TestPostgresDBUnreachableDuringQuery` five times. Use this when changing D
 make test-it-all-db
 ```
 
-Runs the container-backed DB smoke tests for PostgreSQL, MySQL, SQL Server, and Oracle with `ONPREST_IT_REQUIRE_CONTAINERS=1` and a longer Go test timeout. The smoke path creates and seeds `onprest_it_customers`, renders the selected container connection into capability YAML, starts the agent, and verifies the REST result. SQL Server and Oracle can take a long time, especially on first image pull.
+Runs every integration test whose name begins `TestContainerDBDriver` for PostgreSQL, MySQL, SQL Server, and Oracle with `ONPREST_IT_REQUIRE_CONTAINERS=1`, the exact Makefile filter `-run '^TestContainerDBDriver'`, and a 30-minute timeout. SQL Server and Oracle can take a long time, especially on first image pull.
 
-The all-DB gate focuses on DB-dependent behavior: DSN generation, driver startup, placeholder conversion, DB-specific SQL syntax, EXPLAIN/lint startup, schema/seed/result scanning, max row limiting, max byte limiting, driver error hiding, and startup failure when the configured DB is unreachable. Gateway, WebSocket, MCP, OpenAPI, auth, reconnect, and process lifecycle depth remains covered by the PostgreSQL integration suite.
+The four-driver scope includes SELECT compatibility and int64 transport, INSERT/UPDATE/DELETE through Gateway REST and MCP, driver-native affected counts including zero rows, constraint-to-409 normalization with rollback and persisted-state checks, agent-policy timeout rollback, gateway-timeout cancellation/state verification, startup DML EXPLAIN and runtime least-privilege failures, SQL lint bypass resistance, output limits, private driver errors, and unreachable-DB startup failure. Broader Gateway authentication, reconnect, OpenAPI, Docker packaging, and process-lifecycle depth remains in the PostgreSQL and operational suites.
 
 ```bash
 make test-it-docker-ops
@@ -73,14 +75,10 @@ Normal `make test-it` covers:
 - gateway/agent binary startup in the main PostgreSQL flow
 - REST, MCP, OpenAPI, and WebSocket behavior covered by the PostgreSQL suite
 
-Normal `make test-it` does not cover:
+Normal `make test-it` does not cover the MySQL, SQL Server, or Oracle subtests under the `TestContainerDBDriver*` matrix, including their mutation, constraint, timeout/cancel, and permission paths. Those run under `make test-it-all-db`.
 
-- `TestContainerDBDriverSmoke/mysql`
-- `TestContainerDBDriverSmoke/sqlserver`
-- `TestContainerDBDriverSmoke/oracle`
-- `TestContainerDBDriverErrorsAreHiddenFromGatewayResponse/mysql`
-- `TestContainerDBDriverErrorsAreHiddenFromGatewayResponse/sqlserver`
-- `TestContainerDBDriverErrorsAreHiddenFromGatewayResponse/oracle`
+It also does not cover:
+
 - `TestDockerTargetsBuildWhenDockerIntegrationEnabled`
 - `TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON`
 

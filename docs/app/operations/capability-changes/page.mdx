@@ -11,6 +11,22 @@ Capabilities are owned by the agent-side `capability.yaml`. The gateway does not
 5. Confirm gateway receives fresh OpenAPI metadata.
 6. Verify REST, MCP `tools/list`, MCP `tools/call`, and `/openapi.json`.
 
+For DML rollout, use this order:
+
+1. In a managed deployment, deploy a dashboard version that accepts a missing `count` as legacy null. Self-hosted OSS skips this step.
+2. Update consumers of any previously unsupported `readonly: false` DML to the count-only response.
+3. Update gateway and agent together in one maintenance window because they share the capability response contract.
+4. Do not enable DML while only one of gateway or agent is on the new release.
+5. Confirm OpenAPI refresh and existing SELECT behavior, then add the DML capability and restart the agent.
+6. After startup EXPLAIN succeeds, run REST and MCP smoke calls and verify DB state and gateway stdout count/error fields. For managed deployments, also verify the managed dashboard record; that extra confirmation is not part of the self-hosted OSS boundary.
+
+This release contains two client-visible compatibility changes:
+
+- Typed integrity constraints now return HTTP 409 `AGENT_CONSTRAINT_VIOLATION` instead of HTTP 502 `AGENT_QUERY_FAILED`. This applies to SELECT and DML; for DML, 409 also confirms rollback.
+- Previously unsupported DML that happened to execute now returns only the database driver's native `RowsAffected()` as `{"count": n}`. Treat this as a breaking bug fix: remove row-shaped response assumptions and any client-side affected-row inference.
+
+Before rollout, make clients accept count-only success including `count: 0`, branch on 409 separately from 502, and treat gateway timeout, disconnect, or `AGENT_TRANSACTION_OUTCOME_UNKNOWN` as an unknown mutation outcome. Never retry those mutation outcomes automatically; check DB state through an independent read capability. This no-auto-retry rule is specific to mutations.
+
 ## Failure Behavior
 
 If lint, DB ping, or EXPLAIN fails:

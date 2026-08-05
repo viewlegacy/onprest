@@ -26,6 +26,7 @@ func TestAgentDisconnectImmediatelyReleasesInflightRequest(t *testing.T) {
 	conn := newControlledAgentConn()
 	ac := newAgentConn(conn)
 	s.agent = ac
+	s.responseKinds = map[string]responseKind{"old": responseKindMutation}
 	go s.writeAgent(ac)
 	readDone := make(chan struct{})
 	go func() {
@@ -54,6 +55,12 @@ func TestAgentDisconnectImmediatelyReleasesInflightRequest(t *testing.T) {
 		t.Fatal("in-flight request was not released on disconnect")
 	}
 	<-readDone
+	s.agentMu.RLock()
+	kindCount := len(s.responseKinds)
+	s.agentMu.RUnlock()
+	if kindCount != 0 {
+		t.Fatalf("response kind cache survived agent disconnect: %v", s.responseKinds)
+	}
 }
 
 func TestBlockedAgentWriteDoesNotHoldPendingLockOrLeakEntries(t *testing.T) {
@@ -85,17 +92,25 @@ func TestBlockedAgentWriteDoesNotHoldPendingLockOrLeakEntries(t *testing.T) {
 	}
 	ac.mu.Lock()
 	pending := len(ac.pending)
+	sendStates := len(ac.sendStates)
 	ac.mu.Unlock()
 	if pending != 0 {
 		t.Fatalf("pending entries after write timeout = %d", pending)
 	}
+	if sendStates != 1 {
+		t.Fatalf("send state entries while the first frame is still writing = %d, want 1", sendStates)
+	}
 	close(conn.blockWrites)
-	time.Sleep(50 * time.Millisecond)
+	waitForCondition(t, time.Second, func() bool {
+		ac.mu.Lock()
+		defer ac.mu.Unlock()
+		return len(ac.sendStates) == 0
+	}, "send state cleanup after request/cancel writes")
 	conn.writesMu.Lock()
 	writes := conn.writes
 	conn.writesMu.Unlock()
-	if writes != 1 {
-		t.Fatalf("network writes = %d, want only the already-started write", writes)
+	if writes != 2 {
+		t.Fatalf("network writes = %d, want request followed by cancel; queued request must be discarded", writes)
 	}
 	_ = conn.Close()
 	ac.disconnectPending()
@@ -113,10 +128,79 @@ func TestWriteFailureRemovesPendingEntry(t *testing.T) {
 	}
 	ac.mu.Lock()
 	pending := len(ac.pending)
+	sendStates := len(ac.sendStates)
 	ac.mu.Unlock()
 	if pending != 0 {
 		t.Fatalf("pending entries after failed write = %d", pending)
 	}
+	if sendStates != 0 {
+		t.Fatalf("send state entries after failed write = %d", sendStates)
+	}
+	ac.disconnectPending()
+}
+
+func TestSentRequestTimeoutWritesSameIDCancelAndCleansState(t *testing.T) {
+	s, _, _ := testServer(t)
+	s.cfg.AgentTimeout = 30 * time.Millisecond
+	conn := newControlledAgentConn()
+	ac := newAgentConn(conn)
+	s.agent = ac
+	go s.writeAgent(ac)
+
+	result := s.callAgent(context.Background(), "mutate", nil)
+	if result.Status != http.StatusGatewayTimeout {
+		t.Fatalf("result=%+v", result)
+	}
+	waitForCondition(t, time.Second, func() bool {
+		conn.writesMu.Lock()
+		defer conn.writesMu.Unlock()
+		return len(conn.payloads) == 2
+	}, "request and cancel frames")
+	conn.writesMu.Lock()
+	payloads := append([][]byte(nil), conn.payloads...)
+	conn.writesMu.Unlock()
+	var request protocol.Request
+	if err := json.Unmarshal(payloads[0], &request); err != nil {
+		t.Fatal(err)
+	}
+	var cancelRequest protocol.CancelRequest
+	if err := json.Unmarshal(payloads[1], &cancelRequest); err != nil {
+		t.Fatal(err)
+	}
+	if request.ID == "" || cancelRequest.Type != "cancel" || cancelRequest.ID != request.ID {
+		t.Fatalf("request=%s cancel=%s", payloads[0], payloads[1])
+	}
+	waitForCondition(t, time.Second, func() bool {
+		ac.mu.Lock()
+		defer ac.mu.Unlock()
+		return len(ac.pending) == 0 && len(ac.sendStates) == 0
+	}, "sent request terminal cleanup")
+	ac.disconnectPending()
+}
+
+func TestConcurrentTimeoutCleanupLeavesNoPendingOrSendState(t *testing.T) {
+	s, _, _ := testServer(t)
+	s.cfg.AgentTimeout = 20 * time.Millisecond
+	conn := newControlledAgentConn()
+	ac := newAgentConn(conn)
+	s.agent = ac
+	go s.writeAgent(ac)
+
+	const calls = 64
+	results := make(chan agentCallResult, calls)
+	for range calls {
+		go func() { results <- s.callAgent(context.Background(), "mutate", nil) }()
+	}
+	for range calls {
+		if result := <-results; result.Status != http.StatusGatewayTimeout {
+			t.Fatalf("result=%+v", result)
+		}
+	}
+	waitForCondition(t, 2*time.Second, func() bool {
+		ac.mu.Lock()
+		defer ac.mu.Unlock()
+		return len(ac.pending) == 0 && len(ac.sendStates) == 0
+	}, "concurrent timeout cleanup")
 	ac.disconnectPending()
 }
 
@@ -127,7 +211,7 @@ func TestMetaFetchRetriesCurrentConnectionUntilSuccess(t *testing.T) {
 		if attempts < 3 {
 			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentInternal, Message: "temporary"}}
 		}
-		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"data":{"openapi":"3.1.0","paths":{}}}`)}
+		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"data":{"openapi":"3.1.0","paths":{}},"response_kinds":{"hidden":"mutation","read":"select"}}`)}
 	})
 	defer cleanup()
 	s.fetchMeta()
@@ -136,9 +220,13 @@ func TestMetaFetchRetriesCurrentConnectionUntilSuccess(t *testing.T) {
 	}
 	s.agentMu.RLock()
 	cached := s.openapi != nil
+	kinds := s.responseKinds
 	s.agentMu.RUnlock()
 	if !cached {
 		t.Fatal("metadata was not cached after retry success")
+	}
+	if kinds["hidden"] != responseKindMutation || kinds["read"] != responseKindSelect {
+		t.Fatalf("response kind cache=%v", kinds)
 	}
 }
 
@@ -314,7 +402,7 @@ func TestConcurrentRequestsOnOneWebSocketDispatchOutOfOrderResponses(t *testing.
 			requests = append(requests, req)
 		}
 		for i := len(requests) - 1; i >= 0; i-- {
-			resp := protocol.ResultResponse(requests[i].ID, map[string]any{"capability": requests[i].Capability})
+			resp := protocol.ResultResponse(requests[i].ID, map[string]any{"capability": requests[i].Capability, "count": int64(1)})
 			if err := conn.WriteText(protocol.MustJSON(resp)); err != nil {
 				agentErr <- err
 				return
@@ -357,6 +445,14 @@ func TestConcurrentRequestsOnOneWebSocketDispatchOutOfOrderResponses(t *testing.
 	if err := <-agentErr; err != nil {
 		t.Fatal(err)
 	}
+	s.agentMu.RLock()
+	ac := s.agent
+	s.agentMu.RUnlock()
+	waitForCondition(t, time.Second, func() bool {
+		ac.mu.Lock()
+		defer ac.mu.Unlock()
+		return len(ac.pending) == 0 && len(ac.sendStates) == 0
+	}, "pending/send-state cleanup after out-of-order responses")
 }
 
 func TestHTTPBodyReadDeadlineRejectsSlowBody(t *testing.T) {
@@ -462,6 +558,7 @@ type controlledAgentConn struct {
 	closeOnce    sync.Once
 	writesMu     sync.Mutex
 	writes       int
+	payloads     [][]byte
 }
 
 func newControlledAgentConn() *controlledAgentConn {
@@ -469,9 +566,10 @@ func newControlledAgentConn() *controlledAgentConn {
 }
 
 func (c *controlledAgentConn) ReadText() ([]byte, error) { <-c.disconnect; return nil, io.EOF }
-func (c *controlledAgentConn) WriteText([]byte) error {
+func (c *controlledAgentConn) WriteText(payload []byte) error {
 	c.writesMu.Lock()
 	c.writes++
+	c.payloads = append(c.payloads, append([]byte(nil), payload...))
 	c.writesMu.Unlock()
 	c.writeOnce.Do(func() { close(c.writeStarted) })
 	if c.blockWrites != nil {

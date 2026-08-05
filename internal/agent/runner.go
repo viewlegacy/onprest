@@ -31,6 +31,56 @@ type Runner struct {
 	detailLogCloser io.Closer
 }
 
+type requestTask struct {
+	req    protocol.Request
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+type inflightRegistry struct {
+	mu      sync.Mutex
+	cancels map[string]context.CancelFunc
+}
+
+func (i *inflightRegistry) add(id string, cancel context.CancelFunc) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if id == "" {
+		return false
+	}
+	if _, exists := i.cancels[id]; exists {
+		return false
+	}
+	i.cancels[id] = cancel
+	return true
+}
+func (i *inflightRegistry) cancel(id string) {
+	i.mu.Lock()
+	cancel := i.cancels[id]
+	i.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+func (i *inflightRegistry) finish(id string) {
+	i.mu.Lock()
+	cancel := i.cancels[id]
+	delete(i.cancels, id)
+	i.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+func (i *inflightRegistry) cancelAll() {
+	i.mu.Lock()
+	cancels := i.cancels
+	i.cancels = map[string]context.CancelFunc{}
+	i.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+}
+
 func NewRunner(cfg Config, logOut io.Writer) (*Runner, error) {
 	cf, err := LoadCapabilityFile(cfg.CapabilityFile)
 	if err != nil {
@@ -52,14 +102,15 @@ func NewRunner(cfg Config, logOut io.Writer) (*Runner, error) {
 		return nil, startupFailure()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
+		cancel()
 		writeStartupDetail(detailLog, "AGENT_DB_UNREACHABLE", err.Error())
 		_ = db.Close()
 		return nil, startupFailure()
 	}
+	cancel()
 	r := &Runner{cfg: cfg, cf: cf, caps: cf.ByName(), db: db, logOut: logOut, detailLog: detailLog, detailLogCloser: detailLog}
-	if err := r.explainAll(ctx); err != nil {
+	if err := r.explainAll(context.Background()); err != nil {
 		r.detailError("", "AGENT_STARTUP_FAILED", "agent startup failed", err.Error(), "")
 		_ = db.Close()
 		return nil, startupFailure()
@@ -123,8 +174,9 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 	connCtx, cancel := context.WithCancel(ctx)
 	maxConcurrent := *r.cf.Runtime.MaxConcurrentRequests
-	requests := make(chan protocol.Request, maxConcurrent)
+	requests := make(chan requestTask, maxConcurrent)
 	responses := make(chan protocol.Response, maxConcurrent*2+1)
+	inflight := &inflightRegistry{cancels: map[string]context.CancelFunc{}}
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -140,8 +192,14 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			defer workers.Done()
 			for {
 				select {
-				case req := <-requests:
-					resp := r.handle(connCtx, req)
+				case task := <-requests:
+					var resp protocol.Response
+					if task.ctx.Err() != nil {
+						inflight.finish(task.req.ID)
+						continue
+					}
+					resp = r.handle(task.ctx, task.req)
+					inflight.finish(task.req.ID)
 					select {
 					case responses <- resp:
 					case <-connCtx.Done():
@@ -171,6 +229,7 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 	}()
 	defer func() {
 		cancel()
+		inflight.cancelAll()
 		_ = conn.Close()
 		workers.Wait()
 		close(done)
@@ -181,10 +240,13 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			r.log("gateway_disconnected", map[string]any{"error": err.Error()})
 			return
 		}
-		var req protocol.Request
+		var envelope struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
 		dec := json.NewDecoder(bytes.NewReader(msg))
 		dec.UseNumber()
-		if err := dec.Decode(&req); err != nil {
+		if err := dec.Decode(&envelope); err != nil {
 			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request", "invalid gateway request: "+err.Error(), "")
 			select {
 			case responses <- protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
@@ -193,11 +255,42 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			}
 			continue
 		}
+		if envelope.Type != "" {
+			if envelope.Type == "cancel" && envelope.ID != "" {
+				inflight.cancel(envelope.ID)
+				continue
+			}
+			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request", "unknown or invalid control request", envelope.ID)
+			continue
+		}
+		var req protocol.Request
+		dec = json.NewDecoder(bytes.NewReader(msg))
+		dec.UseNumber()
+		if err := dec.Decode(&req); err != nil || req.ID == "" {
+			select {
+			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
+			case <-connCtx.Done():
+				return
+			}
+			continue
+		}
+		taskCtx, taskCancel := context.WithCancel(connCtx)
+		if !inflight.add(req.ID, taskCancel) {
+			taskCancel()
+			select {
+			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
+			case <-connCtx.Done():
+				return
+			}
+			continue
+		}
 		select {
-		case requests <- req:
+		case requests <- requestTask{req: req, ctx: taskCtx, cancel: taskCancel}:
 		case <-connCtx.Done():
+			inflight.finish(req.ID)
 			return
 		default:
+			inflight.finish(req.ID)
 			select {
 			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_BUSY", Message: "agent request queue is full"}}:
 			case <-connCtx.Done():

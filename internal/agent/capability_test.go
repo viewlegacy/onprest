@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/viewlegacy/onprest/internal/protocol"
 )
 
 const testAgentPrivateKey = "keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw"
@@ -563,6 +565,36 @@ func TestBuildOpenAPIReflectsServiceParamsResultAndExposePolicy(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAPIMutationSchemaAndInternalKinds(t *testing.T) {
+	cf := validCapabilityFile()
+	cap := cf.Capabilities["get_customer"]
+	cap.SQL = "update customers set name='x' where id=:id"
+	cap.Policy.Readonly = boolPtr(false)
+	cap.Result = nil
+	cf.Capabilities["update_customer"] = cap
+	hidden := cap
+	hidden.Policy.ExposeInOpenAPI = boolPtr(false)
+	cf.Capabilities["hidden_update"] = hidden
+	if err := cf.Lint(); err != nil {
+		t.Fatal(err)
+	}
+	paths := BuildOpenAPI(cf)["paths"].(map[string]any)
+	post := paths["/api/v1/capabilities/update_customer"].(map[string]any)["post"].(map[string]any)
+	schema := post["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	if _, ok := props["rows"]; ok {
+		t.Fatalf("mutation schema contains rows: %#v", schema)
+	}
+	count := props["count"].(map[string]any)
+	if count["format"] != "int64" || count["minimum"] != int64(0) || schema["additionalProperties"] != false {
+		t.Fatalf("mutation schema=%#v", schema)
+	}
+	kinds := responseKinds(cf)
+	if kinds["update_customer"] != "mutation" || kinds["hidden_update"] != "mutation" || kinds["get_customer"] != "select" {
+		t.Fatalf("response kinds=%#v", kinds)
+	}
+}
+
 func TestApplyResultContractFiltersToAllowlistedColumns(t *testing.T) {
 	rows := []map[string]any{
 		{"id": int64(1), "name": "Ada", "email": "ada@example.com", "internal_note": "secret"},
@@ -662,6 +694,78 @@ func TestStartupDetailLogUsesStartupMessageAndKeepsDetailLocal(t *testing.T) {
 		entry["message"] != "agent startup failed" ||
 		entry["detail"] != "explain failed on private table" {
 		t.Fatalf("startup detail entry = %#v", entry)
+	}
+}
+
+func TestCapabilityOperationMatrixAndDMLClauses(t *testing.T) {
+	tests := []struct {
+		name     string
+		driver   string
+		sql      string
+		readonly bool
+		result   ResultDef
+		want     sqlOperation
+		wantErr  string
+	}{
+		{"readonly select", "postgres", "-- lead\nSELECT 1; /* tail */", true, nil, sqlOperationSelect, ""},
+		{"writable select", "postgres", "select 1", false, nil, sqlOperationSelect, ""},
+		{"insert", "postgres", "insert into t(v) values ('returning; output')", false, nil, sqlOperationInsert, ""},
+		{"update", "mysql", "UPDATE t SET v=1", false, nil, sqlOperationUpdate, ""},
+		{"delete", "oracle", "delete from t where id=1", false, nil, sqlOperationDelete, ""},
+		{"readonly mutation", "postgres", "insert into t(v) values (1)", true, nil, "", "must be SELECT"},
+		{"multiple select", "postgres", "select 1; update t set v=2", false, nil, "", "exactly one statement"},
+		{"multiple mutation", "sqlserver", "update t set v=1; delete from t", false, nil, "", "exactly one statement"},
+		{"postgres nested leading comment", "postgres", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"sqlserver nested leading comment", "sqlserver", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"postgres nested trailing trivia", "postgres", "SELECT 1; /* outer /* inner */ still outer */", true, nil, sqlOperationSelect, ""},
+		{"sqlserver nested trailing trivia", "sqlserver", "SELECT 1; /* outer /* inner */ still outer */", true, nil, sqlOperationSelect, ""},
+		{"cte", "postgres", "WITH x AS (SELECT 1) SELECT * FROM x", false, nil, "", "operation with is not supported"},
+		{"returning", "postgres", "insert into t(v) values (1) RETURNING id", false, nil, "", "returning rows"},
+		{"output", "sqlserver", "update t set v=1 OUTPUT inserted.id", false, nil, "", "returning rows"},
+		{"empty result", "postgres", "delete from t", false, ResultDef{}, "", "result is only supported"},
+		{"postgres nested leading comment", "postgres", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"sqlserver nested leading comment", "sqlserver", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"postgres nested trailing trivia", "postgres", "SELECT 1; /* outer /* inner */ tail */", true, nil, sqlOperationSelect, ""},
+		{"sqlserver nested trailing trivia", "sqlserver", "SELECT 1; /* outer /* inner */ tail */", true, nil, sqlOperationSelect, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cf := validCapabilityFile()
+			cf.Database.Driver = tc.driver
+			cap := cf.Capabilities["get_customer"]
+			cap.SQL, cap.Policy.Readonly, cap.Result = tc.sql, boolPtr(tc.readonly), tc.result
+			cf.Capabilities["get_customer"] = cap
+			err := cf.Lint()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Lint() error=%v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cf.Capabilities["get_customer"].Operation; got != tc.want {
+				t.Fatalf("operation=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMutationPayloadIsObjectAndPreservesInt64(t *testing.T) {
+	payload, err := buildMutationPayload(9223372036854775807, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(payload); got != `{"count":9223372036854775807}` {
+		t.Fatalf("payload=%s", got)
+	}
+	response := protocol.Response{ID: "1", Result: payload}
+	if got := string(protocol.MustJSON(response)); !strings.Contains(got, `"result":{"count":9223372036854775807}`) {
+		t.Fatalf("wire=%s", got)
+	}
+	if _, err := buildMutationPayload(1, 1); !errors.Is(err, errMutationResponseTooLarge) {
+		t.Fatalf("small maxBytes error=%v", err)
 	}
 }
 

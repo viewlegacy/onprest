@@ -1,6 +1,25 @@
 # Capability YAML
 
-`capability.yaml` is the agent-side source of truth. It defines what can be called, what input is accepted, what SQL is executed, and which output columns may leave the database boundary.
+`capability.yaml` is the agent-side source of truth. It defines what can be called, what input is accepted, what SQL is executed, and—for SELECT—which output columns may leave the database boundary. DML returns affected count only.
+
+## Read and mutation capabilities
+
+`policy.readonly` defaults to `true`. Omitted or `true` accepts one top-level `SELECT`; explicit `false` accepts one `SELECT`, `INSERT`, `UPDATE`, or `DELETE`. The agent rejects multiple statements, `WITH`, `MERGE`, procedure calls, DDL, transaction control, and DML `RETURNING`/`OUTPUT` during startup lint. Quotes and comments are scanned using the selected DB dialect, including nested block comments in PostgreSQL and SQL Server, so keywords or semicolons inside them do not become statements.
+
+`result` and `max_rows` apply only to SELECT. A DML capability must omit `result` (even `result: {}` is rejected). DML success is `{"count": n}`, where `n` is the driver's non-negative `RowsAffected()` value; zero is a successful result. `max_bytes` and `timeout` apply to both reads and mutations.
+
+```yaml
+capabilities:
+  update_customer:
+    sql: UPDATE customers SET name = :name WHERE id = :id
+    params:
+      id: { type: integer, required: true }
+      name: { type: string, required: true }
+    policy:
+      readonly: false
+      timeout: 5s
+      max_bytes: 256KB
+```
 
 ## Structure
 
@@ -89,14 +108,14 @@ Capability names must match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`.
 
 `description` fields are optional but recommended. They are public metadata used to make generated OpenAPI and MCP tools understandable to API users and AI agents.
 
-Descriptions do not grant permissions, change validation, affect SQL execution, or bypass `policy` / `result` enforcement. Security behavior is defined by capability names, API key authorization, params validation, policy, SQL, and result allow-lists.
+Descriptions do not grant permissions, change validation, affect SQL execution, or bypass `policy` / SELECT `result` enforcement. Security behavior is defined by capability names, API key authorization, params validation, policy, SQL, SELECT result allow-lists, and the DML count-only contract.
 
 | Location | Required | Purpose |
 |---|---:|---|
 | `service.description` | No | OpenAPI service-level documentation |
 | `capabilities.<name>.description` | No | Capability / operation / MCP tool description |
 | `params.<name>.description` | No | Public input parameter documentation |
-| `result.<column>.description` | No | Public output field documentation |
+| `result.<column>.description` | No | Public SELECT output field documentation; forbidden for DML |
 
 For AI/MCP use, write descriptions as stable business-facing contract text. Do not put secrets, internal-only incident detail, DB credentials, or sensitive operational notes in descriptions because they can appear in OpenAPI and MCP metadata.
 
@@ -191,7 +210,7 @@ Each entry under `capabilities` defines one externally callable operation. At le
 | `sql` | Yes | SQL executed by the agent after validation |
 | `params` | No | Input contract; unknown provided params are rejected |
 | `policy` | No | Execution limits; missing values use `defaults` or implementation defaults |
-| `result` | No | Output allow-list; omitted result means row object fields are not returned |
+| `result` | No | SELECT-only output allow-list; forbidden for DML; omitted on SELECT means row object fields are not returned |
 
 ## Params
 
@@ -221,9 +240,9 @@ Unknown params are rejected.
 
 | Field | Description |
 |---|---|
-| `readonly` | `true` accepts one statement beginning with `SELECT`, including nested `SELECT` subqueries |
+| `readonly` | omitted/`true` accepts one `SELECT`; explicit `false` accepts one `SELECT`, `INSERT`, `UPDATE`, or `DELETE` |
 | `timeout` | execution timeout, such as `5s` |
-| `max_rows` | maximum rows returned |
+| `max_rows` | maximum rows returned by SELECT; ignored for DML |
 | `max_bytes` | maximum response size, such as `256KB` |
 | `expose_in_openapi` | whether to include the capability in OpenAPI and MCP tools/list |
 
@@ -231,11 +250,11 @@ Use read-only DB users for read capabilities. YAML policy is an application guar
 
 `timeout` accepts a Go duration string such as `5s` or `500ms`. `max_bytes` uses the same exact non-negative integer byte-size grammar as `logging.max_size`.
 
-When `readonly` is `true`, startup lint rejects another statement after the first, such as `SELECT 1; UPDATE customers SET ...`. One trailing semicolon is allowed. Quote scanning follows the configured driver: ordinary SQL strings use doubled quotes and never treat backslash as a quote escape; PostgreSQL explicit `E'...'` strings support backslash escaping; PostgreSQL dollar quotes, SQL Server bracket identifiers, MySQL backticks, and Oracle alternative `q'...'` quotes are recognized. This conservative rule also prevents `SELECT '\'; UPDATE ...` from bypassing lint when a server or SQL mode treats the backslash literally. Statements beginning with `WITH` are rejected, including read-only CTEs. `timeout`, `max_rows`, and `max_bytes` are enforced during capability execution.
+For every operation, startup lint rejects another statement after the first, such as `SELECT 1; UPDATE customers SET ...`. One trailing semicolon is allowed. Quote scanning follows the configured driver: ordinary SQL strings use doubled quotes and never treat backslash as a quote escape; PostgreSQL explicit `E'...'` strings support backslash escaping; PostgreSQL dollar quotes, PostgreSQL and SQL Server nested block comments, SQL Server bracket identifiers, MySQL backticks, and Oracle alternative `q'...'` quotes are recognized. This conservative rule also prevents `SELECT '\'; UPDATE ...` from bypassing lint when a server or SQL mode treats the backslash literally. Statements beginning with `WITH` are rejected, including read-only CTEs. `timeout` and `max_bytes` apply to SELECT and DML; `max_rows` applies only to SELECT.
 
-## Result Allow-List
+## SELECT Result Allow-List
 
-`result` is the output allow-list.
+`result` is the SELECT output allow-list. DML must omit it, including an empty map, and returns only `{"count": n}`.
 
 - Columns not listed in `result` are removed from the response.
 - If SQL does not return a column listed in `result`, execution fails.

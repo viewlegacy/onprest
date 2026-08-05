@@ -2,6 +2,8 @@
 
 Use `database.driver: sqlserver`.
 
+Mutation startup validation uses a dedicated connection with `SHOWPLAN_TEXT`; cleanup failure closes the connection and aborts startup. DML `OUTPUT` is not supported.
+
 ```yaml
 database:
   driver: sqlserver

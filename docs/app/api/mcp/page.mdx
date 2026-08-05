@@ -4,7 +4,9 @@ MCP is a first-class API surface in Onprest. It exposes agent-defined capabiliti
 
 The MCP endpoint is JSON-RPC over HTTP.
 
-Onprest's gateway does not know SQL, DB credentials, or business meaning. It builds `tools/list` from agent-owned OpenAPI metadata and filters it by API key capability authorization. `tools/call` still runs through the on-prem agent, where params, policy, SQL execution, and result allow-lists are enforced.
+Onprest's gateway does not know SQL, DB credentials, or business meaning. It builds `tools/list` from agent-owned OpenAPI metadata and filters it by API key capability authorization. `tools/call` still runs through the on-prem agent, where params, policy, SQL execution, SELECT result allow-lists, and the DML count-only response are enforced.
+
+Mutation capabilities use the same `tools/call` method. A successful mutation places `{"count": n}` in both text content and `structuredContent`; there is no separate mutation method or retry mode. `count: 0` remains success.
 
 ## Endpoint
 

@@ -11,7 +11,7 @@ Most AI/database integrations start from the wrong primitive: database access.
 
 Onprest starts from a smaller primitive: a named business capability. AI agents, SaaS products, internal tools, and partner systems call explicit operations such as `get_customer`, `search_orders`, or `check_inventory`. They never receive a DSN, raw SQL access, or a schema-wide CRUD surface.
 
-The public gateway handles routing, identity, rate limits, and observability. The on-prem agent owns SQL, credentials, validation, execution policy, output filtering, and business meaning. `capability.yaml` defines the only operations that can exist.
+The public gateway handles routing, identity, rate limits, and observability. The on-prem agent owns SQL, credentials, validation, execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
@@ -98,7 +98,7 @@ legacy database
 
 The gateway knows routing, identity, rate limits, and which API keys may call which capability names.
 
-The agent knows what each capability means, how parameters are validated, which prepared SQL is executed, and which result fields are allowed to leave the customer environment.
+The agent knows what each capability means, how parameters are validated, which prepared SQL is executed, and—for SELECT—which result fields are allowed to leave the customer environment. Mutations return affected count only.
 
 TLS termination is environment-owned. Use any reverse proxy, platform proxy, or load balancer that supports HTTPS and WebSocket forwarding.
 
@@ -122,7 +122,7 @@ The gateway can be useful without being trusted with meaning.
 | Parameter validation | No | Yes |
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
-| Output allow-list | No | Yes |
+| SELECT output allow-list / mutation count-only contract | No | Yes |
 | Detailed DB errors | No | Local only |
 | Agent private key | No | Yes |
 | Agent public key | Yes | No |
@@ -135,14 +135,14 @@ Onprest assumes the public gateway may be observed or compromised.
 
 That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or business meaning. It can authenticate callers, apply rate limits, check whether an API key may call a capability name, and forward the request to the connected agent.
 
-The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes prepared SQL, filters outputs, and keeps detailed DB errors local.
+The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes prepared SQL, filters SELECT output or returns DML affected count, and keeps detailed DB errors local.
 
 In short:
 
 - compromise the gateway: you do not get SQL or database credentials
 - compromise an API key: you only get the capabilities assigned to that key
 - ask for an unknown operation: the agent rejects it
-- return extra columns from SQL: `result` filters them before they leave the agent
+- return extra columns from SELECT: `result` filters them before they leave the agent; DML cannot define `result` and returns count only
 - trigger a DB error: detailed DB error information stays in the agent-local log
 
 ## AI Agents and MCP
@@ -159,7 +159,7 @@ Instead of giving an AI agent a DSN, schema, or SQL executor, you give it narrow
 - `get_invoice_status`
 - `list_recent_shipments`
 
-Each tool is backed by a reviewed SQL statement, validated parameters, row and byte limits, timeout policy, and result-field allow-list.
+Each tool is backed by a reviewed SQL statement, validated parameters, timeout and byte limits, plus SELECT-only row limits and result-field allow-list. DML ignores `max_rows`, forbids `result`, and returns only native affected count.
 
 This makes MCP useful without turning the legacy database into an unrestricted AI-accessible surface.
 
@@ -177,7 +177,7 @@ It defines:
 - default execution policies
 - capability definitions
 - parameter contracts
-- result output contracts
+- SELECT result output contracts and the DML count-only contract
 - local agent detail logging
 
 A capability is a named business operation:
@@ -223,8 +223,8 @@ Onprest is designed as if components may be compromised.
 - Unknown capability names are rejected by the agent.
 - Parameters are validated before SQL runs.
 - SQL parameters are bound through `database/sql`.
-- Policies can constrain readonly mode, timeout, max rows, max bytes, and OpenAPI/MCP exposure.
-- Output fields are constrained by the `result` allow-list.
+- Policies can constrain readonly mode, timeout, max bytes, and OpenAPI/MCP exposure; `max_rows` applies only to SELECT.
+- SELECT output fields are constrained by the `result` allow-list. DML cannot define `result` and returns only `{"count": n}`.
 - Only one agent connection is accepted at a time.
 - Gateway stdout logs do not include request params or agent error details.
 - Detailed runtime error information is kept in the agent-local log.
@@ -261,7 +261,7 @@ make quickstart-db
 ```
 
 This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the
-`legacy` database, creates the `readonly_user` account used by
+`legacy` database, creates the least-privilege `capability_user` account used by
 `examples/capability.postgres.yaml`, and seeds the `customers` table. If
 `127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit
 both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml`
@@ -322,6 +322,47 @@ A successful call returns the rows the capability is allowed to expose:
 ```
 
 Only the fields listed in the capability `result` allow-list are returned. The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
+
+Run the shipped mutation over REST:
+
+```sh
+curl -sS \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1,"name":"Ada REST"}' \
+  http://localhost:8080/api/v1/capabilities/update_customer
+```
+
+Then run the same capability through MCP:
+
+```sh
+curl -sS \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"update_customer","arguments":{"customer_id":1,"name":"Ada MCP"}}}' \
+  http://localhost:8080/mcp
+```
+
+Both calls return the driver's native affected count. Verify the committed state through the read capability:
+
+```sh
+curl -sS \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1}' \
+  http://localhost:8080/api/v1/capabilities/get_customer
+```
+
+The returned name is `Ada MCP`. The shipped API key allow-list contains only `get_customer` and `update_customer`; the DB role has only `SELECT` and column-level `UPDATE (name)` on `customers`.
+
+For a direct check of the disposable database:
+
+```sh
+docker compose -f examples/postgres.compose.yml exec -T postgres \
+  psql -U onprest_admin -d legacy -Atc "SELECT name FROM customers WHERE id = 1"
+```
+
+This also prints `Ada MCP`.
 
 Stop and remove the example database when finished:
 

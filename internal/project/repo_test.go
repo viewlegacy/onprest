@@ -132,14 +132,18 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 	if !strings.Contains(gatewayEnv, `GATEWAY_API_KEYS_JSON='[`) {
 		t.Fatalf("examples/gateway.env must single-quote GATEWAY_API_KEYS_JSON to preserve bcrypt dollar signs")
 	}
+	if !strings.Contains(gatewayEnv, `"capabilities":["get_customer","update_customer"]`) || strings.Contains(gatewayEnv, `"capabilities":["*"]`) {
+		t.Fatal("examples/gateway.env must use the explicit Quick Start capability allow-list")
+	}
 
 	capabilityYAML := readText(t, filepath.Join(root, "examples", "capability.postgres.yaml"))
 	for _, want := range []string{
 		"driver: postgres",
 		"name: legacy",
-		"user: readonly_user",
+		"user: capability_user",
 		"password: onprest-example-password",
 		"sql: select id, name, email from customers where id = :customer_id",
+		"sql: update customers set name = :name where id = :customer_id",
 		"max_size: 10MB",
 		"max_files: 3",
 		"readonly: true",
@@ -165,10 +169,11 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 
 	initSQL := readText(t, filepath.Join(root, "examples", "postgres-init.sql"))
 	for _, want := range []string{
-		"CREATE ROLE readonly_user LOGIN PASSWORD 'onprest-example-password'",
+		"CREATE ROLE capability_user LOGIN PASSWORD 'onprest-example-password'",
 		"CREATE TABLE customers",
 		"(1, 'Ada Lovelace', 'ada@example.com')",
-		"GRANT SELECT ON customers TO readonly_user",
+		"GRANT SELECT ON customers TO capability_user",
+		"GRANT UPDATE (name) ON customers TO capability_user",
 	} {
 		if !strings.Contains(initSQL, want) {
 			t.Fatalf("examples/postgres-init.sql missing %q", want)

@@ -4,6 +4,8 @@ Use `database.driver: oracle`.
 
 Oracle support uses the pure-Go `go-ora` driver. The agent does not require Oracle Instant Client or another native Oracle client library.
 
+Mutation startup validation runs `EXPLAIN PLAN` with a unique statement ID in a dedicated transaction and always rolls it back, so its PLAN_TABLE row is not retained. Rollback failure aborts startup. `RETURNING INTO` is not supported.
+
 ```yaml
 database:
   driver: oracle

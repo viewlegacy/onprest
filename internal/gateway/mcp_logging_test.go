@@ -219,7 +219,7 @@ func TestMCPToolsCallBranchesEmitExactlyOneCompleteRequestEvent(t *testing.T) {
 
 func TestRESTRequestEventIncludesProtocol(t *testing.T) {
 	s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
-		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"ok":true}`)}
+		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"rows":[],"count":0}`)}
 	})
 	defer cleanup()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{"id":7}`))

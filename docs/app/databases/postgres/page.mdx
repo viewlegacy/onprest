@@ -2,6 +2,8 @@
 
 Use `database.driver: postgres`.
 
+INSERT/UPDATE/DELETE startup validation uses `EXPLAIN` and does not execute or commit the mutation. PostgreSQL `ON CONFLICT` is supported when it does not use `RETURNING`; returned count is lib/pq's native `RowsAffected()` value.
+
 ```yaml
 database:
   driver: postgres
