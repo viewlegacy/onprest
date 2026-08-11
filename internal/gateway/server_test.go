@@ -1087,6 +1087,8 @@ func TestAgentErrorStatusMapping(t *testing.T) {
 		{errAgentQueryTimeout, http.StatusGatewayTimeout, errAgentQueryTimeout},
 		{errAgentDBUnreachable, http.StatusBadGateway, errAgentDBUnreachable},
 		{errAgentInternal, http.StatusBadGateway, errAgentInternal},
+		{errAgentConstraintViolation, http.StatusConflict, errAgentConstraintViolation},
+		{errAgentTransactionOutcomeUnknown, http.StatusBadGateway, errAgentTransactionOutcomeUnknown},
 		{"UNKNOWN", http.StatusBadGateway, "UNKNOWN"},
 	}
 	for _, tc := range tests {
@@ -1223,9 +1225,10 @@ type fakeAgentConn struct {
 
 type silentAgentConn struct{}
 
-func (silentAgentConn) ReadText() ([]byte, error) { return nil, io.EOF }
-func (silentAgentConn) WriteText([]byte) error    { return nil }
-func (silentAgentConn) Close() error              { return nil }
+func (silentAgentConn) ReadText() ([]byte, error)                         { return nil, io.EOF }
+func (silentAgentConn) WriteText([]byte) error                            { return nil }
+func (silentAgentConn) WriteTextWithDeadline([]byte, time.Duration) error { return nil }
+func (silentAgentConn) Close() error                                      { return nil }
 
 func (f *fakeAgentConn) ReadText() ([]byte, error) {
 	return nil, io.EOF
@@ -1260,6 +1263,10 @@ func (f *fakeAgentConn) WriteText(msg []byte) error {
 		}
 	}()
 	return nil
+}
+
+func (f *fakeAgentConn) WriteTextWithDeadline(msg []byte, _ time.Duration) error {
+	return f.WriteText(msg)
 }
 
 func (f *fakeAgentConn) Close() error {

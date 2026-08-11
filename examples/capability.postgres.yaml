@@ -15,7 +15,7 @@ database:
   host: localhost
   port: 5432
   name: legacy
-  user: readonly_user
+  user: capability_user
   password: onprest-example-password
 
 logging:
@@ -53,3 +53,23 @@ capabilities:
       email:
         type: string
         description: Customer email address.
+  update_customer:
+    description: Update one customer's name.
+    sql: update customers set name = :name where id = :customer_id
+    params:
+      customer_id:
+        type: integer
+        required: true
+        minimum: 1
+        description: Customer ID.
+      name:
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 200
+        description: New customer name.
+    policy:
+      readonly: false
+      timeout: 3s
+      max_bytes: 256KB
+      expose_in_openapi: true

@@ -24,6 +24,7 @@ type Server struct {
 	apiKeyCache     map[[sha256.Size]byte]cachedAPIKey
 	apiKeyAuthSlots chan struct{}
 	openapi         map[string]any
+	responseKinds   map[string]responseKind
 	rateMu          sync.Mutex
 	rate            map[string]*bucket
 	rateLastCleanup time.Time
@@ -31,20 +32,38 @@ type Server struct {
 }
 
 type agentConn struct {
-	conn     textConn
-	pending  map[string]chan protocol.Response
-	mu       sync.Mutex
-	closed   bool
-	send     chan agentWrite
-	done     chan struct{}
-	doneOnce sync.Once
+	conn       textConn
+	pending    map[string]chan protocol.Response
+	mu         sync.Mutex
+	closed     bool
+	send       chan agentWrite
+	control    chan agentWrite
+	sendStates map[string]*requestSendState
+	done       chan struct{}
+	doneOnce   sync.Once
 }
 
 type agentWrite struct {
+	id      string
 	payload []byte
 	result  chan error
 	ctx     context.Context
+	control bool
+	cancel  context.CancelFunc
 }
+
+type requestSendState struct {
+	phase           string
+	cancelAfterSend bool
+}
+
+type responseKind string
+
+const (
+	responseKindUnknown  responseKind = "unknown"
+	responseKindSelect   responseKind = "select"
+	responseKindMutation responseKind = "mutation"
+)
 
 type cachedAPIKey struct {
 	key      APIKey
@@ -55,14 +74,14 @@ type cachedAPIKey struct {
 type textConn interface {
 	ReadText() ([]byte, error)
 	WriteText([]byte) error
+	WriteTextWithDeadline([]byte, time.Duration) error
 	Close() error
 }
 
 type deadlineTextConn interface {
 	textConn
 	SetReadDeadline(time.Time) error
-	SetWriteDeadline(time.Time) error
-	WritePing([]byte) error
+	WritePingWithDeadline([]byte, time.Duration) error
 	SetPongHandler(func())
 }
 

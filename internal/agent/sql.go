@@ -16,37 +16,10 @@ func buildSQL(driver, query string, params map[string]any) (string, []any, error
 	i := 0
 	for p := 0; p < len(query); {
 		ch := query[p]
-		if ch == '\'' {
-			next := copySingleQuoted(out, query[p:])
-			out = next.buf
-			p += next.n
+		if next, ok := protectedSQLRegionEnd(driver, query, p); ok {
+			out = append(out, query[p:next]...)
+			p = next
 			continue
-		}
-		if ch == '"' {
-			next := copyDoubleQuoted(out, query[p:])
-			out = next.buf
-			p += next.n
-			continue
-		}
-		if ch == '-' && p+1 < len(query) && query[p+1] == '-' {
-			next := copyUntilNewline(out, query[p:])
-			out = next.buf
-			p += next.n
-			continue
-		}
-		if ch == '/' && p+1 < len(query) && query[p+1] == '*' {
-			next := copyBlockComment(out, query[p:])
-			out = next.buf
-			p += next.n
-			continue
-		}
-		if ch == '$' {
-			next, ok := copyDollarQuoted(out, query[p:])
-			if ok {
-				out = next.buf
-				p += next.n
-				continue
-			}
 		}
 		if ch == ':' {
 			if p+1 < len(query) && query[p+1] == ':' {
@@ -71,85 +44,6 @@ func buildSQL(driver, query string, params map[string]any) (string, []any, error
 		p++
 	}
 	return string(out), args, nil
-}
-
-type copyResult struct {
-	buf []byte
-	n   int
-}
-
-func copySingleQuoted(out []byte, s string) copyResult {
-	out = append(out, s[0])
-	for i := 1; i < len(s); i++ {
-		out = append(out, s[i])
-		if s[i] == '\'' {
-			if i+1 < len(s) && s[i+1] == '\'' {
-				i++
-				out = append(out, s[i])
-				continue
-			}
-			return copyResult{buf: out, n: i + 1}
-		}
-	}
-	return copyResult{buf: out, n: len(s)}
-}
-
-func copyDoubleQuoted(out []byte, s string) copyResult {
-	out = append(out, s[0])
-	for i := 1; i < len(s); i++ {
-		out = append(out, s[i])
-		if s[i] == '"' {
-			if i+1 < len(s) && s[i+1] == '"' {
-				i++
-				out = append(out, s[i])
-				continue
-			}
-			return copyResult{buf: out, n: i + 1}
-		}
-	}
-	return copyResult{buf: out, n: len(s)}
-}
-
-func copyUntilNewline(out []byte, s string) copyResult {
-	for i := 0; i < len(s); i++ {
-		out = append(out, s[i])
-		if s[i] == '\n' {
-			return copyResult{buf: out, n: i + 1}
-		}
-	}
-	return copyResult{buf: out, n: len(s)}
-}
-
-func copyBlockComment(out []byte, s string) copyResult {
-	for i := 0; i < len(s); i++ {
-		out = append(out, s[i])
-		if i > 0 && s[i-1] == '*' && s[i] == '/' {
-			return copyResult{buf: out, n: i + 1}
-		}
-	}
-	return copyResult{buf: out, n: len(s)}
-}
-
-func copyDollarQuoted(out []byte, s string) (copyResult, bool) {
-	endTagStart := 1
-	for endTagStart < len(s) && (isIdent(s[endTagStart]) || isDigit(s[endTagStart])) {
-		endTagStart++
-	}
-	if endTagStart >= len(s) || s[endTagStart] != '$' {
-		return copyResult{}, false
-	}
-	tag := s[:endTagStart+1]
-	out = append(out, tag...)
-	i := len(tag)
-	for i < len(s) {
-		if hasPrefixAt(s, i, tag) {
-			out = append(out, tag...)
-			return copyResult{buf: out, n: i + len(tag)}, true
-		}
-		out = append(out, s[i])
-		i++
-	}
-	return copyResult{buf: out, n: len(s)}, true
 }
 
 func readParamName(s string) (string, int) {

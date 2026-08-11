@@ -33,8 +33,8 @@ When the gateway sends a capability request, the agent:
 2. Validates params against the YAML contract.
 3. Applies policy settings.
 4. Executes SQL with prepared parameters.
-5. Applies the result allow-list.
-6. Returns either `result` or a normalized agent error code.
+5. Applies the SELECT `result` allow-list, or validates the native affected count for DML.
+6. Returns SELECT rows/count, DML count only, or a normalized agent error code.
 
 Error detail remains local to the agent side.
 

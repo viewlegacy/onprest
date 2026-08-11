@@ -89,9 +89,13 @@ run_go_json_no_skip "postgres-db-interruption-stability" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
 	go test -json -tags=integration ./it/... -run '^TestPostgresDBUnreachableDuringQuery$' -count=5 -args -onprest-it-db=postgres
 
-run_go_json_no_skip "all-db-smoke" \
+run_go_json_no_skip "all-db-conformance" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
 	go test -json -tags=integration ./it/... -run '^TestContainerDBDriver' -timeout 30m -count=1 -args -onprest-it-db=all
+
+run_go_json_no_skip "postgres-tls-contract" \
+	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
+	go test -json -tags=integration ./it/... -run '^TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification$' -timeout 10m -count=1 -args -onprest-it-db=postgres
 
 run_go_json_no_skip "mysql-special-credentials" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \

@@ -76,12 +76,25 @@ type CapabilityDef struct {
 	Params      map[string]ParamDef `json:"params" yaml:"params"`
 	Policy      PolicyDef           `json:"policy" yaml:"policy"`
 	Result      ResultDef           `json:"result,omitempty" yaml:"result,omitempty"`
+	Operation   sqlOperation        `json:"-" yaml:"-"`
 }
+
+type sqlOperation string
+
+const (
+	sqlOperationSelect sqlOperation = "select"
+	sqlOperationInsert sqlOperation = "insert"
+	sqlOperationUpdate sqlOperation = "update"
+	sqlOperationDelete sqlOperation = "delete"
+)
+
+func (o sqlOperation) mutation() bool { return o != "" && o != sqlOperationSelect }
 
 type ParamDef struct {
 	Type        string `json:"type" yaml:"type"`
 	Required    bool   `json:"required" yaml:"required"`
 	Default     any    `json:"default,omitempty" yaml:"default,omitempty"`
+	DefaultSet  bool   `json:"-" yaml:"-"`
 	Enum        []any  `json:"enum,omitempty" yaml:"enum,omitempty"`
 	Minimum     *int64 `json:"minimum,omitempty" yaml:"minimum,omitempty"`
 	Maximum     *int64 `json:"maximum,omitempty" yaml:"maximum,omitempty"`
@@ -89,13 +102,98 @@ type ParamDef struct {
 	MaxLength   *int   `json:"maxLength,omitempty" yaml:"maxLength,omitempty"`
 	Pattern     string `json:"pattern,omitempty" yaml:"pattern,omitempty"`
 	Format      string `json:"format,omitempty" yaml:"format,omitempty"`
+	PatternSet  bool   `json:"-" yaml:"-"`
+	FormatSet   bool   `json:"-" yaml:"-"`
 	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// UnmarshalYAML preserves fields whose explicit empty/null values carry lint
+// meaning. An explicit null default is not a value of any supported parameter
+// type, and empty string-only constraints still belong only to string params.
+func (p *ParamDef) UnmarshalYAML(node *yaml.Node) error {
+	type plainParamDef ParamDef
+	fields, err := paramDefYAMLFields(node, map[*yaml.Node]bool{})
+	if err != nil {
+		return err
+	}
+	var decoded plainParamDef
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*p = ParamDef(decoded)
+	_, p.DefaultSet = fields["default"]
+	_, p.PatternSet = fields["pattern"]
+	_, p.FormatSet = fields["format"]
+	return nil
+}
+
+func paramDefYAMLFields(node *yaml.Node, stack map[*yaml.Node]bool) (map[string]struct{}, error) {
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return nil, errors.New("parameter definition contains an empty YAML alias")
+		}
+		return paramDefYAMLFields(node.Alias, stack)
+	}
+	if node.Kind != yaml.MappingNode {
+		return map[string]struct{}{}, nil
+	}
+	if stack[node] {
+		return nil, errors.New("parameter definition contains a cyclic YAML merge")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+
+	allowed := map[string]struct{}{
+		"type": {}, "required": {}, "default": {}, "enum": {},
+		"minimum": {}, "maximum": {}, "minLength": {}, "maxLength": {},
+		"pattern": {}, "format": {}, "description": {},
+	}
+	fields := map[string]struct{}{}
+	mergeFields := func(source *yaml.Node) error {
+		merged, err := paramDefYAMLFields(source, stack)
+		if err != nil {
+			return err
+		}
+		for key := range merged {
+			fields[key] = struct{}{}
+		}
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keyNode, value := node.Content[i], node.Content[i+1]
+		key := keyNode.Value
+		if isYAMLMergeKey(keyNode) {
+			if value.Kind == yaml.SequenceNode {
+				for _, source := range value.Content {
+					if err := mergeFields(source); err != nil {
+						return nil, err
+					}
+				}
+			} else if err := mergeFields(value); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if _, ok := allowed[key]; !ok {
+			return nil, fmt.Errorf("field %s not found in parameter definition", key)
+		}
+		fields[key] = struct{}{}
+	}
+	return fields, nil
+}
+
+// isYAMLMergeKey mirrors yaml.v3's merge-key recognition. In particular, a
+// quoted "<<" has the string tag and is an ordinary (unknown) field rather
+// than merge syntax.
+func isYAMLMergeKey(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && node.Value == "<<" &&
+		(node.Tag == "" || node.Tag == "!" || node.ShortTag() == "!!merge")
 }
 
 type PolicyDef struct {
 	Readonly        *bool  `json:"readonly,omitempty" yaml:"readonly,omitempty"`
 	Timeout         string `json:"timeout" yaml:"timeout"`
-	MaxRows         int    `json:"max_rows" yaml:"max_rows"`
+	MaxRows         *int   `json:"max_rows,omitempty" yaml:"max_rows,omitempty"`
 	MaxBytes        string `json:"max_bytes" yaml:"max_bytes"`
 	ExposeInOpenAPI *bool  `json:"expose_in_openapi,omitempty" yaml:"expose_in_openapi,omitempty"`
 }
@@ -181,9 +279,23 @@ func (cf *CapabilityFile) Lint() error {
 		if err := cap.Policy.lint(name + ".policy"); err != nil {
 			return err
 		}
-		if readonly(cap.Policy) && !isReadOnlySQL(cf.Database.Driver, cap.SQL) {
-			return fmt.Errorf("%s.sql must be read-only when policy.readonly is true", name)
+		classification := classifySQL(cf.Database.Driver, cap.SQL)
+		if !classification.single {
+			return fmt.Errorf("%s.sql must contain exactly one statement", name)
 		}
+		if classification.operation == "" {
+			return fmt.Errorf("%s.sql operation %s is not supported", name, classification.keyword)
+		}
+		if readonly(cap.Policy) && classification.operation != sqlOperationSelect {
+			return fmt.Errorf("%s.sql must be SELECT when policy.readonly is true", name)
+		}
+		if classification.operation.mutation() && classification.returnsRows {
+			return fmt.Errorf("%s.sql returning rows from DML is not supported", name)
+		}
+		if classification.operation.mutation() && cap.Result != nil {
+			return fmt.Errorf("%s.result is only supported for SELECT", name)
+		}
+		cap.Operation = classification.operation
 		for pname, p := range cap.Params {
 			if err := p.lint(name + ".params." + pname); err != nil {
 				return err
@@ -357,6 +469,19 @@ func (p ParamDef) lint(path string) error {
 	if !validType(p.Type) {
 		return fmt.Errorf("%s.type is invalid", path)
 	}
+	if p.Minimum != nil || p.Maximum != nil {
+		if p.Type != "integer" && p.Type != "number" {
+			return fmt.Errorf("%s minimum/maximum are supported only for integer and number", path)
+		}
+		if p.Minimum != nil && p.Maximum != nil && *p.Minimum > *p.Maximum {
+			return fmt.Errorf("%s.minimum must be <= maximum", path)
+		}
+	}
+	if p.MinLength != nil || p.MaxLength != nil || p.PatternSet || p.FormatSet || p.Pattern != "" || p.Format != "" {
+		if p.Type != "string" {
+			return fmt.Errorf("%s string constraints are supported only for string", path)
+		}
+	}
 	if p.Pattern != "" {
 		if _, err := regexp.Compile(p.Pattern); err != nil {
 			return fmt.Errorf("%s.pattern is invalid: %w", path, err)
@@ -376,14 +501,37 @@ func (p ParamDef) lint(path string) error {
 	if p.MinLength != nil && p.MaxLength != nil && *p.MinLength > *p.MaxLength {
 		return fmt.Errorf("%s.minLength must be <= maxLength", path)
 	}
+	for i, candidate := range p.Enum {
+		if _, err := coerce(p, candidate); err != nil {
+			return fmt.Errorf("%s.enum[%d] is invalid: %w", path, i, err)
+		}
+	}
+	if p.hasDefault() {
+		if p.Default == nil {
+			return fmt.Errorf("%s.default is invalid: must be %s", path, p.Type)
+		}
+		value, err := coerce(p, p.Default)
+		if err != nil {
+			return fmt.Errorf("%s.default is invalid: %w", path, err)
+		}
+		if err := validateEnum(p, value); err != nil {
+			return fmt.Errorf("%s.default is invalid: %w", path, err)
+		}
+	}
 	return nil
 }
 
+func (p ParamDef) hasDefault() bool {
+	return p.DefaultSet || p.Default != nil
+}
+
 func (p PolicyDef) lint(path string) error {
-	if _, err := timeout(p); err != nil {
+	if duration, err := timeout(p); err != nil {
 		return fmt.Errorf("%s.timeout is invalid: %w", path, err)
+	} else if duration <= 0 {
+		return fmt.Errorf("%s.timeout must be > 0", path)
 	}
-	if p.MaxRows <= 0 {
+	if p.MaxRows == nil || *p.MaxRows <= 0 {
 		return fmt.Errorf("%s.max_rows must be > 0", path)
 	}
 	if _, err := maxBytes(p); err != nil {
@@ -424,7 +572,7 @@ func mergePolicy(defaults, cap PolicyDef) PolicyDef {
 	if cap.Timeout != "" {
 		out.Timeout = cap.Timeout
 	}
-	if cap.MaxRows != 0 {
+	if cap.MaxRows != nil {
 		out.MaxRows = cap.MaxRows
 	}
 	if cap.MaxBytes != "" {
@@ -440,8 +588,9 @@ func mergePolicy(defaults, cap PolicyDef) PolicyDef {
 	if out.Timeout == "" {
 		out.Timeout = "5s"
 	}
-	if out.MaxRows == 0 {
-		out.MaxRows = 100
+	if out.MaxRows == nil {
+		value := 100
+		out.MaxRows = &value
 	}
 	if out.MaxBytes == "" {
 		out.MaxBytes = "1MB"
@@ -467,6 +616,13 @@ func timeout(p PolicyDef) (time.Duration, error) {
 		return 5 * time.Second, nil
 	}
 	return time.ParseDuration(p.Timeout)
+}
+
+func resolvedMaxRows(p PolicyDef) int {
+	if p.MaxRows == nil {
+		return 100
+	}
+	return *p.MaxRows
 }
 
 func readonly(p PolicyDef) bool {
@@ -519,41 +675,114 @@ func parseByteSize(raw string) (int64, error) {
 }
 
 func isReadOnlySQL(driver, query string) bool {
-	keyword := firstSQLKeyword(query)
-	return keyword == "select" && hasSingleSQLStatement(driver, query)
+	c := classifySQL(driver, query)
+	return c.operation == sqlOperationSelect && c.single
+}
+
+type sqlClassification struct {
+	keyword     string
+	operation   sqlOperation
+	single      bool
+	returnsRows bool
+}
+
+func classifySQL(driver, query string) sqlClassification {
+	tokens, single := scanSQLTokens(driver, query)
+	c := sqlClassification{single: single}
+	if len(tokens) == 0 {
+		return c
+	}
+	c.keyword = tokens[0]
+	switch c.keyword {
+	case "select":
+		c.operation = sqlOperationSelect
+	case "insert":
+		c.operation = sqlOperationInsert
+	case "update":
+		c.operation = sqlOperationUpdate
+	case "delete":
+		c.operation = sqlOperationDelete
+	}
+	if c.operation.mutation() {
+		for _, token := range tokens[1:] {
+			if token == "returning" || (driver == "sqlserver" && token == "output") {
+				c.returnsRows = true
+				break
+			}
+		}
+	}
+	return c
+}
+
+// scanSQLTokens returns top-level lexical tokens outside quoted/comment regions.
+// It intentionally does not parse SQL grammar: the first token and row-returning
+// DML clauses are the only syntax facts required by the public contract.
+func scanSQLTokens(driver, query string) ([]string, bool) {
+	tokens := []string{}
+	single := true
+	for i := 0; i < len(query); {
+		if next, ok := protectedSQLRegionEnd(driver, query, i); ok {
+			i = next
+			continue
+		}
+		switch {
+		case query[i] == ';':
+			if !onlySQLTrivia(driver, query[i+1:]) {
+				single = false
+			}
+			i++
+		case isIdent(query[i]):
+			start := i
+			for i < len(query) && (isIdent(query[i]) || isDigit(query[i])) {
+				i++
+			}
+			tokens = append(tokens, strings.ToLower(query[start:i]))
+		default:
+			i++
+		}
+	}
+	return tokens, single
 }
 
 func hasSingleSQLStatement(driver, query string) bool {
 	for i := 0; i < len(query); {
+		if next, ok := protectedSQLRegionEnd(driver, query, i); ok {
+			i = next
+			continue
+		}
 		switch {
-		case query[i] == '\'':
-			backslashEscapes := driver == "postgres" && isPostgresEscapeStringPrefix(query, i)
-			i = skipSQLQuoted(query, i, '\'', backslashEscapes)
-		case query[i] == '"':
-			i = skipSQLQuoted(query, i, '"', false)
-		case driver == "mysql" && query[i] == '`':
-			i = skipSQLQuoted(query, i, '`', false)
-		case driver == "sqlserver" && query[i] == '[':
-			i = skipSQLBracketIdentifier(query, i)
-		case driver == "oracle" && isOracleAlternativeQuotePrefix(query, i):
-			i = skipOracleAlternativeQuote(query, i)
-		case i+1 < len(query) && query[i:i+2] == "--":
-			i = skipSQLLineComment(query, i)
-		case i+1 < len(query) && query[i:i+2] == "/*":
-			i = skipSQLBlockComment(query, i)
-		case driver == "postgres" && query[i] == '$':
-			if next, ok := skipSQLDollarQuote(query, i); ok {
-				i = next
-			} else {
-				i++
-			}
 		case query[i] == ';':
-			return onlySQLTrivia(query[i+1:])
+			return onlySQLTrivia(driver, query[i+1:])
 		default:
 			i++
 		}
 	}
 	return true
+}
+
+// protectedSQLRegionEnd is the single dialect-aware lexical boundary used by
+// classification, single-statement checks, and placeholder replacement.
+func protectedSQLRegionEnd(driver, query string, start int) (int, bool) {
+	switch {
+	case query[start] == '\'':
+		return skipSQLQuoted(query, start, '\'', driver == "postgres" && isPostgresEscapeStringPrefix(query, start)), true
+	case query[start] == '"':
+		return skipSQLQuoted(query, start, '"', false), true
+	case driver == "mysql" && query[start] == '`':
+		return skipSQLQuoted(query, start, '`', false), true
+	case driver == "sqlserver" && query[start] == '[':
+		return skipSQLBracketIdentifier(query, start), true
+	case driver == "oracle" && isOracleAlternativeQuotePrefix(query, start):
+		return skipOracleAlternativeQuote(query, start), true
+	case start+1 < len(query) && query[start:start+2] == "--":
+		return skipSQLLineComment(query, start), true
+	case start+1 < len(query) && query[start:start+2] == "/*":
+		return skipSQLBlockComment(driver, query, start), true
+	case driver == "postgres" && query[start] == '$':
+		return skipSQLDollarQuote(query, start)
+	default:
+		return 0, false
+	}
 }
 
 func skipSQLQuoted(query string, start int, quote byte, backslashEscapes bool) int {
@@ -630,9 +859,26 @@ func skipSQLLineComment(query string, start int) int {
 	return len(query)
 }
 
-func skipSQLBlockComment(query string, start int) int {
-	if end := strings.Index(query[start+2:], "*/"); end >= 0 {
-		return start + 2 + end + 2
+func skipSQLBlockComment(driver, query string, start int) int {
+	// PostgreSQL and SQL Server accept nested block comments. Treating the
+	// first */ as the end would expose text that is still comment trivia to
+	// the classifier and can turn a writable statement into an apparent
+	// SELECT. MySQL and Oracle retain their non-nesting lexical behavior.
+	depth := 1
+	for i := start + 2; i+1 < len(query); i++ {
+		pair := query[i : i+2]
+		if pair == "/*" && (driver == "postgres" || driver == "sqlserver") {
+			depth++
+			i++
+			continue
+		}
+		if pair == "*/" {
+			depth--
+			i++
+			if depth == 0 {
+				return i + 1
+			}
+		}
 	}
 	return len(query)
 }
@@ -653,7 +899,7 @@ func skipSQLDollarQuote(query string, start int) (int, bool) {
 	return endTag + 1 + end + len(tag), true
 }
 
-func onlySQLTrivia(query string) bool {
+func onlySQLTrivia(driver, query string) bool {
 	for i := 0; i < len(query); {
 		switch {
 		case query[i] == ' ' || query[i] == '\t' || query[i] == '\r' || query[i] == '\n':
@@ -661,7 +907,7 @@ func onlySQLTrivia(query string) bool {
 		case i+1 < len(query) && query[i:i+2] == "--":
 			i = skipSQLLineComment(query, i)
 		case i+1 < len(query) && query[i:i+2] == "/*":
-			i = skipSQLBlockComment(query, i)
+			i = skipSQLBlockComment(driver, query, i)
 		default:
 			return false
 		}
@@ -680,8 +926,9 @@ func firstSQLKeyword(query string) string {
 			}
 			return ""
 		case strings.HasPrefix(s, "/*"):
-			if i := strings.Index(s, "*/"); i >= 0 {
-				s = strings.TrimSpace(s[i+2:])
+			i := skipSQLBlockComment("postgres", s, 0)
+			if i < len(s) {
+				s = strings.TrimSpace(s[i:])
 				continue
 			}
 			return ""

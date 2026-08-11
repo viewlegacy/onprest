@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ type agentCallResult struct {
 	Status  int
 	Code    string
 	Message string
+	Count   *int64
 }
 
 func (r agentCallResult) OK() bool { return r.Status == http.StatusOK }
@@ -47,6 +49,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	ac := newAgentConn(conn)
 	s.agent = ac
 	s.openapi = nil
+	s.responseKinds = nil
 	s.agentMu.Unlock()
 	s.log("agent_connected", map[string]any{"remote": r.RemoteAddr})
 	go s.writeAgent(ac)
@@ -57,10 +60,12 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 
 func newAgentConn(conn textConn) *agentConn {
 	return &agentConn{
-		conn:    conn,
-		pending: map[string]chan protocol.Response{},
-		send:    make(chan agentWrite, agentWriteQueueSize),
-		done:    make(chan struct{}),
+		conn:       conn,
+		pending:    map[string]chan protocol.Response{},
+		send:       make(chan agentWrite, agentWriteQueueSize),
+		control:    make(chan agentWrite, agentWriteQueueSize),
+		sendStates: map[string]*requestSendState{},
+		done:       make(chan struct{}),
 	}
 }
 
@@ -88,7 +93,11 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 	if ac.pending == nil {
 		ac.pending = map[string]chan protocol.Response{}
 	}
+	if ac.sendStates == nil {
+		ac.sendStates = map[string]*requestSendState{}
+	}
 	ac.pending[id] = ch
+	ac.sendStates[id] = &requestSendState{phase: "queued"}
 	ac.mu.Unlock()
 
 	payload := protocol.MustJSON(protocol.Request{ID: id, Capability: capability, Params: params})
@@ -101,7 +110,7 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 		}
 	} else {
 		writeResult := make(chan error, 1)
-		write := agentWrite{payload: payload, result: writeResult, ctx: ctx}
+		write := agentWrite{id: id, payload: payload, result: writeResult, ctx: ctx}
 		select {
 		case ac.send <- write:
 		case <-ac.done:
@@ -109,6 +118,7 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 			return agentOfflineResult()
 		case <-ctx.Done():
 			ac.removePending(id)
+			s.requestAgentCancel(ac, id)
 			return agentTimeoutResult()
 		}
 		select {
@@ -126,21 +136,66 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 			return agentOfflineResult()
 		case <-ctx.Done():
 			ac.removePending(id)
+			s.requestAgentCancel(ac, id)
 			return agentTimeoutResult()
 		}
 	}
 
 	select {
 	case resp := <-ch:
+		ac.finishSendState(id)
 		if resp.Error != nil {
 			status, code := agentErrorStatus(resp.Error.Code)
 			return agentCallResult{Status: status, Code: code, Message: resp.Error.Message}
 		}
-		return agentCallResult{Payload: resp.Result, Status: http.StatusOK}
+		if capability == "meta" {
+			return agentCallResult{Payload: resp.Result, Status: http.StatusOK}
+		}
+		kind := s.responseKind(capability)
+		count, invalid := extractCount(resp.Result)
+		if invalid {
+			if kind == responseKindSelect {
+				return agentCallResult{Status: http.StatusBadGateway, Code: errAgentInternal, Message: "agent internal error"}
+			}
+			return agentCallResult{Status: http.StatusBadGateway, Code: errAgentTransactionOutcomeUnknown, Message: "transaction outcome is unknown"}
+		}
+		return agentCallResult{Payload: resp.Result, Status: http.StatusOK, Count: count}
 	case <-ctx.Done():
 		ac.removePending(id)
+		s.requestAgentCancel(ac, id)
 		return agentTimeoutResult()
 	}
+}
+
+func (s *Server) responseKind(capability string) responseKind {
+	s.agentMu.RLock()
+	defer s.agentMu.RUnlock()
+	if kind, ok := s.responseKinds[capability]; ok {
+		return kind
+	}
+	return responseKindUnknown
+}
+
+func extractCount(payload []byte) (*int64, bool) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return nil, true
+	}
+	raw, ok := object["count"]
+	if !ok {
+		return nil, true
+	}
+	var number json.Number
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&number); err != nil {
+		return nil, true
+	}
+	count, err := number.Int64()
+	if err != nil || count < 0 {
+		return nil, true
+	}
+	return &count, false
 }
 
 func agentOfflineResult() agentCallResult {
@@ -157,31 +212,114 @@ func (ac *agentConn) removePending(id string) {
 	ac.mu.Unlock()
 }
 
+func (ac *agentConn) finishSendState(id string) {
+	ac.mu.Lock()
+	delete(ac.sendStates, id)
+	ac.mu.Unlock()
+}
+
+func (s *Server) requestAgentCancel(ac *agentConn, id string) {
+	ac.mu.Lock()
+	state := ac.sendStates[id]
+	if state == nil {
+		ac.mu.Unlock()
+		return
+	}
+	switch state.phase {
+	case "queued":
+		state.phase = "canceled"
+		delete(ac.sendStates, id)
+		ac.mu.Unlock()
+		return
+	case "sending":
+		state.cancelAfterSend = true
+		ac.mu.Unlock()
+		return
+	case "sent":
+		state.phase = "canceling"
+	case "canceling", "canceled":
+		ac.mu.Unlock()
+		return
+	default:
+		ac.mu.Unlock()
+		return
+	}
+	ac.mu.Unlock()
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), s.cfg.AgentWriteTimeout)
+	write := agentWrite{id: id, payload: protocol.MustJSON(protocol.CancelRequest{Type: "cancel", ID: id}), result: make(chan error, 1), ctx: cleanupCtx, control: true, cancel: cleanupCancel}
+	select {
+	case ac.control <- write:
+	case <-ac.done:
+		cleanupCancel()
+		ac.finishSendState(id)
+	default:
+		cleanupCancel()
+		ac.finishSendState(id)
+		_ = ac.conn.Close()
+	}
+}
+
 func (s *Server) writeAgent(ac *agentConn) {
 	for {
+		var write agentWrite
 		select {
-		case write := <-ac.send:
+		case write = <-ac.control:
+		default:
 			select {
-			case <-write.ctx.Done():
-				write.result <- write.ctx.Err()
+			case write = <-ac.control:
+			case write = <-ac.send:
+			case <-ac.done:
+				return
+			}
+		}
+		if !write.control {
+			ac.mu.Lock()
+			state := ac.sendStates[write.id]
+			if state == nil || state.phase == "canceled" {
+				ac.mu.Unlock()
+				write.result <- context.Canceled
 				continue
-			default:
 			}
-			if deadlineConn, ok := ac.conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
-				if err := deadlineConn.SetWriteDeadline(time.Now().Add(s.cfg.AgentWriteTimeout)); err != nil {
-					write.result <- err
-					_ = ac.conn.Close()
-					return
-				}
+			state.phase = "sending"
+			ac.mu.Unlock()
+		}
+		select {
+		case <-write.ctx.Done():
+			write.result <- write.ctx.Err()
+			ac.finishSendState(write.id)
+			if write.cancel != nil {
+				write.cancel()
 			}
-			err := ac.conn.WriteText(write.payload)
-			write.result <- err
-			if err != nil {
+			if write.control {
 				_ = ac.conn.Close()
 				return
 			}
-		case <-ac.done:
+			continue
+		default:
+		}
+		err := ac.conn.WriteTextWithDeadline(write.payload, s.cfg.AgentWriteTimeout)
+		write.result <- err
+		if write.cancel != nil {
+			write.cancel()
+		}
+		if err != nil {
+			ac.finishSendState(write.id)
+			_ = ac.conn.Close()
 			return
+		}
+		if write.control {
+			ac.finishSendState(write.id)
+			continue
+		}
+		ac.mu.Lock()
+		state := ac.sendStates[write.id]
+		cancelAfter := state != nil && state.cancelAfterSend
+		if state != nil {
+			state.phase = "sent"
+		}
+		ac.mu.Unlock()
+		if cancelAfter {
+			s.requestAgentCancel(ac, write.id)
 		}
 	}
 }
@@ -201,11 +339,7 @@ func (s *Server) keepAgentAlive(ac *agentConn) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := conn.SetWriteDeadline(time.Now().Add(s.cfg.AgentWriteTimeout)); err != nil {
-				_ = conn.Close()
-				return
-			}
-			if err := conn.WritePing([]byte("onprest-keepalive")); err != nil {
+			if err := conn.WritePingWithDeadline([]byte("onprest-keepalive"), s.cfg.AgentWriteTimeout); err != nil {
 				_ = conn.Close()
 				return
 			}
@@ -223,6 +357,7 @@ func (s *Server) readAgent(ac *agentConn) {
 		if s.agent == ac {
 			s.agent = nil
 			s.openapi = nil
+			s.responseKinds = nil
 		}
 		s.agentMu.Unlock()
 		s.log("agent_disconnected", nil)
@@ -240,6 +375,7 @@ func (s *Server) readAgent(ac *agentConn) {
 		ac.mu.Lock()
 		ch := ac.pending[resp.ID]
 		delete(ac.pending, resp.ID)
+		delete(ac.sendStates, resp.ID)
 		ac.mu.Unlock()
 		if ch != nil {
 			ch <- resp
@@ -256,6 +392,7 @@ func (ac *agentConn) disconnectPending() {
 	ac.closed = true
 	pending := ac.pending
 	ac.pending = map[string]chan protocol.Response{}
+	ac.sendStates = map[string]*requestSendState{}
 	ac.mu.Unlock()
 	ac.doneOnce.Do(func() {
 		if ac.done != nil {
@@ -286,7 +423,7 @@ func (s *Server) fetchMetaFor(ac *agentConn) {
 		}
 		result := s.callAgentOn(context.Background(), ac, "meta", map[string]any{})
 		if result.OK() {
-			doc, err := openAPIFromMeta(result.Payload)
+			doc, kinds, err := metaData(result.Payload)
 			if err == nil {
 				doc = s.finalizeOpenAPI(doc)
 				s.agentMu.Lock()
@@ -295,6 +432,7 @@ func (s *Server) fetchMetaFor(ac *agentConn) {
 					return
 				}
 				s.openapi = doc
+				s.responseKinds = kinds
 				s.agentMu.Unlock()
 				pathCount := openAPIPathCount(doc)
 				s.log("openapi_cached", map[string]any{"paths": pathCount})

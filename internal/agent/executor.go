@@ -2,11 +2,15 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/viewlegacy/onprest/internal/protocol"
@@ -16,7 +20,7 @@ const queryTimeoutDetail = "query exceeded policy.timeout"
 
 func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.Response {
 	if req.Capability == "meta" {
-		return protocol.ResultResponse(req.ID, map[string]any{"data": BuildOpenAPI(r.cf)})
+		return protocol.ResultResponse(req.ID, map[string]any{"data": BuildOpenAPI(r.cf), "response_kinds": responseKinds(r.cf)})
 	}
 	cap, ok := r.caps[req.Capability]
 	if !ok {
@@ -36,10 +40,36 @@ func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.R
 	}
 	ctx, cancel := context.WithTimeout(parent, d)
 	defer cancel()
-	rows, cols, err := queryRows(ctx, r.db, query, args, cap.Policy.MaxRows)
+	if cap.Operation.mutation() {
+		payload, _, failure := r.executeMutation(parent, ctx, cap, query, args)
+		if failure != nil {
+			return r.errorResponse(req, failure.code, failure.message, failure.detail)
+		}
+		return protocol.Response{ID: req.ID, Result: payload}
+	}
+	return r.executeSelect(ctx, parent, req, cap, query, args)
+}
+
+func responseKinds(cf *CapabilityFile) map[string]string {
+	kinds := make(map[string]string, len(cf.Capabilities))
+	for name, cap := range cf.Capabilities {
+		if cap.Operation.mutation() {
+			kinds[name] = "mutation"
+		} else {
+			kinds[name] = "select"
+		}
+	}
+	return kinds
+}
+
+func (r *Runner) executeSelect(ctx, parent context.Context, req protocol.Request, cap CapabilityDef, query string, args []any) protocol.Response {
+	rows, cols, err := queryRows(ctx, r.db, query, args, resolvedMaxRows(cap.Policy))
 	if err != nil {
 		if ctx.Err() != nil {
 			return r.errorResponse(req, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail, queryTimeoutDetail)
+		}
+		if classifyDBError(r.cf.Database.Driver, err) == errorConstraintViolation {
+			return r.errorResponse(req, errorConstraintViolation, "database constraint violation", err.Error())
 		}
 		if isDBUnreachable(err) || !r.dbReachable(parent) {
 			return r.errorResponse(req, "AGENT_DB_UNREACHABLE", "database is unreachable", err.Error())
@@ -50,7 +80,7 @@ func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.R
 	if err != nil {
 		return r.errorResponse(req, "AGENT_QUERY_FAILED", "database query failed", err.Error())
 	}
-	result := map[string]any{"rows": rows, "count": len(rows)}
+	result := map[string]any{"rows": rows, "count": int64(len(rows))}
 	limit, err := maxBytes(cap.Policy)
 	if err != nil {
 		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
@@ -61,6 +91,223 @@ func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.R
 		return r.errorResponse(req, "AGENT_QUERY_FAILED", "response exceeds policy.max_bytes", "response exceeds policy.max_bytes")
 	}
 	return protocol.ResultResponse(req.ID, result)
+}
+
+type mutationFailure struct{ code, message, detail string }
+
+type beginState int
+
+const (
+	beginNotStarted beginState = iota
+	beginStarted
+	beginCanceledWithTx
+	beginOutcomeUnknown
+)
+
+type mutationTx struct {
+	conn             *sql.Conn
+	tx               *sql.Tx
+	startWatcherDone <-chan struct{}
+	releaseOnce      sync.Once
+	release          context.CancelFunc
+}
+
+func (m *mutationTx) close() {
+	if m == nil {
+		return
+	}
+	m.releaseOnce.Do(func() {
+		m.release()
+		_ = m.conn.Close()
+	})
+}
+
+// beginMutationTx bounds both pool acquisition and driver transaction startup
+// with execCtx without attaching the execution deadline to the established
+// transaction. The gate is disarmed atomically when BeginTx succeeds, leaving
+// the transaction alive until explicit commit/rollback completes.
+func beginMutationTx(requestCtx, execCtx context.Context, db *sql.DB) (*mutationTx, beginState, error) {
+	conn, err := db.Conn(execCtx)
+	if err != nil {
+		return nil, beginNotStarted, err
+	}
+
+	lifetimeCtx, releaseLifetime := context.WithCancel(context.WithoutCancel(requestCtx))
+	startCtx, cancelStart := context.WithCancelCause(lifetimeCtx)
+	var gate atomic.Int32 // 0=pending, 1=started, 2=execution canceled
+	stop := make(chan struct{})
+	watcherDone := make(chan struct{})
+	var stopOnce sync.Once
+	stopWatcher := func() {
+		stopOnce.Do(func() { close(stop) })
+		<-watcherDone
+	}
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-execCtx.Done():
+			if gate.CompareAndSwap(0, 2) {
+				cancelStart(execCtx.Err())
+			}
+		case <-stop:
+		}
+	}()
+	if err := execCtx.Err(); err != nil && gate.CompareAndSwap(0, 2) {
+		cancelStart(err)
+	}
+
+	tx, err := conn.BeginTx(startCtx, &sql.TxOptions{Isolation: sql.LevelDefault})
+	if err == nil {
+		startedFirst := gate.CompareAndSwap(0, 1)
+		stopWatcher()
+		m := &mutationTx{
+			conn:             conn,
+			tx:               tx,
+			startWatcherDone: watcherDone,
+			release: func() {
+				cancelStart(context.Canceled)
+				releaseLifetime()
+			},
+		}
+		if startedFirst {
+			return m, beginStarted, nil
+		}
+		return m, beginCanceledWithTx, execCtx.Err()
+	}
+
+	canceledFirst := gate.Load() == 2
+	if !canceledFirst {
+		gate.CompareAndSwap(0, 1)
+	}
+	stopWatcher()
+	cancelStart(context.Canceled)
+	releaseLifetime()
+	_ = conn.Close()
+	if canceledFirst {
+		return nil, beginOutcomeUnknown, err
+	}
+	return nil, beginNotStarted, err
+}
+
+func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap CapabilityDef, query string, args []any) (json.RawMessage, int64, *mutationFailure) {
+	mtx, state, err := beginMutationTx(requestCtx, execCtx, r.db)
+	if err != nil {
+		if state == beginOutcomeUnknown {
+			return nil, 0, &mutationFailure{errorOutcomeUnknown, "transaction outcome is unknown", err.Error()}
+		}
+		if execCtx.Err() != nil {
+			return nil, 0, &mutationFailure{"AGENT_QUERY_TIMEOUT", queryTimeoutDetail, execCtx.Err().Error()}
+		}
+		if isDBUnreachable(err) {
+			return nil, 0, &mutationFailure{"AGENT_DB_UNREACHABLE", "database is unreachable", err.Error()}
+		}
+		return nil, 0, &mutationFailure{"AGENT_QUERY_FAILED", "database query failed", err.Error()}
+	}
+	tx := mtx.tx
+	terminal := false
+	defer func() {
+		if !terminal {
+			_ = tx.Rollback()
+		}
+		mtx.close()
+	}()
+	failAfterRollback := func(original error, code, message string) (json.RawMessage, int64, *mutationFailure) {
+		rb := rollbackMutation(tx)
+		terminal = true
+		return nil, 0, mutationFailureForRollback(original, rb, code, message)
+	}
+	if state == beginCanceledWithTx {
+		return failAfterRollback(execCtx.Err(), "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
+	}
+	result, err := tx.ExecContext(execCtx, query, args...)
+	if err != nil {
+		if execCtx.Err() != nil {
+			return failAfterRollback(execCtx.Err(), "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
+		}
+		if classifyDBError(r.cf.Database.Driver, err) == errorConstraintViolation {
+			return failAfterRollback(err, errorConstraintViolation, "database constraint violation")
+		}
+		if isDBUnreachable(err) {
+			return failAfterRollback(err, "AGENT_DB_UNREACHABLE", "database is unreachable")
+		}
+		return failAfterRollback(err, "AGENT_QUERY_FAILED", "database query failed")
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return failAfterRollback(err, "AGENT_QUERY_FAILED", "database query failed")
+	}
+	if count < 0 {
+		return failAfterRollback(errors.New("RowsAffected returned a negative count"), "AGENT_QUERY_FAILED", "database query failed")
+	}
+	limit, err := maxBytes(cap.Policy)
+	if err != nil {
+		return failAfterRollback(err, "AGENT_INTERNAL_ERROR", "agent internal error")
+	}
+	payload, err := buildMutationPayload(count, limit)
+	if err != nil {
+		message := "database query failed"
+		if errors.Is(err, errMutationResponseTooLarge) {
+			message = "response exceeds policy.max_bytes"
+		}
+		return failAfterRollback(err, "AGENT_QUERY_FAILED", message)
+	}
+	if err := execCtx.Err(); err != nil {
+		return failAfterRollback(err, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
+	}
+	if err := tx.Commit(); err != nil {
+		terminal = true
+		return nil, 0, &mutationFailure{errorOutcomeUnknown, "transaction outcome is unknown", err.Error()}
+	}
+	terminal = true
+	return payload, count, nil
+}
+
+func mutationFailureForRollback(original error, rb rollbackResult, code, message string) *mutationFailure {
+	if rb.state != rollbackConfirmed {
+		return &mutationFailure{errorOutcomeUnknown, "transaction outcome is unknown", errors.Join(original, rb.err()).Error()}
+	}
+	return &mutationFailure{code, message, original.Error()}
+}
+
+var errMutationResponseTooLarge = errors.New("mutation response exceeds policy.max_bytes")
+
+func buildMutationPayload(count, maxBytes int64) (json.RawMessage, error) {
+	payload := json.RawMessage(strconv.AppendInt([]byte(`{"count":`), count, 10))
+	payload = append(payload, '}')
+	if int64(len(payload)) > maxBytes {
+		return nil, errMutationResponseTooLarge
+	}
+	return payload, nil
+}
+
+type rollbackState int
+
+const (
+	rollbackConfirmed rollbackState = iota
+	rollbackAlreadyDone
+	rollbackFailed
+)
+
+type rollbackResult struct {
+	state rollbackState
+	cause error
+}
+
+func (r rollbackResult) err() error {
+	if r.cause != nil {
+		return r.cause
+	}
+	return errors.New("transaction rollback outcome is unknown")
+}
+func rollbackMutation(tx *sql.Tx) rollbackResult {
+	err := tx.Rollback()
+	if err == nil {
+		return rollbackResult{state: rollbackConfirmed}
+	}
+	if errors.Is(err, sql.ErrTxDone) {
+		return rollbackResult{state: rollbackAlreadyDone, cause: err}
+	}
+	return rollbackResult{state: rollbackFailed, cause: err}
 }
 
 func applyResultContract(rows []map[string]any, cols []string, result ResultDef) ([]map[string]any, error) {
@@ -269,12 +516,42 @@ func (r *Runner) explainQuery(ctx context.Context, query string, args []any) err
 		if _, err := conn.ExecContext(ctx, "SET SHOWPLAN_TEXT ON"); err != nil {
 			return err
 		}
-		defer conn.ExecContext(context.Background(), "SET SHOWPLAN_TEXT OFF")
+		cleanup := func() error {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := conn.ExecContext(cleanupCtx, "SET SHOWPLAN_TEXT OFF")
+			return err
+		}
 		rows, err := conn.QueryContext(ctx, query, args...)
+		if err != nil {
+			_ = cleanup()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			_ = cleanup()
+			return err
+		}
+		return cleanup()
+	}
+	if r.cf.Database.Driver == "oracle" {
+		conn, err := r.db.Conn(ctx)
 		if err != nil {
 			return err
 		}
-		return rows.Close()
+		defer conn.Close()
+		txLifetime, release := context.WithCancel(context.WithoutCancel(ctx))
+		defer release()
+		tx, err := conn.BeginTx(txLifetime, &sql.TxOptions{Isolation: sql.LevelDefault})
+		if err != nil {
+			return err
+		}
+		statementID := fmt.Sprintf("onprest_%x", time.Now().UnixNano())
+		_, execErr := tx.ExecContext(ctx, "EXPLAIN PLAN SET STATEMENT_ID = '"+statementID+"' FOR "+query, args...)
+		rb := rollbackMutation(tx)
+		if rb.state != rollbackConfirmed {
+			return fmt.Errorf("oracle explain rollback: %w", rb.err())
+		}
+		return execErr
 	}
 	explain, ok := buildExplainSQL(r.cf.Database.Driver, query)
 	if !ok {
@@ -315,5 +592,8 @@ func (r *Runner) dbReachable(parent context.Context) bool {
 }
 
 func driverName(driver string) string {
+	if driver == "postgres" {
+		return "pgx"
+	}
 	return driver
 }

@@ -36,7 +36,7 @@ Start the example PostgreSQL database.
 make quickstart-db
 ```
 
-This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the `legacy` database, creates the `readonly_user` account used by `examples/capability.postgres.yaml`, and seeds the `customers` table. If `127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml` to use the same alternate port.
+This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the `legacy` database, creates the `capability_user` account used by `examples/capability.postgres.yaml`, and seeds the `customers` table. The role has `SELECT` plus column-level `UPDATE (name)` on `customers`; it has no INSERT, DELETE, or DDL privilege. If `127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml` to use the same alternate port.
 
 For real deployments, generate fresh keys and edit your own `capability.yaml`. The example's `ws://localhost` URL is for loopback development only; a non-loopback deployment must use `wss://` as described in [Deployment](/operations/deployment).
 
@@ -63,7 +63,7 @@ The shorter command alias is also available.
 Create API keys for API users or MCP clients.
 
 ```bash
-./dist/onprest-gateway create-key --name internal --capabilities "*"
+./dist/onprest-gateway create-key --name internal --capabilities "get_customer,update_customer"
 ./dist/onprest-gateway create-key --name partner-a --capabilities "get_customer,get_orders"
 ```
 
@@ -76,7 +76,7 @@ Create API keys for API users or MCP clients.
 ```env
 # Required.
 GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
-GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]}]'
+GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["get_customer","update_customer"]}]'
 
 # Optional. Omit these to use defaults or disabled behavior.
 # GATEWAY_ADDR=:8080
@@ -114,7 +114,7 @@ database:
   host: localhost
   port: 5432
   name: legacy
-  user: readonly_user
+  user: capability_user
   password: onprest-example-password
 
 logging:
@@ -152,7 +152,19 @@ capabilities:
       email:
         type: string
         description: Customer email address.
+  update_customer:
+    description: Update one customer's name.
+    sql: update customers set name = :name where id = :customer_id
+    params:
+      customer_id: { type: integer, required: true }
+      name: { type: string, required: true, minLength: 1, maxLength: 200 }
+    policy:
+      readonly: false
+      timeout: 3s
+      max_bytes: 256KB
 ```
+
+The example API key explicitly allows only `get_customer` and `update_customer`. Mutation success is `{"count": n}`. Zero affected rows is still success; decide whether that is a business error in the caller.
 
 At startup, the agent runs YAML lint, DB ping, and SQL EXPLAIN verification. If startup validation fails, DB-specific detail and SQL text are not written to stderr; detail is written to `onprest-agent.log` next to the agent binary.
 
@@ -194,7 +206,7 @@ curl -s http://localhost:8080/healthz
 }
 ```
 
-## 8. Verify REST
+## 8. Verify REST Read and Mutation
 
 Set the plaintext API key in the shell that will call the gateway. If you are using the repository example files, use the example plaintext key.
 
@@ -223,6 +235,20 @@ A successful call returns the rows the capability is allowed to expose:
 
 The REST request body is the capability params object directly. Do not wrap it in `{"params": {...}}`.
 
+Update that customer through REST:
+
+```bash
+curl -s \
+  -X POST http://localhost:8080/api/v1/capabilities/update_customer \
+  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1,"name":"Ada REST"}'
+```
+
+```json
+{ "count": 1 }
+```
+
 ## 9. Verify OpenAPI
 
 ```bash
@@ -248,12 +274,33 @@ curl -s \
   -X POST http://localhost:8080/mcp \
   -H "Authorization: Bearer ${ONPREST_API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_customer","arguments":{"customer_id":1}}}'
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"update_customer","arguments":{"customer_id":1,"name":"Ada MCP"}}}'
 ```
 
-MCP `tools/list` is generated from the OpenAPI cache and filtered by the API key's allowed capabilities.
+The tool result contains `structuredContent: {"count": 1}`. MCP `tools/list` is generated from the OpenAPI document and filtered by the API key's allowed capabilities.
 
-## 11. Stop Example Database
+## 11. Verify Committed Database State
+
+Read through the capability boundary again:
+
+```bash
+curl -s \
+  -X POST http://localhost:8080/api/v1/capabilities/get_customer \
+  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1}'
+```
+
+The returned name is `Ada MCP`. You can also verify the disposable database directly:
+
+```bash
+docker compose -f examples/postgres.compose.yml exec -T postgres \
+  psql -U onprest_admin -d legacy -Atc "SELECT name FROM customers WHERE id = 1"
+```
+
+The command prints `Ada MCP`, confirming the REST update and subsequent MCP update committed.
+
+## 12. Stop Example Database
 
 ```bash
 make quickstart-db-down

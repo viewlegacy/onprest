@@ -1,6 +1,6 @@
 # Gateway Logs
 
-The gateway writes JSON Lines to stdout. Logs are designed for collection by a process manager, container runtime, log drain, or managed dashboard pipeline. Concurrent request and control events are serialized one complete JSON record at a time, so a collector never receives interleaved fragments from two events.
+The gateway writes JSON Lines to stdout. Logs are designed for collection by a process manager, container runtime, or log drain. Concurrent request and control events are serialized one complete JSON record at a time, so a collector never receives interleaved fragments from two events.
 
 ## Request Event
 
@@ -13,11 +13,14 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
   "capability": "get_customer",
   "api_key_name": "partner-a",
   "http_status": 200,
+  "count": 1,
   "error_code": null,
   "error_message": null,
   "duration_ms": 123
 }
 ```
+
+Every request event has `count`. Successful SELECT and mutation calls use a non-negative JSON integer; every failure and pre-agent branch uses `null`. This preserves the difference between a successful zero-row mutation and a failure. Rows, SQL, and params are never logged.
 
 The request log is intentionally small. It is useful for observability without turning gateway into a sensitive data sink.
 
