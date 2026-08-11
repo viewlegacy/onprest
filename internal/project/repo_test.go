@@ -281,18 +281,21 @@ func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
 	testCommands := readText(t, filepath.Join(root, "docs", "app", "reference", "test-commands", "page.mdx"))
 	releaseDocs := readText(t, filepath.Join(root, "docs", "app", "operations", "release-gate", "page.mdx"))
 
-	for _, name := range []string{
-		"TestContainerDBDriver.*",
-		"TestContainerOracleTransactionStartIsImmediateAndRollbackable",
-		"TestContainerPostgresNullableResultMatchesGeneratedOpenAPI",
-		"TestContainerPostgresTimestampResultPreservesJSONContract",
+	const allDBSelector = "-run '^TestContainerDBDriver'"
+	for source, text := range map[string]string{
+		"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
 	} {
-		for source, text := range map[string]string{
-			"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
-		} {
-			if !strings.Contains(text, name) {
-				t.Fatalf("%s does not include documented all-DB selection %q", source, name)
-			}
+		if !strings.Contains(text, allDBSelector) {
+			t.Fatalf("%s does not use common all-DB selection %q", source, allDBSelector)
+		}
+	}
+	for path, name := range map[string]string{
+		"it/transaction_start_conformance_test.go": "TestContainerDBDriverOracleTransactionStartIsImmediateAndRollbackable",
+		"it/openapi_nullable_postgres_test.go":     "TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI",
+		"it/timestamp_postgres_test.go":            "TestContainerDBDriverPostgresTimestampResultPreservesJSONContract",
+	} {
+		if text := readText(t, filepath.Join(root, filepath.FromSlash(path))); !strings.Contains(text, "func "+name+"(") {
+			t.Fatalf("%s does not use common all-DB test prefix: %s", path, name)
 		}
 	}
 	const postgresTLS = "TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification"

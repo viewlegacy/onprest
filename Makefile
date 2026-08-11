@@ -32,7 +32,7 @@ test-it-postgres-stability:
 	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -run '^TestPostgresDBUnreachableDuringQuery$$' -count=5 -v -args -onprest-it-db=postgres
 
 test-it-all-db:
-	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -run '^(TestContainerDBDriver.*|TestContainerOracleTransactionStartIsImmediateAndRollbackable|TestContainerPostgresNullableResultMatchesGeneratedOpenAPI|TestContainerPostgresTimestampResultPreservesJSONContract)$$' -timeout 30m -count=1 -args -onprest-it-db=all
+	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -run '^TestContainerDBDriver' -timeout 30m -count=1 -args -onprest-it-db=all
 
 test-it-docker-ops:
 	ONPREST_IT_DOCKER=1 go test -tags=integration ./it/... -run '^TestDockerTargetsBuildWhenDockerIntegrationEnabled$$' -count=1 -v

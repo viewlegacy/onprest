@@ -19,7 +19,7 @@ import (
 	agentpkg "github.com/viewlegacy/onprest/internal/agent"
 )
 
-func TestContainerPostgresNullableResultMatchesGeneratedOpenAPI(t *testing.T) {
+func TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI(t *testing.T) {
 	if !selectedDBForTest(t, "postgres") {
 		return
 	}

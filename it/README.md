@@ -42,10 +42,10 @@ Runs `TestPostgresDBUnreachableDuringQuery` five times. Use this when changing D
 make test-it-all-db
 ```
 
-Runs all `TestContainerDBDriver.*` cases for PostgreSQL, MySQL, SQL Server, and Oracle, plus `TestContainerOracleTransactionStartIsImmediateAndRollbackable`, `TestContainerPostgresNullableResultMatchesGeneratedOpenAPI`, and `TestContainerPostgresTimestampResultPreservesJSONContract`, with `ONPREST_IT_REQUIRE_CONTAINERS=1` and a 30-minute timeout. The exact current filter is:
+Runs all `TestContainerDBDriver*` cases for PostgreSQL, MySQL, SQL Server, and Oracle with `ONPREST_IT_REQUIRE_CONTAINERS=1` and a 30-minute timeout. The common prefix includes the Oracle transaction-start contract and the PostgreSQL nullable OpenAPI and timestamp compatibility cases. The exact current filter is:
 
 ```text
--run '^(TestContainerDBDriver.*|TestContainerOracleTransactionStartIsImmediateAndRollbackable|TestContainerPostgresNullableResultMatchesGeneratedOpenAPI|TestContainerPostgresTimestampResultPreservesJSONContract)$'
+-run '^TestContainerDBDriver'
 ```
 
 This adds real Oracle transaction-start cancellation, real Agent nullable-response/OpenAPI 3.1 validation, and the PostgreSQL timestamp JSON/timezone compatibility contract to the four-driver matrix. SQL Server and Oracle can take a long time, especially on first image pull.

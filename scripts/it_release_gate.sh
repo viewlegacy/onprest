@@ -91,7 +91,7 @@ run_go_json_no_skip "postgres-db-interruption-stability" \
 
 run_go_json_no_skip "all-db-conformance" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^(TestContainerDBDriver.*|TestContainerOracleTransactionStartIsImmediateAndRollbackable|TestContainerPostgresNullableResultMatchesGeneratedOpenAPI|TestContainerPostgresTimestampResultPreservesJSONContract)$' -timeout 30m -count=1 -args -onprest-it-db=all
+	go test -json -tags=integration ./it/... -run '^TestContainerDBDriver' -timeout 30m -count=1 -args -onprest-it-db=all
 
 run_go_json_no_skip "postgres-tls-contract" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \

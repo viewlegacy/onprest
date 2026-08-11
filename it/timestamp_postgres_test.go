@@ -11,7 +11,7 @@ import (
 	agentpkg "github.com/viewlegacy/onprest/internal/agent"
 )
 
-func TestContainerPostgresTimestampResultPreservesJSONContract(t *testing.T) {
+func TestContainerDBDriverPostgresTimestampResultPreservesJSONContract(t *testing.T) {
 	if !selectedDBForTest(t, "postgres") {
 		return
 	}

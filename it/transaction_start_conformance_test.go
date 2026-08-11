@@ -67,7 +67,7 @@ func TestContainerDBDriverTransactionStartCancellationConformance(t *testing.T) 
 	}
 }
 
-func TestContainerOracleTransactionStartIsImmediateAndRollbackable(t *testing.T) {
+func TestContainerDBDriverOracleTransactionStartIsImmediateAndRollbackable(t *testing.T) {
 	if !selectedDBForTest(t, "oracle") {
 		return
 	}
