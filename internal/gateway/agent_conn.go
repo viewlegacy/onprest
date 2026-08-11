@@ -297,18 +297,7 @@ func (s *Server) writeAgent(ac *agentConn) {
 			continue
 		default:
 		}
-		if deadlineConn, ok := ac.conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
-			if err := deadlineConn.SetWriteDeadline(time.Now().Add(s.cfg.AgentWriteTimeout)); err != nil {
-				write.result <- err
-				ac.finishSendState(write.id)
-				if write.cancel != nil {
-					write.cancel()
-				}
-				_ = ac.conn.Close()
-				return
-			}
-		}
-		err := ac.conn.WriteText(write.payload)
+		err := ac.conn.WriteTextWithDeadline(write.payload, s.cfg.AgentWriteTimeout)
 		write.result <- err
 		if write.cancel != nil {
 			write.cancel()
@@ -350,11 +339,7 @@ func (s *Server) keepAgentAlive(ac *agentConn) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := conn.SetWriteDeadline(time.Now().Add(s.cfg.AgentWriteTimeout)); err != nil {
-				_ = conn.Close()
-				return
-			}
-			if err := conn.WritePing([]byte("onprest-keepalive")); err != nil {
+			if err := conn.WritePingWithDeadline([]byte("onprest-keepalive"), s.cfg.AgentWriteTimeout); err != nil {
 				_ = conn.Close()
 				return
 			}

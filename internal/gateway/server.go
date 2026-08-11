@@ -74,14 +74,14 @@ type cachedAPIKey struct {
 type textConn interface {
 	ReadText() ([]byte, error)
 	WriteText([]byte) error
+	WriteTextWithDeadline([]byte, time.Duration) error
 	Close() error
 }
 
 type deadlineTextConn interface {
 	textConn
 	SetReadDeadline(time.Time) error
-	SetWriteDeadline(time.Time) error
-	WritePing([]byte) error
+	WritePingWithDeadline([]byte, time.Duration) error
 	SetPongHandler(func())
 }
 

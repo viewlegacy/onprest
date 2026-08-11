@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -160,6 +161,74 @@ func TestWriteDeadlineAndCloseUnblockCommunicationBlackhole(t *testing.T) {
 	}
 }
 
+func TestTextAndPingDeadlinesStayInsideSerializedFrameWrite(t *testing.T) {
+	nc := &deadlineTrackingConn{writeStarted: make(chan struct{}), releaseWrite: make(chan struct{})}
+	pingAtWriteLock := make(chan struct{})
+	conn := &Conn{
+		c:  nc,
+		br: bufio.NewReader(nc),
+		beforeWriteLock: func(op byte) {
+			if op == 9 {
+				close(pingAtWriteLock)
+			}
+		},
+	}
+	textDone := make(chan error, 1)
+	go func() { textDone <- conn.WriteTextWithDeadline([]byte("text"), time.Second) }()
+	select {
+	case <-nc.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("text write did not start")
+	}
+	pingDone := make(chan error, 1)
+	go func() {
+		pingDone <- conn.WritePingWithDeadline([]byte("ping"), time.Second)
+	}()
+	select {
+	case <-pingAtWriteLock:
+	case <-time.After(time.Second):
+		t.Fatal("ping did not reach the atomic helper immediately before writeMu")
+	}
+	nc.mu.Lock()
+	blockedEvents := append([]string(nil), nc.events...)
+	nc.mu.Unlock()
+	if got := fmt.Sprint(blockedEvents); got != fmt.Sprint([]string{"deadline:set", "write:1:deadline-set"}) {
+		t.Fatalf("ping mutated the deadline outside writeMu while text was blocked: events=%v", blockedEvents)
+	}
+
+	// The hook proves that the ping reached the exact point immediately before
+	// writeMu while the text frame still owns it. Releasing the underlying
+	// write only after that observation makes the interleave deterministic.
+	close(nc.releaseWrite)
+	if err := <-textDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-pingDone; err != nil {
+		t.Fatal(err)
+	}
+	nc.mu.Lock()
+	events := append([]string(nil), nc.events...)
+	nc.mu.Unlock()
+	want := []string{"deadline:set", "write:1:deadline-set", "deadline:clear", "deadline:set", "write:9:deadline-set", "deadline:clear"}
+	if fmt.Sprint(events) != fmt.Sprint(want) {
+		t.Fatalf("events=%v want=%v", events, want)
+	}
+}
+
+func TestPingDeadlineUnblocksCommunicationBlackhole(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	conn := &Conn{c: local, br: bufio.NewReader(local), isClient: true}
+	start := time.Now()
+	if err := conn.WritePingWithDeadline([]byte("ping"), 50*time.Millisecond); err == nil {
+		t.Fatal("blackholed ping succeeded")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("ping deadline took %s", elapsed)
+	}
+	_ = conn.Close()
+}
+
 func TestCloseUnblocksConcurrentWriteWithoutDeadline(t *testing.T) {
 	local, remote := net.Pipe()
 	defer remote.Close()
@@ -228,6 +297,52 @@ type memoryConn struct {
 	written    bytes.Buffer
 	maxWrite   int
 	closeCount int
+}
+
+type deadlineTrackingConn struct {
+	mu           sync.Mutex
+	deadline     time.Time
+	events       []string
+	writeStarted chan struct{}
+	releaseWrite chan struct{}
+	startOnce    sync.Once
+	reader       bytes.Reader
+}
+
+func (c *deadlineTrackingConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+func (c *deadlineTrackingConn) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	op := byte(0)
+	if len(p) > 0 {
+		op = p[0] & 0x0f
+	}
+	state := "deadline-clear"
+	if !c.deadline.IsZero() {
+		state = "deadline-set"
+	}
+	c.events = append(c.events, fmt.Sprintf("write:%d:%s", op, state))
+	c.mu.Unlock()
+	if op == 1 {
+		c.startOnce.Do(func() { close(c.writeStarted) })
+		<-c.releaseWrite
+	}
+	return len(p), nil
+}
+func (c *deadlineTrackingConn) Close() error                    { return nil }
+func (c *deadlineTrackingConn) LocalAddr() net.Addr             { return testAddr("local") }
+func (c *deadlineTrackingConn) RemoteAddr() net.Addr            { return testAddr("remote") }
+func (c *deadlineTrackingConn) SetDeadline(time.Time) error     { return nil }
+func (c *deadlineTrackingConn) SetReadDeadline(time.Time) error { return nil }
+func (c *deadlineTrackingConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	c.deadline = deadline
+	if deadline.IsZero() {
+		c.events = append(c.events, "deadline:clear")
+	} else {
+		c.events = append(c.events, "deadline:set")
+	}
+	c.mu.Unlock()
+	return nil
 }
 
 func newMemoryConn(input []byte, maxWrite int) *memoryConn {

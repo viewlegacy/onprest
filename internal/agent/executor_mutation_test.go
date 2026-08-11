@@ -18,7 +18,7 @@ import (
 
 	mssql "github.com/denisenkom/go-mssqldb"
 	"github.com/go-sql-driver/mysql"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sijms/go-ora/v2/network"
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
@@ -32,6 +32,10 @@ type mutationDriverState struct {
 	beginCtx                                 context.Context
 	execErr, rowsErr, commitErr, rollbackErr error
 	beginErr                                 error
+	beginStarted                             chan struct{}
+	beginRelease                             chan struct{}
+	beginStartOnce                           sync.Once
+	beginSucceedAfterCancel                  bool
 	rows                                     int64
 	rollbackCtxErr                           error
 	execStarted                              chan struct{}
@@ -66,11 +70,180 @@ func (c *mutationTestConn) Begin() (driver.Tx, error) {
 func (c *mutationTestConn) BeginTx(ctx context.Context, _ driver.TxOptions) (driver.Tx, error) {
 	c.state.call("begin")
 	c.state.beginCtx = ctx
+	if c.state.beginStarted != nil {
+		c.state.beginStartOnce.Do(func() { close(c.state.beginStarted) })
+	}
+	if c.state.beginRelease != nil {
+		select {
+		case <-c.state.beginRelease:
+		case <-ctx.Done():
+			if c.state.beginSucceedAfterCancel {
+				<-c.state.beginRelease
+			} else {
+				return nil, ctx.Err()
+			}
+		}
+	}
 	if c.state.beginErr != nil {
 		return nil, c.state.beginErr
 	}
 	return &mutationTestTx{state: c.state}, nil
 }
+
+func TestBeginMutationTxPoolAcquisitionAndDriverStartupAreBounded(t *testing.T) {
+	t.Run("pool acquisition", func(t *testing.T) {
+		state := &mutationDriverState{}
+		runner := mutationRunner(t, state)
+		runner.db.SetMaxOpenConns(1)
+		held, err := runner.db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Close()
+		execCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		_, beginState, err := beginMutationTx(t.Context(), execCtx, runner.db)
+		if !errors.Is(err, context.DeadlineExceeded) || beginState != beginNotStarted {
+			t.Fatalf("state=%v error=%v", beginState, err)
+		}
+		if time.Since(start) > time.Second {
+			t.Fatalf("pool acquisition did not return promptly: %s", time.Since(start))
+		}
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		if len(state.calls) != 0 {
+			t.Fatalf("driver begin was reached: %v", state.calls)
+		}
+	})
+
+	t.Run("driver startup", func(t *testing.T) {
+		state := &mutationDriverState{beginStarted: make(chan struct{}), beginRelease: make(chan struct{})}
+		runner := mutationRunner(t, state)
+		execCtx, cancel := context.WithCancel(t.Context())
+		result := make(chan *mutationFailure, 1)
+		go func() {
+			_, _, failure := runner.executeMutation(t.Context(), execCtx, CapabilityDef{Policy: PolicyDef{MaxBytes: "128KB"}}, "update t set v=1", nil)
+			result <- failure
+		}()
+		select {
+		case <-state.beginStarted:
+		case <-time.After(time.Second):
+			t.Fatal("BeginTx did not start")
+		}
+		cancel()
+		select {
+		case failure := <-result:
+			if failure == nil || failure.code != errorOutcomeUnknown {
+				t.Fatalf("failure=%+v", failure)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("canceled BeginTx did not return")
+		}
+	})
+
+	t.Run("transaction start and cancellation race never commits", func(t *testing.T) {
+		for iteration := range 100 {
+			func() {
+				state := &mutationDriverState{
+					beginStarted:            make(chan struct{}),
+					beginRelease:            make(chan struct{}),
+					beginSucceedAfterCancel: true,
+					rollbackDone:            make(chan struct{}),
+				}
+				runner := mutationRunnerWithoutCleanup(t, state)
+				defer runner.db.Close()
+				runner.db.SetMaxOpenConns(1)
+				execCtx, cancel := context.WithCancel(t.Context())
+				type beginResult struct {
+					mtx   *mutationTx
+					state beginState
+					err   error
+				}
+				result := make(chan beginResult, 1)
+				go func() {
+					mtx, beginState, err := beginMutationTx(t.Context(), execCtx, runner.db)
+					result <- beginResult{mtx: mtx, state: beginState, err: err}
+				}()
+				select {
+				case <-state.beginStarted:
+				case <-time.After(time.Second):
+					t.Fatalf("iteration %d: BeginTx did not start", iteration)
+				}
+
+				// Make cancellation observable inside the driver before it returns a
+				// Tx. This deterministically exercises the successful BeginTx return
+				// after the start gate watcher won cancellation.
+				cancel()
+				select {
+				case <-state.beginCtx.Done():
+				case <-time.After(time.Second):
+					t.Fatalf("iteration %d: start gate watcher did not cancel driver context", iteration)
+				}
+				close(state.beginRelease)
+
+				var got beginResult
+				select {
+				case got = <-result:
+				case <-time.After(time.Second):
+					t.Fatalf("iteration %d: transaction start race did not terminate", iteration)
+				}
+				if got.mtx == nil || got.state != beginCanceledWithTx || !errors.Is(got.err, context.Canceled) {
+					t.Fatalf("iteration %d: result=%+v, want canceled transaction requiring rollback", iteration, got)
+				}
+				select {
+				case <-got.mtx.startWatcherDone:
+				default:
+					t.Fatalf("iteration %d: transaction start watcher survived beginMutationTx return", iteration)
+				}
+				rb := rollbackMutation(got.mtx.tx)
+				if rb.state != rollbackConfirmed && rb.state != rollbackAlreadyDone {
+					t.Fatalf("iteration %d: rollback=%+v", iteration, rb)
+				}
+				got.mtx.close()
+				select {
+				case <-state.rollbackDone:
+				case <-time.After(time.Second):
+					t.Fatalf("iteration %d: rollback did not complete", iteration)
+				}
+				state.mu.Lock()
+				calls := append([]string(nil), state.calls...)
+				state.mu.Unlock()
+				rollbackCount, commitCount := 0, 0
+				for _, call := range calls {
+					switch call {
+					case "rollback":
+						rollbackCount++
+					case "commit":
+						commitCount++
+					}
+				}
+				if rollbackCount != 1 || commitCount != 0 {
+					t.Fatalf("iteration %d: calls=%v, want exactly one rollback and no commit", iteration, calls)
+				}
+				reacquireCtx, cancelReacquire := context.WithTimeout(t.Context(), time.Second)
+				reacquired, err := runner.db.Conn(reacquireCtx)
+				cancelReacquire()
+				if err != nil {
+					t.Fatalf("iteration %d: reacquire dedicated connection: %v", iteration, err)
+				}
+				if stats := runner.db.Stats(); stats.InUse != 1 {
+					t.Fatalf("iteration %d: reacquired connection not checked out: %+v", iteration, stats)
+				}
+				if err := reacquired.Close(); err != nil {
+					t.Fatalf("iteration %d: return reacquired connection: %v", iteration, err)
+				}
+				if stats := runner.db.Stats(); stats.InUse != 0 {
+					t.Fatalf("iteration %d: reacquired dedicated connection not returned: %+v", iteration, stats)
+				}
+				if err := runner.db.Close(); err != nil {
+					t.Fatalf("iteration %d: close iteration database: %v", iteration, err)
+				}
+			}()
+		}
+	})
+}
+
 func (c *mutationTestConn) ExecContext(ctx context.Context, _ string, _ []driver.NamedValue) (driver.Result, error) {
 	c.state.call("exec")
 	if c.state.execStarted != nil {
@@ -293,13 +466,19 @@ func (r mutationTestResult) RowsAffected() (int64, error) {
 
 func mutationRunner(t *testing.T, state *mutationDriverState) *Runner {
 	t.Helper()
+	runner := mutationRunnerWithoutCleanup(t, state)
+	t.Cleanup(func() { _ = runner.db.Close() })
+	return runner
+}
+
+func mutationRunnerWithoutCleanup(t *testing.T, state *mutationDriverState) *Runner {
+	t.Helper()
 	name := fmt.Sprintf("onprest-mutation-test-%d", mutationDriverSequence.Add(1))
 	sql.Register(name, mutationTestDriver{state: state})
 	db, err := sql.Open(name, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 	return &Runner{db: db, cf: &CapabilityFile{Database: DatabaseDef{Driver: "postgres"}}, detailLog: io.Discard}
 }
 
@@ -321,7 +500,7 @@ func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 		{name: "rollback unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback"},
 		{name: "rollback tx done unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: sql.ErrTxDone}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback"},
 		{name: "commit unknown", state: mutationDriverState{rows: 2, commitErr: errors.New("commit")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit"},
-		{name: "cancel before exec", state: mutationDriverState{}, cancel: true, wantCode: "AGENT_QUERY_TIMEOUT", wantCalls: "begin,rollback"},
+		{name: "cancel before pool acquisition", state: mutationDriverState{}, cancel: true, wantCode: "AGENT_QUERY_TIMEOUT", wantCalls: ""},
 	}
 	for i := range tests {
 		tc := &tests[i]
@@ -506,7 +685,7 @@ func TestClassifyDBConstraintErrors(t *testing.T) {
 		driver string
 		err    error
 	}{
-		{"postgres", &pq.Error{Code: "23505"}},
+		{"postgres", &pgconn.PgError{Code: "23505"}},
 		{"mysql", &mysql.MySQLError{Number: 1062}},
 		{"sqlserver", mssql.Error{Number: 2627}},
 		{"oracle", network.NewOracleError(1)},
@@ -515,7 +694,7 @@ func TestClassifyDBConstraintErrors(t *testing.T) {
 			t.Fatalf("%s constraint=%q", tc.driver, got)
 		}
 	}
-	if got := classifyDBError("postgres", &pq.Error{Code: "42000"}); got != "" {
+	if got := classifyDBError("postgres", &pgconn.PgError{Code: "42000"}); got != "" {
 		t.Fatalf("non-constraint=%q", got)
 	}
 }

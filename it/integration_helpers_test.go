@@ -19,11 +19,26 @@ import (
 	"testing"
 	"time"
 
+	agentpkg "github.com/viewlegacy/onprest/internal/agent"
 	"github.com/viewlegacy/onprest/internal/gateway"
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 	"golang.org/x/crypto/bcrypt"
 )
+
+func TestGeneratedIntegrationCapabilityFixturesStillLoad(t *testing.T) {
+	secrets := newITSecrets(t)
+	for _, driver := range []string{"postgres", "mysql", "sqlserver", "oracle"} {
+		t.Run(driver, func(t *testing.T) {
+			path := writeContainerCapability(t, t.TempDir(), driver, postgresConfig{
+				Host: "127.0.0.1", Port: "1234", Name: "fixture", User: "fixture", Password: "fixture",
+			}, "ws://127.0.0.1:8080/ws/agent", secrets.AgentPrivateKey, "select :id as id, 'name' as name, 'email' as email")
+			if _, err := agentpkg.LoadCapabilityFile(path); err != nil {
+				t.Fatalf("load generated %s integration fixture: %v", driver, err)
+			}
+		})
+	}
+}
 
 type itSecrets struct {
 	AgentPublicKey  string

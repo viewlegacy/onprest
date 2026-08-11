@@ -169,7 +169,7 @@ TLS support is driver-specific:
 
 | Driver | Supported `tls.mode` | Behavior |
 |---|---|---|
-| PostgreSQL | `disable`, `require`, `verify-ca`, `verify-full` | Uses lib/pq TLS settings. Set `ca_file` for a private CA; client certificate and key are optional but must be supplied together. |
+| PostgreSQL | `disable`, `require`, `verify-ca`, `verify-full` | Uses pgx TLS settings. Set `ca_file` for a private CA; client certificate and key are optional but must be supplied together. |
 | SQL Server | `disable`, `require`, `verify-full` | `require` encrypts while trusting the presented server certificate. `verify-full` verifies the certificate trust chain plus `server_name` or `host`; set `ca_file` for a private CA. |
 | MySQL / Oracle | `disable` only | Non-disabled TLS is rejected at startup; this avoids silently pretending that the generated connection is verified. |
 
@@ -232,7 +232,9 @@ Unknown params are rejected.
 
 `minimum` and `maximum` are integer-valued bounds and apply to `integer` and `number` params. JSON integer tokens are converted exactly through signed 64-bit integers, including values above JavaScript's 2^53 precision boundary; fractional and int64-overflow values are rejected. `number` also rejects non-finite values.
 
-`format` accepts only the five values listed above; any other value is rejected at startup. `minLength` and `maxLength` must be `0` or greater, and `minLength` must not exceed `maxLength`.
+`minimum`/`maximum` are valid only for `integer` and `number`, and `minimum` must not exceed `maximum`. `minLength`, `maxLength`, `pattern`, and `format` are valid only for `string`; explicitly setting an empty `pattern: ""` or `format: ""` on another type is still invalid, while the same empty values remain valid for a string parameter. `format` otherwise accepts only the five values listed above; any other value is rejected at startup. `minLength` and `maxLength` must be `0` or greater, and `minLength` must not exceed `maxLength`. The agent also validates every `default` and `enum` member against its declared type and constraints during startup, before connecting to the gateway or running DB EXPLAIN. An explicit `default: null` is invalid for every supported parameter type; omit `default` when no default value is intended.
+
+Parameter definitions retain yaml.v3 anchor, alias, and `<<` merge behavior, including merge sequences. A field written directly on the parameter overrides the merged value. Only a YAML merge-tagged `<<` key is merge syntax; a quoted `"<<"` is an ordinary unknown field and is rejected. Startup lint evaluates the effective merged definition, including whether `default`, `pattern`, or `format` was present, and rejects cyclic merges and unknown fields in either a merge source or the direct mapping.
 
 ## Policy
 
@@ -248,7 +250,7 @@ Unknown params are rejected.
 
 Use read-only DB users for read capabilities. YAML policy is an application guard; DB privileges should still enforce least privilege.
 
-`timeout` accepts a Go duration string such as `5s` or `500ms`. `max_bytes` uses the same exact non-negative integer byte-size grammar as `logging.max_size`.
+`timeout` accepts a positive Go duration string such as `5s` or `500ms`; zero and negative durations are startup errors. `max_rows` must be a positive integer when specified, so explicit `0` does not fall back to the default. `max_bytes` uses the same suffix syntax as `logging.max_size`, but requires a positive integer rather than allowing zero.
 
 For every operation, startup lint rejects another statement after the first, such as `SELECT 1; UPDATE customers SET ...`. One trailing semicolon is allowed. Quote scanning follows the configured driver: ordinary SQL strings use doubled quotes and never treat backslash as a quote escape; PostgreSQL explicit `E'...'` strings support backslash escaping; PostgreSQL dollar quotes, PostgreSQL and SQL Server nested block comments, SQL Server bracket identifiers, MySQL backticks, and Oracle alternative `q'...'` quotes are recognized. This conservative rule also prevents `SELECT '\'; UPDATE ...` from bypassing lint when a server or SQL mode treats the backslash literally. Statements beginning with `WITH` are rejected, including read-only CTEs. `timeout` and `max_bytes` apply to SELECT and DML; `max_rows` applies only to SELECT.
 
@@ -260,6 +262,7 @@ For every operation, startup lint rejects another statement after the first, suc
 - If SQL does not return a column listed in `result`, execution fails.
 - If `result` is omitted, row object fields are not returned.
 - Even with `SELECT *`, only result-listed columns can leave the agent boundary.
+- A listed column is always present in each returned row. SQL `NULL` is returned as JSON `null`, and the OpenAPI 3.1 response schema allows both the declared type and `null` for that property.
 
 This is the final guard that prevents accidental exposure of extra columns.
 

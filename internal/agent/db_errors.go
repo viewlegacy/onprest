@@ -5,7 +5,7 @@ import (
 
 	mssql "github.com/denisenkom/go-mssqldb"
 	"github.com/go-sql-driver/mysql"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sijms/go-ora/v2/network"
 )
 
@@ -20,8 +20,8 @@ func classifyDBError(driver string, err error) string {
 	}
 	switch driver {
 	case "postgres":
-		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && len(pqErr.Code) >= 2 && string(pqErr.Code[:2]) == "23" {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && len(pgErr.Code) >= 2 && pgErr.Code[:2] == "23" {
 			return errorConstraintViolation
 		}
 	case "mysql":

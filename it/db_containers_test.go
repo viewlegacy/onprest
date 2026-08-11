@@ -18,7 +18,7 @@ import (
 
 	_ "github.com/denisenkom/go-mssqldb"
 	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	_ "github.com/sijms/go-ora/v2"
@@ -316,7 +316,7 @@ func normalizeContainerHost(host string) string {
 }
 
 func createPostgresReadOnlyUser(ctx context.Context, admin, readonly postgresConfig) error {
-	db, err := sql.Open("postgres", postgresDSN(admin))
+	db, err := sql.Open(sqlDriverName("postgres"), postgresDSN(admin))
 	if err != nil {
 		return err
 	}
@@ -379,6 +379,9 @@ func seedCustomerTable(t *testing.T, driver string, cfg postgresConfig) {
 }
 
 func sqlDriverName(driver string) string {
+	if driver == "postgres" {
+		return "pgx"
+	}
 	return driver
 }
 

@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +18,8 @@ import (
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 )
+
+const maxAgentChallengeResponseBytes = 4 << 10
 
 func fetchAgentChallenge(ctx context.Context, gatewayURL string) (string, error) {
 	u, err := url.Parse(gatewayURL)
@@ -47,13 +52,35 @@ func fetchAgentChallenge(ctx context.Context, gatewayURL string) (string, error)
 	var body struct {
 		Challenge string `json:"challenge"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := decodeBoundedAgentJSON(resp.Body, maxAgentChallengeResponseBytes, &body); err != nil {
 		return "", fmt.Errorf("decode agent challenge: %w", err)
 	}
 	if body.Challenge == "" {
 		return "", fmt.Errorf("gateway returned an empty agent challenge")
 	}
 	return body.Challenge, nil
+}
+
+func decodeBoundedAgentJSON(r io.Reader, limit int64, dst any) error {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(body)) > limit {
+		return fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("response contains multiple JSON values")
+		}
+		return fmt.Errorf("response contains trailing data: %w", err)
+	}
+	return nil
 }
 
 func setAgentAuthHeaders(headers http.Header, privateKeyRaw, path, challenge string) error {

@@ -1,6 +1,6 @@
 # Gateway Logs
 
-The gateway writes JSON Lines to stdout. Logs are designed for collection by a process manager, container runtime, log drain, or managed dashboard pipeline. Concurrent request and control events are serialized one complete JSON record at a time, so a collector never receives interleaved fragments from two events.
+The gateway writes JSON Lines to stdout. Logs are designed for collection by a process manager, container runtime, or log drain. Concurrent request and control events are serialized one complete JSON record at a time, so a collector never receives interleaved fragments from two events.
 
 ## Request Event
 

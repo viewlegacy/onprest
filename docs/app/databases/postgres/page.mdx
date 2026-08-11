@@ -2,7 +2,7 @@
 
 Use `database.driver: postgres`.
 
-INSERT/UPDATE/DELETE startup validation uses `EXPLAIN` and does not execute or commit the mutation. PostgreSQL `ON CONFLICT` is supported when it does not use `RETURNING`; returned count is lib/pq's native `RowsAffected()` value.
+INSERT/UPDATE/DELETE startup validation uses `EXPLAIN` and does not execute or commit the mutation. PostgreSQL `ON CONFLICT` is supported when it does not use `RETURNING`; returned count is the PostgreSQL driver's native `RowsAffected()` value.
 
 ```yaml
 database:
@@ -32,6 +32,10 @@ sql: select id, name from customers where id = :customer_id
 PostgreSQL capabilities are checked with `EXPLAIN` during agent startup.
 
 If EXPLAIN fails, the agent does not connect to gateway. Detail stays in `onprest-agent.log`.
+
+## Timestamp Results
+
+When a PostgreSQL `timestamp without time zone` column is declared as `type: string` in a capability result, the agent preserves the timezone-free compatibility representation, for example `2026-03-15 17:45:47.123456 +0000 +0000`. A `timestamp with time zone` result uses the PostgreSQL session timezone, for example `2026-03-15 08:45:47.123456 +0000 UTC` in a UTC session. These values do not depend on the agent process timezone. SQL `NULL` remains JSON `null` for either type.
 
 ## TLS
 

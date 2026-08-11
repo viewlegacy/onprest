@@ -52,7 +52,7 @@ Content-Type: application/json
 }
 ```
 
-The exact result shape comes from the agent capability execution. Row fields are limited by the capability `result` allow-list.
+The exact result shape comes from the agent capability execution. Row fields are limited by the capability `result` allow-list. Every listed field is present; a database `NULL` value is returned as JSON `null`, and the generated OpenAPI 3.1 response schema permits `null` alongside the field's declared type.
 
 ## Failure Response
 

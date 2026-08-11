@@ -9,6 +9,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/viewlegacy/onprest/internal/protocol"
@@ -61,7 +63,7 @@ func responseKinds(cf *CapabilityFile) map[string]string {
 }
 
 func (r *Runner) executeSelect(ctx, parent context.Context, req protocol.Request, cap CapabilityDef, query string, args []any) protocol.Response {
-	rows, cols, err := queryRows(ctx, r.db, query, args, cap.Policy.MaxRows)
+	rows, cols, err := queryRows(ctx, r.db, query, args, resolvedMaxRows(cap.Policy))
 	if err != nil {
 		if ctx.Err() != nil {
 			return r.errorResponse(req, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail, queryTimeoutDetail)
@@ -93,27 +95,129 @@ func (r *Runner) executeSelect(ctx, parent context.Context, req protocol.Request
 
 type mutationFailure struct{ code, message, detail string }
 
-func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap CapabilityDef, query string, args []any) (json.RawMessage, int64, *mutationFailure) {
-	txLifetimeCtx, releaseTx := context.WithCancel(context.WithoutCancel(requestCtx))
-	tx, err := r.db.BeginTx(txLifetimeCtx, &sql.TxOptions{Isolation: sql.LevelDefault})
+type beginState int
+
+const (
+	beginNotStarted beginState = iota
+	beginStarted
+	beginCanceledWithTx
+	beginOutcomeUnknown
+)
+
+type mutationTx struct {
+	conn             *sql.Conn
+	tx               *sql.Tx
+	startWatcherDone <-chan struct{}
+	releaseOnce      sync.Once
+	release          context.CancelFunc
+}
+
+func (m *mutationTx) close() {
+	if m == nil {
+		return
+	}
+	m.releaseOnce.Do(func() {
+		m.release()
+		_ = m.conn.Close()
+	})
+}
+
+// beginMutationTx bounds both pool acquisition and driver transaction startup
+// with execCtx without attaching the execution deadline to the established
+// transaction. The gate is disarmed atomically when BeginTx succeeds, leaving
+// the transaction alive until explicit commit/rollback completes.
+func beginMutationTx(requestCtx, execCtx context.Context, db *sql.DB) (*mutationTx, beginState, error) {
+	conn, err := db.Conn(execCtx)
 	if err != nil {
-		releaseTx()
+		return nil, beginNotStarted, err
+	}
+
+	lifetimeCtx, releaseLifetime := context.WithCancel(context.WithoutCancel(requestCtx))
+	startCtx, cancelStart := context.WithCancelCause(lifetimeCtx)
+	var gate atomic.Int32 // 0=pending, 1=started, 2=execution canceled
+	stop := make(chan struct{})
+	watcherDone := make(chan struct{})
+	var stopOnce sync.Once
+	stopWatcher := func() {
+		stopOnce.Do(func() { close(stop) })
+		<-watcherDone
+	}
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-execCtx.Done():
+			if gate.CompareAndSwap(0, 2) {
+				cancelStart(execCtx.Err())
+			}
+		case <-stop:
+		}
+	}()
+	if err := execCtx.Err(); err != nil && gate.CompareAndSwap(0, 2) {
+		cancelStart(err)
+	}
+
+	tx, err := conn.BeginTx(startCtx, &sql.TxOptions{Isolation: sql.LevelDefault})
+	if err == nil {
+		startedFirst := gate.CompareAndSwap(0, 1)
+		stopWatcher()
+		m := &mutationTx{
+			conn:             conn,
+			tx:               tx,
+			startWatcherDone: watcherDone,
+			release: func() {
+				cancelStart(context.Canceled)
+				releaseLifetime()
+			},
+		}
+		if startedFirst {
+			return m, beginStarted, nil
+		}
+		return m, beginCanceledWithTx, execCtx.Err()
+	}
+
+	canceledFirst := gate.Load() == 2
+	if !canceledFirst {
+		gate.CompareAndSwap(0, 1)
+	}
+	stopWatcher()
+	cancelStart(context.Canceled)
+	releaseLifetime()
+	_ = conn.Close()
+	if canceledFirst {
+		return nil, beginOutcomeUnknown, err
+	}
+	return nil, beginNotStarted, err
+}
+
+func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap CapabilityDef, query string, args []any) (json.RawMessage, int64, *mutationFailure) {
+	mtx, state, err := beginMutationTx(requestCtx, execCtx, r.db)
+	if err != nil {
+		if state == beginOutcomeUnknown {
+			return nil, 0, &mutationFailure{errorOutcomeUnknown, "transaction outcome is unknown", err.Error()}
+		}
+		if execCtx.Err() != nil {
+			return nil, 0, &mutationFailure{"AGENT_QUERY_TIMEOUT", queryTimeoutDetail, execCtx.Err().Error()}
+		}
 		if isDBUnreachable(err) {
 			return nil, 0, &mutationFailure{"AGENT_DB_UNREACHABLE", "database is unreachable", err.Error()}
 		}
 		return nil, 0, &mutationFailure{"AGENT_QUERY_FAILED", "database query failed", err.Error()}
 	}
+	tx := mtx.tx
 	terminal := false
 	defer func() {
 		if !terminal {
 			_ = tx.Rollback()
 		}
-		releaseTx()
+		mtx.close()
 	}()
 	failAfterRollback := func(original error, code, message string) (json.RawMessage, int64, *mutationFailure) {
 		rb := rollbackMutation(tx)
 		terminal = true
 		return nil, 0, mutationFailureForRollback(original, rb, code, message)
+	}
+	if state == beginCanceledWithTx {
+		return failAfterRollback(execCtx.Err(), "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
 	}
 	result, err := tx.ExecContext(execCtx, query, args...)
 	if err != nil {
@@ -488,5 +592,8 @@ func (r *Runner) dbReachable(parent context.Context) bool {
 }
 
 func driverName(driver string) string {
+	if driver == "postgres" {
+		return "pgx"
+	}
 	return driver
 }

@@ -26,7 +26,7 @@ PostgreSQL operation-readiness gate. This runs the PostgreSQL integration suite 
 make test-it-release-gate
 ```
 
-Final OSS core release gate. This runs unit tests, PostgreSQL CI, PostgreSQL DB interruption stability, all-DB smoke, the MySQL special-credential connection, SQL Server real TLS verification, Docker image operations, Docker Compose operations, test/subtest skip detection, and testcontainers leftover detection. Package-level `go test -json` skip records without a `Test` field are not test skips.
+Final OSS core release gate. In addition to unit, PostgreSQL CI, and interruption stability checks, it runs all-DB conformance, PostgreSQL and SQL Server real TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. The canonical step-by-step coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
 
 ## Support Commands
 
@@ -42,7 +42,13 @@ Runs `TestPostgresDBUnreachableDuringQuery` five times. Use this when changing D
 make test-it-all-db
 ```
 
-Runs every integration test whose name begins `TestContainerDBDriver` for PostgreSQL, MySQL, SQL Server, and Oracle with `ONPREST_IT_REQUIRE_CONTAINERS=1`, the exact Makefile filter `-run '^TestContainerDBDriver'`, and a 30-minute timeout. SQL Server and Oracle can take a long time, especially on first image pull.
+Runs all `TestContainerDBDriver.*` cases for PostgreSQL, MySQL, SQL Server, and Oracle, plus `TestContainerOracleTransactionStartIsImmediateAndRollbackable`, `TestContainerPostgresNullableResultMatchesGeneratedOpenAPI`, and `TestContainerPostgresTimestampResultPreservesJSONContract`, with `ONPREST_IT_REQUIRE_CONTAINERS=1` and a 30-minute timeout. The exact current filter is:
+
+```text
+-run '^(TestContainerDBDriver.*|TestContainerOracleTransactionStartIsImmediateAndRollbackable|TestContainerPostgresNullableResultMatchesGeneratedOpenAPI|TestContainerPostgresTimestampResultPreservesJSONContract)$'
+```
+
+This adds real Oracle transaction-start cancellation, real Agent nullable-response/OpenAPI 3.1 validation, and the PostgreSQL timestamp JSON/timezone compatibility contract to the four-driver matrix. SQL Server and Oracle can take a long time, especially on first image pull.
 
 The four-driver scope includes SELECT compatibility and int64 transport, INSERT/UPDATE/DELETE through Gateway REST and MCP, driver-native affected counts including zero rows, constraint-to-409 normalization with rollback and persisted-state checks, agent-policy timeout rollback, gateway-timeout cancellation/state verification, startup DML EXPLAIN and runtime least-privilege failures, SQL lint bypass resistance, output limits, private driver errors, and unreachable-DB startup failure. Broader Gateway authentication, reconnect, OpenAPI, Docker packaging, and process-lifecycle depth remains in the PostgreSQL and operational suites.
 
@@ -84,18 +90,7 @@ It also does not cover:
 
 ## Release Gate Details
 
-`make test-it-release-gate` runs:
-
-- `govulncheck ./...` using the scanner version pinned in `go.mod`
-- `go test ./...`
-- PostgreSQL integration suite, three consecutive runs, no skips
-- PostgreSQL DB interruption stability, five consecutive runs, no skips
-- all-DB container smoke tests, no skips
-- Docker image operational test, no skips
-- Docker Compose operational test, no skips
-- testcontainers leftover check
-
-The release gate reads Go test JSON output and fails if any test emits a skip event. Logs are written to a temporary directory by default. Set `ONPREST_IT_GATE_KEEP_LOGS=1` to keep those logs, or set `ONPREST_IT_GATE_LOG_DIR=/path/to/logs` to choose the log directory.
+`make test-it-release-gate` executes the steps documented in [Release Gate](../docs/app/operations/release-gate/page.mdx). Notably, `all-db-conformance` uses the selection above, while `postgres-tls-contract` runs `TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification` to cover PostgreSQL `disable`, `require`, `verify-ca`, and `verify-full`, private/wrong CA, hostname mismatch, and client-certificate authentication. The gate reads Go test JSON output and fails on test/subtest skips, then checks for leftover testcontainers resources. Logs are temporary by default; `ONPREST_IT_GATE_KEEP_LOGS=1` retains them and `ONPREST_IT_GATE_LOG_DIR` selects their directory.
 
 ## Skip Policy
 

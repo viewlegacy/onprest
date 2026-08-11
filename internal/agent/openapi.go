@@ -89,7 +89,10 @@ func responseSchema(cap CapabilityDef) map[string]any {
 		props := map[string]any{}
 		required := []string{}
 		for name, col := range cap.Result {
-			prop := map[string]any{"type": col.Type}
+			prop := map[string]any{"type": []any{col.Type, "null"}}
+			if col.Type == "integer" {
+				prop["format"] = "int64"
+			}
 			if col.Description != "" {
 				prop["description"] = col.Description
 			}

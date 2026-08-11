@@ -74,6 +74,10 @@ func (c *deterministicCancelTransport) WriteText(payload []byte) error {
 	return err
 }
 
+func (c *deterministicCancelTransport) WriteTextWithDeadline(payload []byte, _ time.Duration) error {
+	return c.WriteText(payload)
+}
+
 func (c *deterministicCancelTransport) Close() error {
 	c.closeOnce.Do(func() { close(c.closed) })
 	return nil

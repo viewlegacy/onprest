@@ -165,8 +165,6 @@ The gateway works when directly exposed or when placed behind any compatible rev
 
 Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. The default is `disable`. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
 
-## Managed Dashboard
+## Product Boundary
 
-The managed dashboard is not part of the OSS core. In managed environments, gateway stdout is collected through a log drain and displayed as read-only data.
-
-The dashboard does not issue API keys, register agents, or edit capabilities. Administrative operations are performed with server-side CLI commands.
+Managed products and dashboards are outside the OSS core. They are not dependencies of either OSS binary and their product or operating policies are not defined by this repository.

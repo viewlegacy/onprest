@@ -273,6 +273,73 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	}
 }
 
+func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
+	root := repoRoot(t)
+	makefile := readText(t, filepath.Join(root, "Makefile"))
+	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
+	integrationReadme := readText(t, filepath.Join(root, "it", "README.md"))
+	testCommands := readText(t, filepath.Join(root, "docs", "app", "reference", "test-commands", "page.mdx"))
+	releaseDocs := readText(t, filepath.Join(root, "docs", "app", "operations", "release-gate", "page.mdx"))
+
+	for _, name := range []string{
+		"TestContainerDBDriver.*",
+		"TestContainerOracleTransactionStartIsImmediateAndRollbackable",
+		"TestContainerPostgresNullableResultMatchesGeneratedOpenAPI",
+		"TestContainerPostgresTimestampResultPreservesJSONContract",
+	} {
+		for source, text := range map[string]string{
+			"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
+		} {
+			if !strings.Contains(text, name) {
+				t.Fatalf("%s does not include documented all-DB selection %q", source, name)
+			}
+		}
+	}
+	const postgresTLS = "TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification"
+	for source, text := range map[string]string{
+		"release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
+	} {
+		if !strings.Contains(text, postgresTLS) {
+			t.Fatalf("%s does not include PostgreSQL TLS contract %q", source, postgresTLS)
+		}
+	}
+	for source, text := range map[string]string{"test commands": testCommands, "release gate": releaseDocs} {
+		for _, coverage := range []string{"private", "hostname", "client-certificate"} {
+			if !strings.Contains(text, coverage) {
+				t.Fatalf("%s does not document PostgreSQL TLS %s coverage", source, coverage)
+			}
+		}
+	}
+	if strings.Contains(testCommands, "exact filter `^TestContainerDBDriver`") || strings.Contains(releaseDocs, "all-DB smoke path") {
+		t.Fatal("DB gate documentation retained the superseded selection")
+	}
+}
+
+func TestPublicOSSBoundaryDocsDoNotDefineManagedOperatingPolicy(t *testing.T) {
+	root := repoRoot(t)
+	paths := []string{
+		filepath.Join(root, "README.md"),
+		filepath.Join(root, "docs", "app", "operations", "deployment", "page.mdx"),
+		filepath.Join(root, "docs", "app", "architecture", "page.mdx"),
+		filepath.Join(root, "docs", "app", "security", "page.mdx"),
+	}
+	for _, path := range paths {
+		content := strings.ToLower(readText(t, path))
+		for _, forbidden := range []string{
+			"monitor agent connectivity",
+			"handle patching",
+			"retain operational logs",
+			"backend admin ui",
+			"managed dashboard is outside the oss core and is read-only",
+			"dashboard does not issue api keys",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s defines managed-only policy %q", path, forbidden)
+			}
+		}
+	}
+}
+
 func readWorkflow(t *testing.T, path string) map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(path)

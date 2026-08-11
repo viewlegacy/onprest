@@ -367,6 +367,68 @@ func TestSilentWebSocketClientExpiresAndCanReconnect(t *testing.T) {
 	waitForCondition(t, time.Second, func() bool { return s.hasAgent() }, "replacement agent connection")
 }
 
+func TestGatewayWriterAndKeepaliveUseAtomicDeadlineAPIs(t *testing.T) {
+	const writeTimeout = 73 * time.Millisecond
+	spy := newGatewayDeadlineSpy()
+	s := NewServer(Config{
+		AgentWriteTimeout: writeTimeout,
+		AgentPingInterval: 5 * time.Millisecond,
+		AgentPongTimeout:  20 * time.Millisecond,
+	}, nil)
+	ac := newAgentConn(spy)
+	defer ac.disconnectPending()
+
+	ac.mu.Lock()
+	ac.sendStates["request-1"] = &requestSendState{phase: "queued"}
+	ac.mu.Unlock()
+	writerDone := make(chan struct{})
+	go func() {
+		s.writeAgent(ac)
+		close(writerDone)
+	}()
+	writeResult := make(chan error, 1)
+	ac.send <- agentWrite{id: "request-1", payload: []byte("request payload"), result: writeResult, ctx: t.Context()}
+	select {
+	case call := <-spy.textDeadlineCalls:
+		if string(call.payload) != "request payload" || call.timeout != writeTimeout {
+			t.Fatalf("text deadline call=%+v", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gateway writer did not call WriteTextWithDeadline")
+	}
+	if err := <-writeResult; err != nil {
+		t.Fatal(err)
+	}
+
+	keepaliveDone := make(chan struct{})
+	go func() {
+		s.keepAgentAlive(ac)
+		close(keepaliveDone)
+	}()
+	select {
+	case call := <-spy.pingDeadlineCalls:
+		if string(call.payload) != "onprest-keepalive" || call.timeout != writeTimeout {
+			t.Fatalf("ping deadline call=%+v", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gateway keepalive did not call WritePingWithDeadline")
+	}
+	spy.mu.Lock()
+	plainWrites := spy.plainWrites
+	spy.mu.Unlock()
+	if plainWrites != 0 {
+		t.Fatalf("gateway regressed to plain WriteText: calls=%d", plainWrites)
+	}
+	ac.disconnectPending()
+	for name, done := range map[string]<-chan struct{}{"writer": writerDone, "keepalive": keepaliveDone} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("gateway %s goroutine did not terminate", name)
+		}
+	}
+}
+
 func TestConcurrentRequestsOnOneWebSocketDispatchOutOfOrderResponses(t *testing.T) {
 	s, _, _ := testServer(t)
 	httpServer := httptest.NewServer(s.httpSrv.Handler)
@@ -561,6 +623,52 @@ type controlledAgentConn struct {
 	payloads     [][]byte
 }
 
+type gatewayDeadlineCall struct {
+	payload []byte
+	timeout time.Duration
+}
+
+type gatewayDeadlineSpy struct {
+	mu                sync.Mutex
+	plainWrites       int
+	textDeadlineCalls chan gatewayDeadlineCall
+	pingDeadlineCalls chan gatewayDeadlineCall
+	pongHandler       func()
+}
+
+func newGatewayDeadlineSpy() *gatewayDeadlineSpy {
+	return &gatewayDeadlineSpy{
+		textDeadlineCalls: make(chan gatewayDeadlineCall, 1),
+		pingDeadlineCalls: make(chan gatewayDeadlineCall, 1),
+	}
+}
+
+func (c *gatewayDeadlineSpy) ReadText() ([]byte, error) { return nil, io.EOF }
+func (c *gatewayDeadlineSpy) WriteText([]byte) error {
+	c.mu.Lock()
+	c.plainWrites++
+	c.mu.Unlock()
+	return errors.New("plain WriteText must not be used by the gateway writer")
+}
+func (c *gatewayDeadlineSpy) WriteTextWithDeadline(payload []byte, timeout time.Duration) error {
+	c.textDeadlineCalls <- gatewayDeadlineCall{payload: append([]byte(nil), payload...), timeout: timeout}
+	return nil
+}
+func (c *gatewayDeadlineSpy) WritePingWithDeadline(payload []byte, timeout time.Duration) error {
+	select {
+	case c.pingDeadlineCalls <- gatewayDeadlineCall{payload: append([]byte(nil), payload...), timeout: timeout}:
+	default:
+	}
+	return nil
+}
+func (c *gatewayDeadlineSpy) SetReadDeadline(time.Time) error { return nil }
+func (c *gatewayDeadlineSpy) SetPongHandler(handler func()) {
+	c.mu.Lock()
+	c.pongHandler = handler
+	c.mu.Unlock()
+}
+func (c *gatewayDeadlineSpy) Close() error { return nil }
+
 func newControlledAgentConn() *controlledAgentConn {
 	return &controlledAgentConn{writeStarted: make(chan struct{}), disconnect: make(chan struct{})}
 }
@@ -577,6 +685,9 @@ func (c *controlledAgentConn) WriteText(payload []byte) error {
 	}
 	return nil
 }
+func (c *controlledAgentConn) WriteTextWithDeadline(payload []byte, _ time.Duration) error {
+	return c.WriteText(payload)
+}
 func (c *controlledAgentConn) Close() error {
 	c.closeOnce.Do(func() { close(c.disconnect) })
 	return nil
@@ -586,4 +697,7 @@ type errorWriteAgentConn struct{ err error }
 
 func (c *errorWriteAgentConn) ReadText() ([]byte, error) { return nil, io.EOF }
 func (c *errorWriteAgentConn) WriteText([]byte) error    { return c.err }
-func (c *errorWriteAgentConn) Close() error              { return nil }
+func (c *errorWriteAgentConn) WriteTextWithDeadline([]byte, time.Duration) error {
+	return c.err
+}
+func (c *errorWriteAgentConn) Close() error { return nil }

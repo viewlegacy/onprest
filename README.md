@@ -433,16 +433,9 @@ Recommended next reads:
 - [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment)
 - [Operations](https://docs.onprest.viewlegacy.com/operations)
 
-## OSS and Managed
+## Repository Boundary
 
-Onprest is dual-distributed:
-
-- **OSS (this repository, Apache-2.0)**: self-host the gateway and agent on your own infrastructure.
-- **Managed**: we operate the customer-dedicated gateway, monitor agent connectivity, handle patching, retain operational logs, and take operational responsibility around the connection layer.
-
-Both share the same OSS core. You can move from managed to self-hosted at any time using the same binaries and `capability.yaml`.
-
-Managed Onprest is for teams that want the architecture without owning the operations. Your database, SQL, credentials, and capability definitions stay under your control.
+This repository contains only the Apache-2.0 OSS core: `onprest-gateway` and `onprest-agent`. Managed products, dashboards, and their operating policies are outside this repository and are not OSS core dependencies.
 
 ## License
 
