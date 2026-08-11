@@ -381,15 +381,12 @@ func TestPostgresReadOnlyDBUserAllowsReadAndBlocksMutationAtStartup(t *testing.T
 	}
 
 	mutationFile := writePostgresCapability(t, tmp, db, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `  forbidden_update:
-    sql: update pg_class set relname = relname where false returning oid::int as id
+    sql: update pg_class set relname = relname where false
     policy:
       readonly: false
       timeout: 2s
       max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer`)
+      max_bytes: 128KB`)
 	cmd, output := startProcessWithOutput(t, tmp, agentBin, nil, []string{"AGENT_CAPABILITY_FILE=" + mutationFile})
 	if err := waitForExit(t, cmd, 5*time.Second); err == nil {
 		t.Fatal("readonly DB user initialized mutating capability, want DB permission failure")

@@ -16,6 +16,10 @@ The gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when si
 
 `GATEWAY_AGENT_OFFLINE` means gateway has no connected agent or no usable OpenAPI cache.
 
+## Mutation outcome is unknown
+
+`AGENT_TRANSACTION_OUTCOME_UNKNOWN`, `GATEWAY_TIMEOUT`, or an in-flight agent disconnect means the caller cannot safely infer commit or rollback. Do not retry automatically. Check the target record using an independent read capability and inspect the agent-local detail log. By contrast, `AGENT_QUERY_TIMEOUT` means the agent confirmed rollback after its policy timeout.
+
 Check agent startup logs and `onprest-agent.log`. DB ping or EXPLAIN failure prevents the agent from connecting.
 
 ## API Key Authentication Fails

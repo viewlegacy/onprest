@@ -30,7 +30,7 @@ It is a narrow capability tunnel for approved business operations, defined on-pr
 
 MCP is a first-class surface in Onprest, not an afterthought. AI agents should receive named business tools, not a DSN, raw SQL executor, or schema-wide database surface.
 
-Onprest's capability model fits AI/MCP because the cloud-facing side is intentionally not trusted with business meaning. The gateway can authenticate callers and route capability calls, but the on-prem agent owns SQL, parameter validation, execution policy, and output filtering. AI agents and MCP clients see only the capabilities their API key is allowed to list and call.
+Onprest's capability model fits AI/MCP because the cloud-facing side is intentionally not trusted with business meaning. The gateway can authenticate callers and route capability calls, but the on-prem agent owns SQL, parameter validation, execution policy, SELECT output filtering, and DML affected-count validation. AI agents and MCP clients see only the capabilities their API key is allowed to list and call.
 
 ## OSS Core
 
@@ -39,7 +39,7 @@ The OSS core consists of two independent Go single binaries.
 | Binary | Role |
 |---|---|
 | `onprest-gateway` | API key authentication, capability authorization, REST/MCP/OpenAPI, and agent WebSocket handling |
-| `onprest-agent` | `capability.yaml` loading, DB ping, EXPLAIN, param/policy/result validation, and SQL execution |
+| `onprest-agent` | `capability.yaml` loading, DB ping, EXPLAIN, param/policy validation, SELECT result filtering, DML count validation, and SQL execution |
 
 This `/docs` site is a public documentation project built with Nextra / Next.js. Node.js, Nextra, and Next.js are not required to run or distribute the OSS core.
 
@@ -48,5 +48,5 @@ This `/docs` site is a public documentation project built with Nextra / Next.js.
 - [Quick Start](/quick-start): Start the gateway and agent, then verify REST / MCP / OpenAPI / healthz.
 - [Architecture](/architecture): Understand Onprest's trust boundaries and gateway / agent responsibilities.
 - [Security](/security): Review the compromise model, key rotation, and detail redaction policy.
-- [Capability YAML](/agent/capability-yaml): Define capability inputs, policy, and output allow-lists.
+- [Capability YAML](/agent/capability-yaml): Define inputs and policy, plus SELECT output allow-lists; DML is count-only.
 - [Release Gate](/operations/release-gate): Review the commands to run before operating the OSS core.

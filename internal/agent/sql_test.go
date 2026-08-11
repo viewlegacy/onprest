@@ -62,6 +62,52 @@ func TestBuildSQLOraclePlaceholders(t *testing.T) {
 	}
 }
 
+func TestBuildSQLUsesDialectAwareProtectedRegions(t *testing.T) {
+	tests := []struct {
+		name, driver, query, want string
+	}{
+		{
+			name:   "postgres escape dollar and nested comment",
+			driver: "postgres",
+			query:  `select E'escaped \':id', $$:id$$, /* outer /* :id */ :id */ :id, :second::text`,
+			want:   `select E'escaped \':id', $$:id$$, /* outer /* :id */ :id */ $1, $2::text`,
+		},
+		{
+			name:   "mysql backtick",
+			driver: "mysql",
+			query:  "select `column:name`, ':id', /* :id */ :id, :second",
+			want:   "select `column:name`, ':id', /* :id */ ?, ?",
+		},
+		{
+			name:   "sqlserver bracket and nested comment",
+			driver: "sqlserver",
+			query:  "select [column:name], /* outer /* :id */ :id */ :id, :second",
+			want:   "select [column:name], /* outer /* :id */ :id */ @p1, @p2",
+		},
+		{
+			name:   "oracle alternative quotes",
+			driver: "oracle",
+			query:  "select q'[content :id]', q'{more :id}', :id, :second from dual",
+			want:   "select q'[content :id]', q'{more :id}', :1, :2 from dual",
+		},
+	}
+	params := map[string]any{"id": int64(7), "second": "next"}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, args, err := buildSQL(tc.driver, tc.query, params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("sql mismatch\nwant: %s\n got: %s", tc.want, got)
+			}
+			if len(args) != 2 || args[0] != int64(7) || args[1] != "next" {
+				t.Fatalf("args=%#v", args)
+			}
+		})
+	}
+}
+
 func TestBuildSQLRejectsMissingParam(t *testing.T) {
 	if _, _, err := buildSQL("postgres", "select * from customers where id = :id", map[string]any{}); err == nil {
 		t.Fatal("buildSQL() error = nil, want missing param error")

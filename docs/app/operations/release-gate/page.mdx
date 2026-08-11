@@ -16,8 +16,9 @@ This gate verifies:
 - unit tests
 - PostgreSQL integration tests 3 consecutive times
 - PostgreSQL DB interruption stability 5 consecutive times
-- all-DB smoke path
+- all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
 - MySQL special-character credential connection
+- PostgreSQL `disable` / `require` / `verify-ca` / `verify-full` TLS against a real database, including private/wrong CA, hostname mismatch, and client-certificate authentication
 - SQL Server `require` / `verify-full` TLS against a TLS-enabled real database, including wrong CA and hostname rejection
 - Docker image operational tests
 - Docker Compose env-file operational tests

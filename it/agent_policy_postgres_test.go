@@ -123,7 +123,7 @@ func TestPostgresPolicyAndQueryFailures(t *testing.T) {
 
 func TestReadonlyMultiStatementIsRejectedBeforeRealPostgresExecution(t *testing.T) {
 	dbConfig := postgresContainerConfig(t)
-	db, err := sql.Open("postgres", postgresDSN(dbConfig))
+	db, err := sql.Open(sqlDriverName("postgres"), postgresDSN(dbConfig))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func dedicatedPostgresContainer(t *testing.T) (postgresConfig, func()) {
 
 func waitForPostgresActiveQuery(t *testing.T, cfg postgresConfig, marker string) {
 	t.Helper()
-	db, err := sql.Open("postgres", postgresDSN(cfg))
+	db, err := sql.Open(sqlDriverName("postgres"), postgresDSN(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +454,7 @@ where pid <> pg_backend_pid()
 
 func assertPostgresQueryRemainsInactive(t *testing.T, cfg postgresConfig, marker string, duration time.Duration) {
 	t.Helper()
-	db, err := sql.Open("postgres", postgresDSN(cfg))
+	db, err := sql.Open(sqlDriverName("postgres"), postgresDSN(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}

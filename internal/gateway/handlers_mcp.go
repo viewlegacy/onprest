@@ -101,7 +101,7 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 	}
 	var structured any
 	_ = decodeJSONNumber(result.Payload, &structured)
-	s.accessLogProtocol("mcp", requestID, key.Name, params.Name, http.StatusOK, "", "", start)
+	s.accessLogProtocol("mcp", requestID, key.Name, params.Name, http.StatusOK, "", "", start, result.Count)
 	writeMCP(w, id, map[string]any{
 		"content":           []any{map[string]any{"type": "text", "text": string(result.Payload)}},
 		"structuredContent": structured,

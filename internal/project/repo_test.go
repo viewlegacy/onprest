@@ -132,14 +132,18 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 	if !strings.Contains(gatewayEnv, `GATEWAY_API_KEYS_JSON='[`) {
 		t.Fatalf("examples/gateway.env must single-quote GATEWAY_API_KEYS_JSON to preserve bcrypt dollar signs")
 	}
+	if !strings.Contains(gatewayEnv, `"capabilities":["get_customer","update_customer"]`) || strings.Contains(gatewayEnv, `"capabilities":["*"]`) {
+		t.Fatal("examples/gateway.env must use the explicit Quick Start capability allow-list")
+	}
 
 	capabilityYAML := readText(t, filepath.Join(root, "examples", "capability.postgres.yaml"))
 	for _, want := range []string{
 		"driver: postgres",
 		"name: legacy",
-		"user: readonly_user",
+		"user: capability_user",
 		"password: onprest-example-password",
 		"sql: select id, name, email from customers where id = :customer_id",
+		"sql: update customers set name = :name where id = :customer_id",
 		"max_size: 10MB",
 		"max_files: 3",
 		"readonly: true",
@@ -165,10 +169,11 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 
 	initSQL := readText(t, filepath.Join(root, "examples", "postgres-init.sql"))
 	for _, want := range []string{
-		"CREATE ROLE readonly_user LOGIN PASSWORD 'onprest-example-password'",
+		"CREATE ROLE capability_user LOGIN PASSWORD 'onprest-example-password'",
 		"CREATE TABLE customers",
 		"(1, 'Ada Lovelace', 'ada@example.com')",
-		"GRANT SELECT ON customers TO readonly_user",
+		"GRANT SELECT ON customers TO capability_user",
+		"GRANT UPDATE (name) ON customers TO capability_user",
 	} {
 		if !strings.Contains(initSQL, want) {
 			t.Fatalf("examples/postgres-init.sql missing %q", want)
@@ -264,6 +269,76 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	for _, want := range []string{"systemd-sysv", "postgresql", `CMD ["/sbin/init"]`} {
 		if !strings.Contains(systemdImage, want) {
 			t.Fatalf("systemd service test image missing %q", want)
+		}
+	}
+}
+
+func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
+	root := repoRoot(t)
+	makefile := readText(t, filepath.Join(root, "Makefile"))
+	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
+	integrationReadme := readText(t, filepath.Join(root, "it", "README.md"))
+	testCommands := readText(t, filepath.Join(root, "docs", "app", "reference", "test-commands", "page.mdx"))
+	releaseDocs := readText(t, filepath.Join(root, "docs", "app", "operations", "release-gate", "page.mdx"))
+
+	const allDBSelector = "-run '^TestContainerDBDriver'"
+	for source, text := range map[string]string{
+		"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
+	} {
+		if !strings.Contains(text, allDBSelector) {
+			t.Fatalf("%s does not use common all-DB selection %q", source, allDBSelector)
+		}
+	}
+	for path, name := range map[string]string{
+		"it/transaction_start_conformance_test.go": "TestContainerDBDriverOracleTransactionStartIsImmediateAndRollbackable",
+		"it/openapi_nullable_postgres_test.go":     "TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI",
+		"it/timestamp_postgres_test.go":            "TestContainerDBDriverPostgresTimestampResultPreservesJSONContract",
+	} {
+		if text := readText(t, filepath.Join(root, filepath.FromSlash(path))); !strings.Contains(text, "func "+name+"(") {
+			t.Fatalf("%s does not use common all-DB test prefix: %s", path, name)
+		}
+	}
+	const postgresTLS = "TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification"
+	for source, text := range map[string]string{
+		"release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
+	} {
+		if !strings.Contains(text, postgresTLS) {
+			t.Fatalf("%s does not include PostgreSQL TLS contract %q", source, postgresTLS)
+		}
+	}
+	for source, text := range map[string]string{"test commands": testCommands, "release gate": releaseDocs} {
+		for _, coverage := range []string{"private", "hostname", "client-certificate"} {
+			if !strings.Contains(text, coverage) {
+				t.Fatalf("%s does not document PostgreSQL TLS %s coverage", source, coverage)
+			}
+		}
+	}
+	if strings.Contains(testCommands, "exact filter `^TestContainerDBDriver`") || strings.Contains(releaseDocs, "all-DB smoke path") {
+		t.Fatal("DB gate documentation retained the superseded selection")
+	}
+}
+
+func TestPublicOSSBoundaryDocsDoNotDefineManagedOperatingPolicy(t *testing.T) {
+	root := repoRoot(t)
+	paths := []string{
+		filepath.Join(root, "README.md"),
+		filepath.Join(root, "docs", "app", "operations", "deployment", "page.mdx"),
+		filepath.Join(root, "docs", "app", "architecture", "page.mdx"),
+		filepath.Join(root, "docs", "app", "security", "page.mdx"),
+	}
+	for _, path := range paths {
+		content := strings.ToLower(readText(t, path))
+		for _, forbidden := range []string{
+			"monitor agent connectivity",
+			"handle patching",
+			"retain operational logs",
+			"backend admin ui",
+			"managed dashboard is outside the oss core and is read-only",
+			"dashboard does not issue api keys",
+		} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("%s defines managed-only policy %q", path, forbidden)
+			}
 		}
 	}
 }

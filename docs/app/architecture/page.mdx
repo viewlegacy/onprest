@@ -2,6 +2,8 @@
 
 Onprest is designed to expose only agent-defined capabilities, not the database itself.
 
+The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions and return native affected count only after a successful commit. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+
 ```text
 [API user / MCP client]
   |
@@ -27,11 +29,11 @@ Onprest is designed to expose only agent-defined capabilities, not the database 
 ## Mental Model
 
 1. Define a capability on the on-prem side.
-2. Define its input contract, execution policy, and output contract.
+2. Define its input contract, execution policy, and operation-specific output contract.
 3. Start the agent inside the customer network.
 4. The agent connects outbound to the gateway.
 5. REST and MCP clients call only capabilities their API key can access.
-6. The agent validates input, applies policy, executes prepared SQL, filters output, and returns the result.
+6. The agent validates input, applies policy, executes prepared SQL, filters SELECT output or produces a mutation count, and returns the result.
 
 The gateway does not know the schema, SQL, DSN, DB credentials, or business meaning. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations.
 
@@ -44,7 +46,7 @@ This separation is the core of Onprest.
 - The gateway does not store SQL text.
 - The gateway does not store DB host, user, or password.
 - The gateway forwards only the capability name and params.
-- The agent validates params, policy, and result according to `capability.yaml`.
+- The agent validates params and policy, then enforces the SELECT result allow-list or DML count-only contract from `capability.yaml`.
 - OpenAPI / MCP tools are generated from the agent definition.
 
 Even if the gateway is compromised, the attacker can learn only the public schema and capability names. The gateway has no place to create unknown SQL and holds no DB credentials.
@@ -67,7 +69,7 @@ Even if the gateway is compromised, the attacker can learn only the public schem
 | Parameter validation | No | Yes |
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
-| Output allow-list | No | Yes |
+| SELECT output allow-list / mutation count-only contract | No | Yes |
 | Detailed DB errors | No | Local only |
 | Agent private key | No | Yes |
 | Agent public key | Yes | No |
@@ -123,7 +125,7 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - params validation
 - policy enforcement
 - prepared statement execution
-- result allow-list
+- SELECT result allow-list and DML count-only response enforcement
 - OpenAPI spec generation
 - runtime detail output to the local log
 - reconnect every 30 seconds
@@ -147,7 +149,7 @@ A normal gateway-to-agent request contains only a capability name and params.
 }
 ```
 
-The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Read-only capabilities accept one `SELECT` statement, including nested subqueries. Integer JSON tokens remain exact through signed 64-bit conversion, and response values must be finite and representable by the declared result type.
+The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Omitted or true `readonly` accepts one `SELECT`; explicit false also accepts one `INSERT`, `UPDATE`, or `DELETE`. The dialect-aware scanner rejects multiple statements and recognizes nested block comments in PostgreSQL and SQL Server. Integer JSON tokens remain exact through signed 64-bit conversion; SELECT values must be finite and representable by their declared result types, while DML returns only a non-negative native affected count.
 
 ## Dedicated Gateway Model
 
@@ -163,8 +165,6 @@ The gateway works when directly exposed or when placed behind any compatible rev
 
 Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. The default is `disable`. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
 
-## Managed Dashboard
+## Product Boundary
 
-The managed dashboard is not part of the OSS core. In managed environments, gateway stdout is collected through a log drain and displayed as read-only data.
-
-The dashboard does not issue API keys, register agents, or edit capabilities. Administrative operations are performed with server-side CLI commands.
+Managed products and dashboards are outside the OSS core. They are not dependencies of either OSS binary and their product or operating policies are not defined by this repository.

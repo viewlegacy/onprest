@@ -104,11 +104,6 @@ The mounted `capability.yaml` must use database and gateway addresses reachable 
 
 TLS termination and reverse proxy selection are outside the OSS implementation boundary. The gateway works directly exposed or behind a compatible reverse proxy / LB.
 
-## OSS and Managed
+## Deployment Boundary
 
-Onprest is dual-distributed:
-
-- OSS: self-host the gateway and agent on your own infrastructure.
-- Managed: Onprest operates the customer-dedicated gateway, monitors agent connectivity, handles patching, retains operational logs, and takes responsibility for the connection layer.
-
-Both use the same OSS core. You can move from managed to self-hosted with the same binaries and `capability.yaml`. Your database, SQL, credentials, and capability definitions stay under your control.
+This page covers deployment of the two OSS binaries only. Managed products and their operating policies are outside the OSS core and are not deployment requirements for `onprest-gateway` or `onprest-agent`.

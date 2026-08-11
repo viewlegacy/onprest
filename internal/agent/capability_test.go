@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -10,9 +12,50 @@ import (
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/jackc/pgx/v5"
+	"github.com/viewlegacy/onprest/internal/protocol"
 )
 
 const testAgentPrivateKey = "keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw"
+
+func writeCapabilityFixture(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "capability.yaml")
+	content = strings.ReplaceAll(content, "agent_private_key: test", "agent_private_key: "+testAgentPrivateKey)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeParamsCapabilityFixture(t *testing.T, paramsYAML string) string {
+	t.Helper()
+	paramsYAML = "      " + strings.ReplaceAll(strings.TrimSpace(paramsYAML), "\n", "\n      ")
+	return writeCapabilityFixture(t, `service:
+  title: Param fixture
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  name: test
+  user: test
+  password: test
+capabilities:
+  param_fixture:
+    sql: select 1 as value
+    params:
+`+paramsYAML+`
+    policy:
+      timeout: 1s
+      max_rows: 1
+      max_bytes: 1KB
+    result:
+      value: {type: integer}
+`)
+}
 
 func TestLoadCapabilityFileYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "capability.yaml")
@@ -54,6 +97,352 @@ capabilities:
 	}
 	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
 		t.Fatalf("runtime.max_concurrent_requests = %v, want default 16", cf.Runtime.MaxConcurrentRequests)
+	}
+}
+
+func TestLoadCapabilityFileRejectsExplicitInvalidPolicyValues(t *testing.T) {
+	base := `database:
+  driver: postgres
+  host: localhost
+  port: 5432
+  name: legacy
+  user: readonly_user
+gateway:
+  url: ws://localhost:8080/ws/agent
+  agent_private_key: ` + testAgentPrivateKey + `
+defaults:
+  max_rows: 100
+capabilities:
+  get_customer:
+    sql: select 1 as id
+    policy:
+%s
+    result:
+      id:
+        type: integer
+`
+	for _, tc := range []struct {
+		name, policy, want string
+	}{
+		{name: "explicit zero max rows", policy: "      max_rows: 0", want: "max_rows must be > 0"},
+		{name: "negative max rows", policy: "      max_rows: -1", want: "max_rows must be > 0"},
+		{name: "zero timeout", policy: "      timeout: 0s", want: "timeout must be > 0"},
+		{name: "negative timeout", policy: "      timeout: -1s", want: "timeout must be > 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "capability.yaml")
+			content := strings.Replace(base, "%s", tc.policy, 1)
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadCapabilityFileRejectsExplicitNullDefaultForEveryParamType(t *testing.T) {
+	base := `database:
+  driver: postgres
+  host: localhost
+  port: 5432
+  name: legacy
+  user: readonly_user
+gateway:
+  url: ws://localhost:8080/ws/agent
+  agent_private_key: ` + testAgentPrivateKey + `
+capabilities:
+  get_customer:
+    sql: select 1 as id
+    params:
+      value:
+        type: %s
+        default: null
+    result:
+      id:
+        type: integer
+`
+	for _, paramType := range []string{"string", "integer", "number", "boolean"} {
+		t.Run(paramType, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "capability.yaml")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf(base, paramType)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), ".default is invalid") {
+				t.Fatalf("LoadCapabilityFile() error=%v, want explicit null default lint error", err)
+			}
+		})
+	}
+}
+
+func TestLoadCapabilityFilePreservesEmptyPatternAndFormatPresence(t *testing.T) {
+	for _, constraint := range []string{"pattern", "format"} {
+		for _, paramType := range []string{"integer", "number", "boolean"} {
+			t.Run("reject empty "+constraint+" on "+paramType, func(t *testing.T) {
+				path := writeCapabilityFixture(t, fmt.Sprintf(`service:
+  title: Presence test
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  name: test
+  user: test
+  password: test
+capabilities:
+  invalid_empty_constraint:
+    sql: select :value
+    params:
+      value:
+        type: %s
+        %s: ""
+    policy:
+      timeout: 1s
+      max_rows: 1
+      max_bytes: 1KB
+    result:
+      value: {type: integer}
+`, paramType, constraint))
+				if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "string constraints are supported only for string") {
+					t.Fatalf("LoadCapabilityFile() error=%v, want %s %s startup lint error", err, paramType, constraint)
+				}
+			})
+		}
+	}
+
+	valid := writeCapabilityFixture(t, `service:
+  title: Presence test
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  name: test
+  user: test
+  password: test
+capabilities:
+  valid_empty_string_constraints:
+    sql: select :value
+    params:
+      value:
+        type: string
+        pattern: ""
+        format: ""
+    policy:
+      timeout: 1s
+      max_rows: 1
+      max_bytes: 1KB
+    result:
+      value: {type: string}
+`)
+	if _, err := LoadCapabilityFile(valid); err != nil {
+		t.Fatalf("valid string empty pattern/format rejected: %v", err)
+	}
+}
+
+func TestLoadCapabilityFileSupportsParamYAMLMergeAndAliasPresence(t *testing.T) {
+	t.Run("merge alias inherits default presence", func(t *testing.T) {
+		path := writeParamsCapabilityFixture(t, `template: &template
+  type: string
+  default: inherited
+value:
+  <<: *template`)
+		cf, err := LoadCapabilityFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := cf.Capabilities["param_fixture"].Params["value"]
+		if value.Type != "string" || value.Default != "inherited" || !value.DefaultSet {
+			t.Fatalf("merged param=%#v", value)
+		}
+		validated, err := validateParams(cf.Capabilities["param_fixture"], map[string]any{})
+		if err != nil || validated["value"] != "inherited" {
+			t.Fatalf("merged default validation=%#v error=%v", validated, err)
+		}
+	})
+
+	t.Run("sequence merge inherits effective fields", func(t *testing.T) {
+		path := writeParamsCapabilityFixture(t, `first: &first
+  type: string
+  default: inherited
+second: &second
+  type: string
+  description: merged
+value:
+  <<: [*first, *second]`)
+		cf, err := LoadCapabilityFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := cf.Capabilities["param_fixture"].Params["value"]
+		if value.Type != "string" || value.Default != "inherited" || !value.DefaultSet || value.Description != "merged" {
+			t.Fatalf("sequence-merged param=%#v", value)
+		}
+	})
+
+	t.Run("parameter definition may be an alias", func(t *testing.T) {
+		path := writeParamsCapabilityFixture(t, `template: &template
+  type: string
+  default: inherited
+value: *template`)
+		cf, err := LoadCapabilityFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := cf.Capabilities["param_fixture"].Params["value"]
+		if value.Type != "string" || value.Default != "inherited" || !value.DefaultSet {
+			t.Fatalf("aliased param=%#v", value)
+		}
+	})
+
+	t.Run("direct values override merge alias", func(t *testing.T) {
+		path := writeParamsCapabilityFixture(t, `template: &template
+  type: integer
+  default: 1
+value:
+  <<: *template
+  type: string
+  default: direct`)
+		cf, err := LoadCapabilityFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		value := cf.Capabilities["param_fixture"].Params["value"]
+		if value.Type != "string" || value.Default != "direct" || !value.DefaultSet {
+			t.Fatalf("direct override param=%#v", value)
+		}
+	})
+
+	t.Run("merge alias inherits explicit null default presence", func(t *testing.T) {
+		path := writeParamsCapabilityFixture(t, `template: &template
+  type: string
+  default: null
+value:
+  <<: *template`)
+		if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), ".default is invalid") {
+			t.Fatalf("LoadCapabilityFile() error=%v, want inherited explicit null default rejection", err)
+		}
+	})
+
+	for _, constraint := range []string{"pattern", "format"} {
+		t.Run("merged empty "+constraint+" remains present", func(t *testing.T) {
+			path := writeParamsCapabilityFixture(t, fmt.Sprintf(`template: &template
+  type: string
+  %s: ""
+value:
+  <<: *template
+  type: integer`, constraint))
+			if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "string constraints are supported only for string") {
+				t.Fatalf("LoadCapabilityFile() error=%v, want inherited empty %s lint error", err, constraint)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name, params, want string
+	}{
+		{name: "unknown field in merge source", want: "field unknown_merged_field", params: `value:
+  <<: &template
+    type: string
+    unknown_merged_field: true`},
+		{name: "unknown direct field", want: "field unknown_direct_field", params: `value:
+  type: string
+  unknown_direct_field: true`},
+		{name: "quoted merge spelling is an unknown direct field", want: "field <<", params: `value:
+  type: string
+  "<<": {type: string}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := LoadCapabilityFile(writeParamsCapabilityFixture(t, tc.params)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadCapabilityFile() error=%v, want unknown field rejection", err)
+			}
+		})
+	}
+
+	t.Run("cyclic merge is rejected", func(t *testing.T) {
+		path := writeParamsCapabilityFixture(t, `value: &value
+  type: string
+  <<: *value`)
+		if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "cyclic YAML merge") {
+			t.Fatalf("LoadCapabilityFile() error=%v, want cyclic merge rejection", err)
+		}
+	})
+}
+
+func TestLoadCapabilityFileRejectsInvalidParamContracts(t *testing.T) {
+	tests := []struct {
+		name, definition, want string
+	}{
+		{name: "default type", definition: "type: integer\ndefault: wrong", want: ".default is invalid"},
+		{name: "default enum", definition: "type: string\nenum: [allowed]\ndefault: denied", want: ".default is invalid"},
+		{name: "default range", definition: "type: integer\nminimum: 5\ndefault: 4", want: ".default is invalid"},
+		{name: "default length", definition: "type: string\nminLength: 3\ndefault: ab", want: ".default is invalid"},
+		{name: "default pattern", definition: "type: string\npattern: '^[A-Z]+$'\ndefault: lower", want: ".default is invalid"},
+		{name: "default format", definition: "type: string\nformat: email\ndefault: invalid", want: ".default is invalid"},
+		{name: "invalid enum member type", definition: "type: integer\nenum: [1, wrong]", want: ".enum[1] is invalid"},
+		{name: "invalid enum member constraint", definition: "type: string\npattern: '^[A-Z]+$'\nenum: [VALID, invalid]", want: ".enum[1] is invalid"},
+		{name: "unknown parameter field", definition: "type: string\nunknown_contract_field: true", want: "field unknown_contract_field"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			params := "value:\n  " + strings.ReplaceAll(tc.definition, "\n", "\n  ")
+			if _, err := LoadCapabilityFile(writeParamsCapabilityFixture(t, params)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.want)
+			}
+		})
+	}
+
+	valid := writeParamsCapabilityFixture(t, `value:
+  type: string
+  enum: [USER@example.com]
+  minLength: 5
+  maxLength: 64
+  pattern: '^[A-Za-z]+@example[.]com$'
+  format: email
+  default: USER@example.com`)
+	cf, err := LoadCapabilityFile(valid)
+	if err != nil {
+		t.Fatalf("valid constrained default rejected: %v", err)
+	}
+	validated, err := validateParams(cf.Capabilities["param_fixture"], map[string]any{})
+	if err != nil || validated["value"] != "USER@example.com" {
+		t.Fatalf("valid default validation=%#v error=%v", validated, err)
+	}
+}
+
+func TestParamLintRejectsStaticConstraintDefaultAndEnumContradictions(t *testing.T) {
+	min, max := int64(10), int64(5)
+	minLength := 2
+	tests := []struct {
+		name string
+		def  ParamDef
+	}{
+		{name: "minimum greater than maximum", def: ParamDef{Type: "integer", Minimum: &min, Maximum: &max}},
+		{name: "minimum on string", def: ParamDef{Type: "string", Minimum: &min}},
+		{name: "pattern on integer", def: ParamDef{Type: "integer", Pattern: "x"}},
+		{name: "length on boolean", def: ParamDef{Type: "boolean", MinLength: &minLength}},
+		{name: "default wrong type", def: ParamDef{Type: "integer", Default: "1"}},
+		{name: "default outside range", def: ParamDef{Type: "integer", Minimum: &min, Default: 1}},
+		{name: "default outside enum", def: ParamDef{Type: "string", Enum: []any{"a"}, Default: "b"}},
+		{name: "enum wrong type", def: ParamDef{Type: "boolean", Enum: []any{"true"}}},
+		{name: "enum violates format", def: ParamDef{Type: "string", Format: "email", Enum: []any{"invalid"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.def.lint("param"); err == nil {
+				t.Fatal("lint() error=nil")
+			}
+		})
+	}
+	validMin, validMax := int64(1), int64(10)
+	valid := ParamDef{Type: "integer", Minimum: &validMin, Maximum: &validMax, Enum: []any{1, 2}, Default: 2}
+	if err := valid.lint("param"); err != nil {
+		t.Fatalf("valid param rejected: %v", err)
 	}
 }
 
@@ -232,7 +621,7 @@ func TestCapabilityFileLintRequiredFieldsAndPolicy(t *testing.T) {
 		}},
 		{name: "max rows", mutate: func(cf *CapabilityFile) {
 			cap := cf.Capabilities["get_customer"]
-			cap.Policy.MaxRows = -1
+			cap.Policy.MaxRows = intPtr(-1)
 			cf.Capabilities["get_customer"] = cap
 		}},
 		{name: "max bytes", mutate: func(cf *CapabilityFile) {
@@ -347,6 +736,20 @@ func TestMySQLDSNRoundTripsSpecialCredentials(t *testing.T) {
 	}
 }
 
+func TestPostgresPublicDriverAndDSNRoundTripToPGX(t *testing.T) {
+	db := DatabaseDef{Driver: "postgres", Host: "db.example", Port: 5432, Name: "legacy/name", User: "reader@domain/name", Password: `p@ss:/word?&=#`, TLS: DatabaseTLSDef{Mode: "verify-full"}}
+	config, err := pgx.ParseConfig(db.DSN())
+	if err != nil {
+		t.Fatalf("pgx ParseConfig(%q): %v", db.DSN(), err)
+	}
+	if driverName(db.Driver) != "pgx" || config.Config.Host != db.Host || config.Config.Port != uint16(db.Port) || config.Config.Database != db.Name || config.Config.User != db.User || config.Config.Password != db.Password {
+		t.Fatalf("driver=%q config=%#v", driverName(db.Driver), config.Config)
+	}
+	if config.Config.TLSConfig == nil || config.Config.TLSConfig.ServerName != db.Host {
+		t.Fatalf("TLS config=%#v", config.Config.TLSConfig)
+	}
+}
+
 func TestDatabaseTLSLintRejectsInvalidOrUnsupportedConfiguration(t *testing.T) {
 	tests := []DatabaseDef{
 		{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "optional"}},
@@ -364,16 +767,16 @@ func TestCapabilityFileMergesPolicyDefaults(t *testing.T) {
 	cf := validCapabilityFile()
 	defaultReadonly := false
 	capReadonly := true
-	cf.Defaults = PolicyDef{Readonly: &defaultReadonly, Timeout: "30s", MaxRows: 1000, MaxBytes: "2MB"}
+	cf.Defaults = PolicyDef{Readonly: &defaultReadonly, Timeout: "30s", MaxRows: intPtr(1000), MaxBytes: "2MB"}
 	cap := cf.Capabilities["get_customer"]
-	cap.Policy = PolicyDef{Readonly: &capReadonly, MaxRows: 5}
+	cap.Policy = PolicyDef{Readonly: &capReadonly, MaxRows: intPtr(5)}
 	cf.Capabilities["get_customer"] = cap
 
 	if err := cf.Lint(); err != nil {
 		t.Fatal(err)
 	}
 	got := cf.Capabilities["get_customer"].Policy
-	if !readonly(got) || got.Timeout != "30s" || got.MaxRows != 5 || got.MaxBytes != "2MB" {
+	if !readonly(got) || got.Timeout != "30s" || resolvedMaxRows(got) != 5 || got.MaxBytes != "2MB" {
 		t.Fatalf("merged policy = %#v", got)
 	}
 }
@@ -558,8 +961,61 @@ func TestBuildOpenAPIReflectsServiceParamsResultAndExposePolicy(t *testing.T) {
 	items := rows["items"].(map[string]any)
 	rowProps := items["properties"].(map[string]any)
 	id := rowProps["id"].(map[string]any)
-	if id["type"] != "integer" || id["description"] != "Customer ID" {
+	types, ok := id["type"].([]any)
+	if !ok || len(types) != 2 || types[0] != "integer" || types[1] != "null" || id["format"] != "int64" || id["description"] != "Customer ID" {
 		t.Fatalf("result column schema = %#v", id)
+	}
+	if required := items["required"].([]string); len(required) != 1 || required[0] != "id" {
+		t.Fatalf("result required=%v", required)
+	}
+}
+
+func TestBuildOpenAPISelectResultTypesAllowSQLNull(t *testing.T) {
+	cap := CapabilityDef{Result: ResultDef{
+		"text":    {Type: "string"},
+		"integer": {Type: "integer"},
+		"number":  {Type: "number"},
+		"boolean": {Type: "boolean"},
+	}}
+	properties := responseSchema(cap)["properties"].(map[string]any)["rows"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	for name, declared := range map[string]string{"text": "string", "integer": "integer", "number": "number", "boolean": "boolean"} {
+		types, ok := properties[name].(map[string]any)["type"].([]any)
+		if !ok || len(types) != 2 || types[0] != declared || types[1] != "null" {
+			t.Fatalf("%s schema=%#v", name, properties[name])
+		}
+	}
+	if properties["integer"].(map[string]any)["format"] != "int64" {
+		t.Fatalf("integer schema=%#v", properties["integer"])
+	}
+}
+
+func TestBuildOpenAPIMutationSchemaAndInternalKinds(t *testing.T) {
+	cf := validCapabilityFile()
+	cap := cf.Capabilities["get_customer"]
+	cap.SQL = "update customers set name='x' where id=:id"
+	cap.Policy.Readonly = boolPtr(false)
+	cap.Result = nil
+	cf.Capabilities["update_customer"] = cap
+	hidden := cap
+	hidden.Policy.ExposeInOpenAPI = boolPtr(false)
+	cf.Capabilities["hidden_update"] = hidden
+	if err := cf.Lint(); err != nil {
+		t.Fatal(err)
+	}
+	paths := BuildOpenAPI(cf)["paths"].(map[string]any)
+	post := paths["/api/v1/capabilities/update_customer"].(map[string]any)["post"].(map[string]any)
+	schema := post["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	if _, ok := props["rows"]; ok {
+		t.Fatalf("mutation schema contains rows: %#v", schema)
+	}
+	count := props["count"].(map[string]any)
+	if count["format"] != "int64" || count["minimum"] != int64(0) || schema["additionalProperties"] != false {
+		t.Fatalf("mutation schema=%#v", schema)
+	}
+	kinds := responseKinds(cf)
+	if kinds["update_customer"] != "mutation" || kinds["hidden_update"] != "mutation" || kinds["get_customer"] != "select" {
+		t.Fatalf("response kinds=%#v", kinds)
 	}
 }
 
@@ -665,6 +1121,78 @@ func TestStartupDetailLogUsesStartupMessageAndKeepsDetailLocal(t *testing.T) {
 	}
 }
 
+func TestCapabilityOperationMatrixAndDMLClauses(t *testing.T) {
+	tests := []struct {
+		name     string
+		driver   string
+		sql      string
+		readonly bool
+		result   ResultDef
+		want     sqlOperation
+		wantErr  string
+	}{
+		{"readonly select", "postgres", "-- lead\nSELECT 1; /* tail */", true, nil, sqlOperationSelect, ""},
+		{"writable select", "postgres", "select 1", false, nil, sqlOperationSelect, ""},
+		{"insert", "postgres", "insert into t(v) values ('returning; output')", false, nil, sqlOperationInsert, ""},
+		{"update", "mysql", "UPDATE t SET v=1", false, nil, sqlOperationUpdate, ""},
+		{"delete", "oracle", "delete from t where id=1", false, nil, sqlOperationDelete, ""},
+		{"readonly mutation", "postgres", "insert into t(v) values (1)", true, nil, "", "must be SELECT"},
+		{"multiple select", "postgres", "select 1; update t set v=2", false, nil, "", "exactly one statement"},
+		{"multiple mutation", "sqlserver", "update t set v=1; delete from t", false, nil, "", "exactly one statement"},
+		{"postgres nested leading comment", "postgres", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"sqlserver nested leading comment", "sqlserver", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"postgres nested trailing trivia", "postgres", "SELECT 1; /* outer /* inner */ still outer */", true, nil, sqlOperationSelect, ""},
+		{"sqlserver nested trailing trivia", "sqlserver", "SELECT 1; /* outer /* inner */ still outer */", true, nil, sqlOperationSelect, ""},
+		{"cte", "postgres", "WITH x AS (SELECT 1) SELECT * FROM x", false, nil, "", "operation with is not supported"},
+		{"returning", "postgres", "insert into t(v) values (1) RETURNING id", false, nil, "", "returning rows"},
+		{"output", "sqlserver", "update t set v=1 OUTPUT inserted.id", false, nil, "", "returning rows"},
+		{"empty result", "postgres", "delete from t", false, ResultDef{}, "", "result is only supported"},
+		{"postgres nested leading comment", "postgres", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"sqlserver nested leading comment", "sqlserver", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
+		{"postgres nested trailing trivia", "postgres", "SELECT 1; /* outer /* inner */ tail */", true, nil, sqlOperationSelect, ""},
+		{"sqlserver nested trailing trivia", "sqlserver", "SELECT 1; /* outer /* inner */ tail */", true, nil, sqlOperationSelect, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cf := validCapabilityFile()
+			cf.Database.Driver = tc.driver
+			cap := cf.Capabilities["get_customer"]
+			cap.SQL, cap.Policy.Readonly, cap.Result = tc.sql, boolPtr(tc.readonly), tc.result
+			cf.Capabilities["get_customer"] = cap
+			err := cf.Lint()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Lint() error=%v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cf.Capabilities["get_customer"].Operation; got != tc.want {
+				t.Fatalf("operation=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMutationPayloadIsObjectAndPreservesInt64(t *testing.T) {
+	payload, err := buildMutationPayload(9223372036854775807, 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(payload); got != `{"count":9223372036854775807}` {
+		t.Fatalf("payload=%s", got)
+	}
+	response := protocol.Response{ID: "1", Result: payload}
+	if got := string(protocol.MustJSON(response)); !strings.Contains(got, `"result":{"count":9223372036854775807}`) {
+		t.Fatalf("wire=%s", got)
+	}
+	if _, err := buildMutationPayload(1, 1); !errors.Is(err, errMutationResponseTooLarge) {
+		t.Fatalf("small maxBytes error=%v", err)
+	}
+}
+
 func validCapabilityFile() *CapabilityFile {
 	readonly := true
 	return &CapabilityFile{
@@ -679,7 +1207,7 @@ func validCapabilityFile() *CapabilityFile {
 				Description: "Get customer",
 				SQL:         "select id from customers where id = :id",
 				Params:      map[string]ParamDef{"id": {Type: "integer", Required: true}},
-				Policy:      PolicyDef{Readonly: &readonly, Timeout: "1s", MaxRows: 1, MaxBytes: "128KB"},
+				Policy:      PolicyDef{Readonly: &readonly, Timeout: "1s", MaxRows: intPtr(1), MaxBytes: "128KB"},
 			},
 		},
 	}
@@ -694,5 +1222,9 @@ func cloneParams(in map[string]any) map[string]any {
 }
 
 func boolPtr(v bool) *bool {
+	return &v
+}
+
+func intPtr(v int) *int {
 	return &v
 }

@@ -185,16 +185,29 @@ func openAPIPathCount(doc map[string]any) int {
 }
 
 func openAPIFromMeta(raw []byte) (map[string]any, error) {
+	doc, _, err := metaData(raw)
+	return doc, err
+}
+
+func metaData(raw []byte) (map[string]any, map[string]responseKind, error) {
 	var meta struct {
-		Data map[string]any `json:"data"`
+		Data          map[string]any    `json:"data"`
+		ResponseKinds map[string]string `json:"response_kinds"`
 	}
 	if err := json.Unmarshal(raw, &meta); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if meta.Data == nil {
-		return nil, errors.New("missing data")
+		return nil, nil, errors.New("missing data")
 	}
-	return meta.Data, nil
+	kinds := make(map[string]responseKind, len(meta.ResponseKinds))
+	for name, kind := range meta.ResponseKinds {
+		switch responseKind(kind) {
+		case responseKindSelect, responseKindMutation:
+			kinds[name] = responseKind(kind)
+		}
+	}
+	return meta.Data, kinds, nil
 }
 
 func hasAll(caps []string) bool {

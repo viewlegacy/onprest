@@ -30,6 +30,7 @@ type Conn struct {
 	isClient bool
 
 	writeMu            sync.Mutex
+	beforeWriteLock    func(byte)
 	closeFrameOnce     sync.Once
 	closeOnce          sync.Once
 	transportCloseOnce sync.Once
@@ -233,10 +234,14 @@ func (c *Conn) WriteTextWithDeadline(payload []byte, timeout time.Duration) erro
 }
 
 func (c *Conn) WritePing(payload []byte) error {
+	return c.WritePingWithDeadline(payload, 0)
+}
+
+func (c *Conn) WritePingWithDeadline(payload []byte, timeout time.Duration) error {
 	if len(payload) > 125 {
 		return errors.New("websocket ping payload too large")
 	}
-	return c.writeFrame(9, payload)
+	return c.writeFrameWithDeadline(9, payload, timeout)
 }
 
 func (c *Conn) SetReadDeadline(deadline time.Time) error { return c.c.SetReadDeadline(deadline) }
@@ -336,6 +341,9 @@ func (c *Conn) writeFrame(op byte, payload []byte) error {
 func (c *Conn) writeFrameWithDeadline(op byte, payload []byte, timeout time.Duration) error {
 	if op >= 8 && len(payload) > 125 {
 		return errors.New("websocket control payload too large")
+	}
+	if c.beforeWriteLock != nil {
+		c.beforeWriteLock(op)
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

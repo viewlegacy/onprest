@@ -24,10 +24,16 @@ REST capability execution returns these errors as HTTP statuses. OpenAPI also us
 | 503 | `AGENT_BUSY` | REST | Agent execution slots and bounded waiting queue are full |
 | 504 | `GATEWAY_TIMEOUT` | REST | Agent response timed out |
 | 400 | `AGENT_VALIDATION_FAILED` | REST | Agent rejected params |
+| 409 | `AGENT_CONSTRAINT_VIOLATION` | REST | SELECT or DML hit a typed database integrity constraint; DML rollback was confirmed |
 | 502 | `AGENT_QUERY_FAILED` | REST | SQL execution failed |
+| 502 | `AGENT_TRANSACTION_OUTCOME_UNKNOWN` | REST | A mutation's commit, rollback, or committed success response could not be confirmed |
 | 504 | `AGENT_QUERY_TIMEOUT` | REST | Query exceeded timeout |
 | 502 | `AGENT_DB_UNREACHABLE` | REST | Agent cannot reach the DB |
 | 502 | `AGENT_INTERNAL_ERROR` | REST | Unexpected agent error |
+
+`AGENT_CONSTRAINT_VIOLATION` is common to SELECT and DML. Only a DML 409 carries the additional guarantee that rollback was confirmed. `AGENT_QUERY_TIMEOUT` means the agent observed its policy timeout and confirmed mutation rollback. `AGENT_TRANSACTION_OUTCOME_UNKNOWN` includes an already-finished transaction (`sql.ErrTxDone`-equivalent), an unconfirmed rollback, commit uncertainty, or failure to deliver a committed success response; commit and rollback are both possible.
+
+Do not automatically retry a mutation after `GATEWAY_TIMEOUT`, an in-flight agent disconnect, or `AGENT_TRANSACTION_OUTCOME_UNKNOWN`. Check DB state through an independent read capability. This no-auto-retry rule is mutation-specific. Constraint names, SQLSTATE/error numbers, SQL, and row data remain in the agent-local detail log only.
 
 MCP `tools/call` does not use these REST status mappings. After a known tool is invoked, runtime failures return HTTP 200 with `result.isError: true`. See [MCP Errors](/api/mcp#errors) for the response shape.
 
@@ -81,6 +87,8 @@ For agent errors, gateway returns the agent's public `code` and `message` unchan
 | `AGENT_VALIDATION_FAILED` | one of the validation messages below |
 | `AGENT_QUERY_FAILED` | `database query failed` or `response exceeds policy.max_bytes` |
 | `AGENT_QUERY_TIMEOUT` | `query exceeded policy.timeout` |
+| `AGENT_CONSTRAINT_VIOLATION` | `database constraint violation` |
+| `AGENT_TRANSACTION_OUTCOME_UNKNOWN` | `transaction outcome is unknown` |
 | `AGENT_DB_UNREACHABLE` | `database is unreachable` |
 | `AGENT_INTERNAL_ERROR` | `agent internal error` |
 | `AGENT_BUSY` | `agent request queue is full` |

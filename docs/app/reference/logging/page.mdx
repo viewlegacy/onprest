@@ -15,6 +15,7 @@ Request event fields:
 | `capability` | capability name when available |
 | `api_key_name` | API key name from config |
 | `http_status` | response status |
+| `count` | SELECT row count or mutation affected count on success; null on failure |
 | `error_code` | Public application code returned to the caller, or null |
 | `error_message` | Matching public response message, or null on success |
 | `duration_ms` | Non-negative request duration in milliseconds |

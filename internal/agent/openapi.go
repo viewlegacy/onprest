@@ -75,12 +75,24 @@ func schemaForParam(p ParamDef) map[string]any {
 }
 
 func responseSchema(cap CapabilityDef) map[string]any {
+	count := map[string]any{"type": "integer", "format": "int64", "minimum": int64(0)}
+	if cap.Operation.mutation() {
+		return map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"count": count},
+			"required":             []string{"count"},
+			"additionalProperties": false,
+		}
+	}
 	item := map[string]any{"type": "object", "additionalProperties": false}
 	if len(cap.Result) > 0 {
 		props := map[string]any{}
 		required := []string{}
 		for name, col := range cap.Result {
-			prop := map[string]any{"type": col.Type}
+			prop := map[string]any{"type": []any{col.Type, "null"}}
+			if col.Type == "integer" {
+				prop["format"] = "int64"
+			}
 			if col.Description != "" {
 				prop["description"] = col.Description
 			}
@@ -93,8 +105,9 @@ func responseSchema(cap CapabilityDef) map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"rows":  map[string]any{"type": "array", "items": item},
-			"count": map[string]any{"type": "integer"},
+			"count": count,
 		},
-		"required": []string{"rows", "count"},
+		"required":             []string{"rows", "count"},
+		"additionalProperties": false,
 	}
 }
