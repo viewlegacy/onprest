@@ -17,6 +17,8 @@ For read capabilities:
 
 YAML `policy.readonly` is a guardrail, not a replacement for DB permissions.
 
+For mutation capabilities, grant only the required operations on the required tables. Native `RowsAffected()` is returned unchanged, so DB/driver-specific upsert semantics are intentional. Startup EXPLAIN validates syntax, objects, placeholders, and many permission failures without executing the target mutation; it does not validate data-dependent constraints or runtime trigger behavior.
+
 ## Startup Verification
 
 The agent verifies capabilities before connecting to the gateway.

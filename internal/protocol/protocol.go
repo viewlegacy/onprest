@@ -12,6 +12,11 @@ type Request struct {
 	Params     map[string]any `json:"params"`
 }
 
+type CancelRequest struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
 type Response struct {
 	ID     string          `json:"id"`
 	Result json.RawMessage `json:"result,omitempty"`

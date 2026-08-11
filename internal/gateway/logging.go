@@ -5,14 +5,18 @@ import (
 	"time"
 )
 
-func (s *Server) accessLog(requestID, keyName, capability string, status int, code string, message string, start time.Time) {
-	s.accessLogProtocol("rest", requestID, keyName, capability, status, code, message, start)
+func (s *Server) accessLog(requestID, keyName, capability string, status int, code string, message string, start time.Time, count ...*int64) {
+	s.accessLogProtocol("rest", requestID, keyName, capability, status, code, message, start, count...)
 }
 
-func (s *Server) accessLogProtocol(protocol, requestID, keyName, capability string, status int, code string, message string, start time.Time) {
+func (s *Server) accessLogProtocol(protocol, requestID, keyName, capability string, status int, code string, message string, start time.Time, counts ...*int64) {
+	var count any
+	if len(counts) > 0 && counts[0] != nil {
+		count = *counts[0]
+	}
 	s.log("request", map[string]any{
 		"protocol": protocol, "request_id": requestID, "capability": capability, "api_key_name": keyName,
-		"http_status": status, "error_code": emptyToNil(code), "error_message": emptyToNil(message), "duration_ms": time.Since(start).Milliseconds(),
+		"http_status": status, "count": count, "error_code": emptyToNil(code), "error_message": emptyToNil(message), "duration_ms": time.Since(start).Milliseconds(),
 	})
 }
 

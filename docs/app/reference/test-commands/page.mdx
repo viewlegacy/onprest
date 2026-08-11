@@ -13,9 +13,9 @@ Test commands require Go 1.26.5 or later as declared in `go.mod`.
 | `go test -tags=integration ./it/...` / `make test-it` | Full integration suite against a database. Requires Docker for Testcontainers-backed databases. |
 | `make test-it-postgres-ci` | PostgreSQL integration tests, excluding Docker image build tests, run 3 times in a row to catch flakiness. Containers are mandatory. |
 | `make test-it-postgres-stability` | DB-interruption stability test (`TestPostgresDBUnreachableDuringQuery`) run 5 times in a row to confirm the agent handles a database that drops mid-query. |
-| `make test-it-all-db` | Cross-driver smoke test (`TestContainerDBDriver`) across PostgreSQL, MySQL, SQL Server, and Oracle, with a 30-minute timeout. |
+| `make test-it-all-db` | Every `TestContainerDBDriver*` test across PostgreSQL, MySQL, SQL Server, and Oracle, with a 30-minute timeout. The common prefix includes the Oracle transaction-start contract and the PostgreSQL nullable OpenAPI and timestamp compatibility cases. Covers real mutation REST/MCP, constraints, timeout/cancel, permissions, transaction-start cancellation, persisted state, OpenAPI 3.1 response validation, and exact timestamp JSON/timezone coercion. |
 | `make test-it-docker-ops` | Operational tests for the Docker image build and Docker Compose env-file handling (verifies `GATEWAY_API_KEYS_JSON` and bcrypt `$` survive env-file loading). |
-| `make test-it-release-gate` | Full release gate. Runs vulnerability analysis, unit, integration, stability, all-DB, MySQL special-credential, SQL Server TLS, and Docker operational checks, and asserts zero reachable vulnerabilities, zero test/subtest skips, and zero leftover Testcontainers resources. See [Release Gate](/operations/release-gate). |
+| `make test-it-release-gate` | Full release gate. Runs vulnerability analysis, unit, integration, stability, all-DB conformance, MySQL special-credential, PostgreSQL TLS, SQL Server TLS, and Docker operational checks, and asserts zero reachable vulnerabilities, zero test/subtest skips, and zero leftover Testcontainers resources. See [Release Gate](/operations/release-gate). |
 
 ## Unit
 
@@ -31,7 +31,7 @@ Fast, dependency-free checks. Run these first.
 go test -tags=integration ./it/...
 ```
 
-Exercises the agent against a real database. Driver behavior, placeholder conversion, EXPLAIN validation, and error redaction are covered here.
+Exercises the agent and Gateway against a real database. Driver behavior, placeholder conversion, EXPLAIN validation, SELECT, mutation REST/MCP, constraint normalization, timeout/cancel, persisted state, permissions, and error redaction are covered by the applicable suites.
 
 ## DB Selection
 
@@ -55,7 +55,7 @@ make vulncheck                   # reachable vulnerability analysis
 make test-it                     # integration suite
 make test-it-postgres-ci         # PostgreSQL CI run, 3x, no Docker build tests
 make test-it-postgres-stability  # DB-interruption stability, 5x
-make test-it-all-db              # all-driver smoke, 30m timeout
+make test-it-all-db              # all-DB + Oracle start + nullable OpenAPI + timestamp, 30m
 make test-it-docker-ops          # Docker image + compose env-file ops tests
 make test-it-release-gate        # full release gate
 ```
@@ -69,3 +69,11 @@ ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/...
 ```
 
 By default, container-backed tests are skipped when Docker is unavailable. Set `ONPREST_IT_REQUIRE_CONTAINERS=1` to make container availability mandatory, so a missing Docker daemon fails the run instead of silently skipping. Use this in CI and release gates where skips are not acceptable.
+
+The all-driver target runs this exact selection:
+
+```bash
+ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -run '^TestContainerDBDriver' -timeout 30m -count=1 -args -onprest-it-db=all
+```
+
+The release gate additionally runs `TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification` as the `postgres-tls-contract` step. It covers `disable`, `require`, `verify-ca`, and `verify-full`, including private/wrong CA, hostname mismatch, and required client-certificate cases.

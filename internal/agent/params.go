@@ -20,7 +20,7 @@ func validateParams(cap CapabilityDef, input map[string]any) (map[string]any, er
 	for name, def := range cap.Params {
 		v, ok := input[name]
 		if !ok {
-			if def.Default != nil {
+			if def.hasDefault() {
 				v = def.Default
 				ok = true
 			}
@@ -170,10 +170,29 @@ func validateEnum(def ParamDef, value any) error {
 func number(v any) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
-		return n, true
+		return n, !math.IsNaN(n) && !math.IsInf(n, 0)
+	case float32:
+		f := float64(n)
+		return f, !math.IsNaN(f) && !math.IsInf(f, 0)
 	case int:
 		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
 	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
 		return float64(n), true
 	case json.Number:
 		f, err := n.Float64()

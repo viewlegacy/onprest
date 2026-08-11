@@ -2,6 +2,8 @@
 
 Use `database.driver: mysql`.
 
+MySQL `INSERT ... ON DUPLICATE KEY UPDATE` is supported. Onprest returns the driver's native `RowsAffected()` value without translating it into an inserted-row count.
+
 ```yaml
 database:
   driver: mysql

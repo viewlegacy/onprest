@@ -2,6 +2,8 @@
 
 REST calls execute one capability by name.
 
+SELECT success retains the `{"rows": [...], "count": n}` contract. INSERT, UPDATE, and DELETE return only `{"count": n}`. Mutation count is the database driver's native `RowsAffected()` value; `count: 0` is HTTP 200, not a business error.
+
 ## Endpoint
 
 ```http
@@ -50,7 +52,7 @@ Content-Type: application/json
 }
 ```
 
-The exact result shape comes from the agent capability execution. Row fields are limited by the capability `result` allow-list.
+The exact result shape comes from the agent capability execution. Row fields are limited by the capability `result` allow-list. Every listed field is present; a database `NULL` value is returned as JSON `null`, and the generated OpenAPI 3.1 response schema permits `null` alongside the field's declared type.
 
 ## Failure Response
 
@@ -65,4 +67,4 @@ The exact result shape comes from the agent capability execution. Row fields are
 
 The `message` is public client-facing text. Agent validation errors may name the invalid field and reason, but raw detail, SQL text, DB-specific error text, credentials, and submitted param values are not included in external responses.
 
-Agent validation failures return HTTP 400. Agent query timeouts and gateway-to-agent response timeouts return HTTP 504. Other agent query/database failures use HTTP 502; an unavailable or disconnected agent uses HTTP 503.
+Agent validation failures return HTTP 400. Typed database constraints return HTTP 409. Query failures and unknown transaction outcomes return HTTP 502; an unavailable or disconnected agent returns HTTP 503; agent policy timeouts and gateway-to-agent response timeouts return HTTP 504. A gateway timeout or disconnect leaves a mutation outcome unknown and must not be retried automatically. See [Errors](/api/errors) for the canonical mappings.

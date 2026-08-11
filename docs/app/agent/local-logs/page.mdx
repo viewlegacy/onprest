@@ -36,4 +36,4 @@ When `onprest-agent.log` exceeds `logging.max_size`, agent rotates the file by s
 
 ## Operational Guidance
 
-Treat agent local logs as sensitive operational artifacts. They may contain DB-specific detail required for debugging. Keep them on the on-prem side and avoid forwarding them to gateway or managed dashboard pipelines.
+Treat agent local logs as sensitive operational artifacts. They may contain DB-specific detail required for debugging. Keep them on the on-prem side and do not forward them to the gateway or remote aggregation pipelines.
