@@ -207,7 +207,7 @@ capabilities:
         type: string
 ```
 
-The agent loads this file at startup, validates it, runs SQL checks, and then connects to the gateway. Changes require an agent restart.
+The agent loads this file at startup, validates it, runs SQL checks, and then connects to the gateway. `onprest-agent validate --config PATH` runs the same startup preflight without connecting to the gateway. Changes require an agent restart.
 
 For the full schema, policy options, logging settings, and examples, see the documentation.
 
@@ -266,6 +266,17 @@ This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the
 `127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit
 both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml`
 to use the same alternate port.
+
+Validate the Agent configuration and database preflight before starting either
+process:
+
+```sh
+./dist/onprest-agent validate --config examples/capability.postgres.yaml
+```
+
+Success confirms full YAML lint, database Ping, and every capability's
+driver-specific EXPLAIN. It does not connect to the Gateway or execute a
+business capability.
 
 Start the gateway:
 

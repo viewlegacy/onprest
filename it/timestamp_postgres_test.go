@@ -39,7 +39,7 @@ func TestContainerDBDriverPostgresTimestampResultPreservesJSONContract(t *testin
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, 3*time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

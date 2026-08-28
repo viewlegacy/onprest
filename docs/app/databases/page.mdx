@@ -29,7 +29,7 @@ The agent verifies capabilities before connecting to the gateway.
 | EXPLAIN | Catch invalid SQL before exposing the capability |
 | YAML lint | Reject invalid driver, policy, params, result, or logging settings |
 
-If startup verification fails, details are written to `onprest-agent.log`.
+Configuration load and lint failures are reported by the CLI or startup stderr before a runtime diagnostic log is opened. If normal startup reaches the runtime diagnostic sink and then fails during database open, ping, or EXPLAIN, recordable private details are written to `onprest-agent.log`. The standalone `onprest-agent validate` path performs the same DB checks but reports a separate `onprest-agent.validate.log` only after it commits a complete failure record.
 
 ## Connection Generation and TLS
 

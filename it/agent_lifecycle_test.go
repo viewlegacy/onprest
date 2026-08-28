@@ -118,7 +118,7 @@ func TestAgentReconnectsAfterGatewayStarts(t *testing.T) {
 	tmp := t.TempDir()
 	capabilityFile := renderCapability(t, repoRoot(t), tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey)
 
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, io.Discard)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestSameAgentRunnerReconnectsAfterGatewayProcessRestart(t *testing.T) {
 	defer func() { stopProcess(t, gatewayCmd) }()
 	waitForHTTP(t, baseURL+"/healthz", "", http.StatusOK)
 
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, io.Discard)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestCapabilityFileChangesRequireRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, 500*time.Millisecond)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, io.Discard)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

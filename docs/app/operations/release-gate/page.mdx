@@ -37,12 +37,15 @@ Pull requests targeting `main` and pushes to `main` also run these checks:
 | `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
 | `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
 | `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
+| `release-gate / release-ready` | Requires both Linux integration and the complete reusable service lifecycle workflow to succeed |
 
-The three service checks use the native OS managers and a real PostgreSQL instance. They cover service registration and process lifecycle only; the general unit, integration, all-database, and Docker suites remain in `integration-linux`.
+The three service checks use the native OS managers, a real Gateway, and a real PostgreSQL instance. Each host first runs the validation-log crash recovery and adversarial-path safety tests, including native symlink/reparse-point handling, then verifies service registration, actual runtime detail writes and rotation markers while production validation overlaps, latest-failure cleanup, and native file permissions. The reusable workflow fails if any OS job fails or is canceled; `release-ready` also fails unless both it and `integration-linux` succeed. General all-database and Docker coverage remains in `integration-linux`.
+
+The release-gate caller owns concurrency cancellation. The called service lifecycle workflow deliberately has no competing concurrency group, so invoking it cannot cancel its own caller run.
 
 ## Requirements
 
-Release gate commands require Go 1.26.5 or later as declared in `go.mod`. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.5 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
+Release gate commands require Go 1.26.6 or later as declared in `go.mod`. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.6 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
 
 Container-backed tests require Docker daemon access. To make container availability mandatory, use:
 
@@ -54,7 +57,7 @@ If Docker is unavailable and mandatory mode is not enabled, container-backed tes
 
 ## Acceptance Criteria
 
-A release candidate should pass `integration-linux` and all three native service checks, and preserve the architecture boundaries:
+A release candidate should pass `integration-linux`, all three native service checks, and the final `release-ready` aggregation for the exact candidate commit, and preserve the architecture boundaries:
 
 - zero reachable known vulnerabilities reported by `govulncheck ./...`
 - two deployable binaries: `onprest-gateway` and `onprest-agent`

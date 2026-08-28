@@ -75,7 +75,7 @@ REST and HTTP-level MCP errors include `error.code` and public `error.message`.
 
 `message` is part of the public API contract. Agent validation messages may identify the invalid field and reason so callers can fix their request. Clients should still branch on `code`.
 
-Agent-originated raw detail such as stack traces, SQL text, DB-specific error text, DB credentials, and submitted param values is written only to `onprest-agent.log` when needed. It is not sent to gateway and is not included in gateway stdout or HTTP responses.
+Agent-originated DB-specific diagnostic detail is written only to the applicable on-prem local log when needed: `onprest-agent.log` for normal runtime/startup, or the separately locked path returned for a successfully recorded standalone validation diagnostic. It is not sent to the Gateway or included in Gateway stdout, HTTP responses, or validation CLI output. Credentials, Agent keys, API keys, authorization values, and submitted param values are not public diagnostics. See [Agent Local Logs](/agent/local-logs) for cases that intentionally return no validation-log path.
 
 ## Agent-Originated Messages
 

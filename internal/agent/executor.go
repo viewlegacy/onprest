@@ -485,30 +485,9 @@ func (r *Runner) errorResponse(req protocol.Request, code, message, detail strin
 	return protocol.Response{ID: req.ID, Error: &protocol.Error{Code: code, Message: message}}
 }
 
-func (r *Runner) explainAll(parent context.Context) error {
-	for _, cap := range r.cf.CapabilityList() {
-		params := dummyParams(cap)
-		query, args, err := buildSQL(r.cf.Database.Driver, cap.SQL, params)
-		if err != nil {
-			return fmt.Errorf("%s explain build: %w", cap.Name, err)
-		}
-		d, err := timeout(cap.Policy)
-		if err != nil {
-			return fmt.Errorf("%s timeout: %w", cap.Name, err)
-		}
-		ctx, cancel := context.WithTimeout(parent, d)
-		err = r.explainQuery(ctx, query, args)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("%s explain failed: %w", cap.Name, err)
-		}
-	}
-	return nil
-}
-
-func (r *Runner) explainQuery(ctx context.Context, query string, args []any) error {
-	if r.cf.Database.Driver == "sqlserver" {
-		conn, err := r.db.Conn(ctx)
+func explainQuery(ctx context.Context, db *sql.DB, driver, query string, args []any) error {
+	if driver == "sqlserver" {
+		conn, err := db.Conn(ctx)
 		if err != nil {
 			return err
 		}
@@ -533,8 +512,8 @@ func (r *Runner) explainQuery(ctx context.Context, query string, args []any) err
 		}
 		return cleanup()
 	}
-	if r.cf.Database.Driver == "oracle" {
-		conn, err := r.db.Conn(ctx)
+	if driver == "oracle" {
+		conn, err := db.Conn(ctx)
 		if err != nil {
 			return err
 		}
@@ -553,11 +532,11 @@ func (r *Runner) explainQuery(ctx context.Context, query string, args []any) err
 		}
 		return execErr
 	}
-	explain, ok := buildExplainSQL(r.cf.Database.Driver, query)
+	explain, ok := buildExplainSQL(driver, query)
 	if !ok {
-		return fmt.Errorf("unsupported driver: %s", r.cf.Database.Driver)
+		return fmt.Errorf("unsupported driver: %s", driver)
 	}
-	rows, err := r.db.QueryContext(ctx, explain, args...)
+	rows, err := db.QueryContext(ctx, explain, args...)
 	if err != nil {
 		return err
 	}

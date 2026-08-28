@@ -19,8 +19,9 @@ The repository does not need to be deployed from source. Build artifacts can be 
 4. Start a dedicated gateway process for the customer.
 5. Deliver `onprest-agent` and a `capability.yaml` template to the on-prem environment.
 6. Fill in gateway URL, agent private key, DB credentials, and capabilities.
-7. Start the agent.
-8. Verify `/healthz`, `/openapi.json`, REST, and MCP.
+7. Run `onprest-agent validate --config PATH` against the completed file.
+8. Start the agent.
+9. Verify `/healthz`, `/openapi.json`, REST, and MCP.
 
 ## Binary Deployment
 
@@ -69,17 +70,7 @@ Production `gateway.url` values must use `wss://.../ws/agent`. Plain `ws://` is 
 
 The challenge-based `onprest-agent-v2` handshake requires matching gateway and agent releases. An old agent cannot authenticate to a new gateway, and a new agent cannot obtain a challenge from an old gateway. Schedule the two binaries as one coordinated upgrade.
 
-For OS-managed binary operation, register the agent and start it through the host service manager:
-
-```bash
-./onprest-agent service install --config /absolute/path/capability.yaml
-./onprest-agent service start
-./onprest-agent service status
-./onprest-agent service stop
-./onprest-agent service uninstall
-```
-
-`service remove` is an alias for `service uninstall`. `service install` can omit `--config`; in that case it registers `capability.yaml` next to the `onprest-agent` binary. It does not enable automatic start on OS boot. Configure boot-time startup separately with the host OS if required.
+For OS-managed binary operation, follow the separate [new-service installation and existing-service change procedures](/operations/capability-changes). They validate the exact registered file before starting or stopping a service and include post-start health, OpenAPI, REST, and MCP checks. See [CLI Reference](/reference/cli#agent-service-commands) for individual service command syntax and aliases. Service installation does not enable automatic start on OS boot; configure that separately with the host OS if required.
 
 When the agent runs as an OS service, stdout/stderr are handled by the service manager. On macOS service installs, process events go to `/var/log/onprest-agent.stdout.log` and fatal stderr output goes to `/var/log/onprest-agent.stderr.log`. DB-specific detail still belongs in `onprest-agent.log` next to the agent binary.
 

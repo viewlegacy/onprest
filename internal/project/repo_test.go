@@ -243,15 +243,29 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	release := readWorkflow(t, filepath.Join(workflowDir, "release-gate.yml"))
 	assertMainWorkflowTriggers(t, release)
 	releaseJobs := workflowSection(t, release, "jobs")
-	if _, ok := releaseJobs["integration-linux"]; !ok {
-		t.Fatal("release gate workflow missing integration-linux job")
+	for _, job := range []string{"integration-linux", "service-lifecycle", "release-ready"} {
+		if _, ok := releaseJobs[job]; !ok {
+			t.Fatalf("release gate workflow missing %s job", job)
+		}
 	}
-	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") {
-		t.Fatal("release gate workflow does not run make test-it-release-gate")
+	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") ||
+		!strings.Contains(text, "uses: ./.github/workflows/service-lifecycle.yml") ||
+		!strings.Contains(text, "SERVICE_RESULT") || !strings.Contains(text, "concurrency:") || !strings.Contains(text, "cancel-in-progress: true") {
+		t.Fatal("release gate workflow does not aggregate Linux integration and reusable service lifecycle")
 	}
 
 	service := readWorkflow(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
-	assertMainWorkflowTriggers(t, service)
+	serviceEvents := workflowSection(t, service, "on")
+	for _, event := range []string{"workflow_call", "workflow_dispatch"} {
+		if _, ok := serviceEvents[event]; !ok {
+			t.Fatalf("service lifecycle workflow missing %s trigger", event)
+		}
+	}
+	for _, event := range []string{"push", "pull_request"} {
+		if _, ok := serviceEvents[event]; ok {
+			t.Fatalf("service lifecycle workflow must be triggered through release-gate, found direct %s", event)
+		}
+	}
 	serviceJobs := workflowSection(t, service, "jobs")
 	for _, job := range []string{"linux-systemd", "macos-launchd", "windows-service"} {
 		if _, ok := serviceJobs[job]; !ok {
@@ -259,11 +273,51 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		}
 	}
 	serviceText := readText(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
+	if strings.Contains(serviceText, "concurrency:") {
+		t.Fatal("called service lifecycle workflow must not share caller concurrency and cancel its own release gate")
+	}
 	if strings.Contains(serviceText, "\n    paths:") {
 		t.Fatal("service lifecycle must run unconditionally for main PRs and pushes")
 	}
 	if !strings.Contains(serviceText, "scripts/service-test-systemd.Dockerfile") {
 		t.Fatal("linux service lifecycle does not build the systemd test image")
+	}
+	if strings.Count(serviceText, "TestValidateLatestLogCrashRecoveryProcess") != 3 {
+		t.Fatal("service lifecycle must run validate crash recovery on Linux, macOS, and Windows")
+	}
+	for _, testName := range []string{
+		"TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths",
+		"TestValidationRejectsInvalidFixedPathsWithoutMutation",
+	} {
+		if strings.Count(serviceText, testName) != 3 {
+			t.Fatalf("service lifecycle must run %s on Linux, macOS, and Windows", testName)
+		}
+	}
+	for path, required := range map[string][]string{
+		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
+		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "runtimeWriter", "OnprestValidateReader", "temporaryLog"},
+	} {
+		text := readText(t, filepath.Join(root, filepath.FromSlash(path)))
+		for _, marker := range required {
+			if !strings.Contains(text, marker) {
+				t.Fatalf("%s does not exercise production runtime rotation/validation isolation marker %q", path, marker)
+			}
+		}
+	}
+	unixLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_unix.sh"))
+	trapAt := strings.Index(unixLifecycle, "trap cleanup EXIT")
+	installAt := strings.Index(unixLifecycle, `"${elevate[@]}" "$agent_bin" service install`)
+	if trapAt < 0 || installAt <= trapAt || strings.Contains(unixLifecycle[trapAt:installAt], "\ncleanup\n") {
+		t.Fatal("Unix lifecycle invokes final cleanup after starting the Gateway but before installing the service")
+	}
+	for _, invocation := range []string{
+		"test_service_lifecycle_unix.sh /workspace/dist/onprest-agent /workspace/dist/onprest-gateway",
+		"test_service_lifecycle_unix.sh ./dist/onprest-agent ./dist/onprest-gateway",
+		"test_service_lifecycle_windows.ps1 -AgentBin .\\dist\\onprest-agent.exe -GatewayBin .\\dist\\onprest-gateway.exe",
+	} {
+		if !strings.Contains(serviceText, invocation) {
+			t.Fatalf("service lifecycle workflow does not pass both production binaries: %q", invocation)
+		}
 	}
 	systemdImage := readText(t, filepath.Join(root, "scripts", "service-test-systemd.Dockerfile"))
 	for _, want := range []string{"systemd-sysv", "postgresql", `CMD ["/sbin/init"]`} {

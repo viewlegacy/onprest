@@ -38,6 +38,37 @@ The command outputs a plaintext API key and bcrypt `key_hash`. Store only the ha
 
 `--capability-file PATH` is an alias for `--config PATH`. When both are supplied, `--config` takes precedence.
 
+## Validate Agent startup
+
+```bash
+./onprest-agent validate --config ./capability.yaml
+./onprest-agent validate --config ./capability.yaml --format json
+```
+
+`validate` uses the same startup preparation as normal Agent startup: full YAML load and lint, database open, a Ping bounded to 10 seconds, and driver-specific EXPLAIN for every capability using its effective policy timeout. It exits before Gateway challenge retrieval or WebSocket connection and never executes a SELECT or mutation capability. A successful check therefore does not prove Gateway reachability or runtime behavior.
+
+The config path priority is the same as normal startup: `--config`, `--capability-file`, `AGENT_CAPABILITY_FILE`, then `capability.yaml` beside the binary. `--format` is case-sensitive and accepts `text` (default) or `json`.
+
+Text success is one stdout line:
+
+```text
+validation succeeded: driver=postgres capabilities=2
+```
+
+JSON success is one stdout object:
+
+```json
+{"valid":true,"database_driver":"postgres","capabilities":2}
+```
+
+Validation failures use exit `1`. Text failures go to stderr; JSON failures go to stdout with `valid:false`, a fixed `stage`, and a safe `message`. The fixed stages are `config`, `busy`, `detail_log`, `database_open`, `database_ping`, `capability_explain`, `canceled`, and `internal`. Usage errors, including unknown flags, formats, commands, and positional arguments, use exit `2`; help and successful validation use exit `0`.
+
+DB-specific detail is never included in CLI output. Read a validation log only when text output reports a validation detail-log path or JSON includes `detail_log`; configuration and busy failures do not create one, and diagnostic-finalization failure deliberately omits that field. See [Agent Local Logs](/agent/local-logs) for the file lifecycle and protection rules, and [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure) for operator actions.
+
+Configuration diagnostics never reproduce unsafe YAML keys verbatim: keys outside the bounded identifier form, including keys with whitespace, quotes, line breaks, or terminal control characters, are replaced by a fixed placeholder. The lifecycle lock remains held through the completed text or JSON write. Unlock/close is attempted exactly once afterward; a native release error cannot append another record, switch output streams, or contradict the already completed validation result, and process exit remains the kernel-level release fallback.
+
+After a crash, recovery remains bounded to strictly named validation temporary files. The lifecycle lock remains held through output completion so concurrent commands cannot report the wrong run. Detailed recovery, cleanup, and file-protection guidance is centralized in [Agent Local Logs](/agent/local-logs).
+
 ## Agent Service Commands
 
 ```bash
@@ -47,6 +78,8 @@ The command outputs a plaintext API key and bcrypt `key_hash`. Store only the ha
 ./onprest-agent service status
 ./onprest-agent service uninstall
 ```
+
+These are individual commands, not an apply-change sequence; there is no `service restart` command. Use the copy-paste-safe [existing-service change procedure](/operations/capability-changes#apply-a-change-to-an-existing-service) or the separate [new-service installation procedure](/operations/capability-changes#install-a-new-service).
 
 `service remove` is an alias for `service uninstall`. The service commands register and control the agent through the host OS service manager: systemd on Linux, launchd on macOS, and Windows Service on Windows. `status` reports `service`, `native`, `installed`, and `state`, plus PID/config/binary/unit fields when available. If `install` omits `--config`, it registers `capability.yaml` next to the `onprest-agent` binary. `install` does not enable automatic start on OS boot.
 

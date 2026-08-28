@@ -41,6 +41,18 @@ Update the key definition or use a key whose `capabilities` includes the request
 
 Agent stops before connecting to gateway. Check `onprest-agent.log` next to the agent binary.
 
+To check an edited configuration without stopping a running Agent, run:
+
+```bash
+onprest-agent validate --config /absolute/path/capability.yaml
+```
+
+For database-open, Ping, EXPLAIN, or similar recorded failures, inspect only the detail-log path returned by that invocation; it is not the runtime `onprest-agent.log`. Text output identifies it with `see validation detail log`, while JSON uses `detail_log`. Configuration and busy failures are fully reported by the CLI and return no log path. If the CLI reports that the diagnostic could not be recorded, it deliberately omits `detail_log`; do not use an older fixed log as the current diagnostic. A JSON `cleanup_path` names only an incomplete temporary file and may be removed after validation exits.
+
+Do not edit or remove the validation lock file. If another validation is running, wait for it to finish. See [Agent Local Logs](/agent/local-logs) for the authoritative fixed-file, temporary-file, recovery, size, and access-control rules. Check any diagnostic before sending it to support.
+
+Validation success covers YAML lint, DB Ping, and startup EXPLAIN. It does not cover Gateway reachability, real capability results, data-dependent constraints, or trigger runtime behavior.
+
 Common causes:
 
 - DB host or port unreachable.

@@ -1,20 +1,11 @@
 name: service-lifecycle
 
 on:
-  pull_request:
-    branches:
-      - main
-  push:
-    branches:
-      - main
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   linux-systemd:
@@ -25,6 +16,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make build
+      - name: Validate crash recovery and path safety on Linux host
+        run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1
       - name: Build isolated systemd environment
         run: docker build --pull -f scripts/service-test-systemd.Dockerfile -t onprest-service-test-systemd .
       - name: Start isolated systemd and PostgreSQL
@@ -47,9 +40,7 @@ jobs:
           docker exec onprest-service-test runuser -u postgres -- psql -c "ALTER USER postgres PASSWORD 'onprest';"
       - name: Exercise actual systemd lifecycle
         run: |
-          private_key=$(./dist/onprest-gateway create-agent-secret | jq -r .agent_private_key)
-          sed "s|PRIVATE_KEY|$private_key|" scripts/service-test-capability.yaml > dist/capability.input.yaml
-          docker exec onprest-service-test bash -ec 'chmod +x /workspace/scripts/test_service_lifecycle_unix.sh && /workspace/scripts/test_service_lifecycle_unix.sh /workspace/dist/onprest-agent /workspace/dist/capability.input.yaml'
+          docker exec onprest-service-test bash -ec 'chmod +x /workspace/scripts/test_service_lifecycle_unix.sh && /workspace/scripts/test_service_lifecycle_unix.sh /workspace/dist/onprest-agent /workspace/dist/onprest-gateway /workspace/scripts/service-test-capability.yaml'
       - if: always()
         run: docker rm -f onprest-service-test || true
 
@@ -61,6 +52,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make build
+      - name: Validate crash recovery and path safety on macOS host
+        run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1
       - name: Start PostgreSQL
         run: |
           brew install postgresql@16
@@ -70,10 +63,9 @@ jobs:
           "$pg_bin/psql" postgres -c "CREATE ROLE onprest LOGIN PASSWORD 'onprest';"
       - name: Exercise actual launchd lifecycle
         run: |
-          private_key=$(./dist/onprest-gateway create-agent-secret | jq -r .agent_private_key)
-          sed -e "s|PRIVATE_KEY|$private_key|" -e 's/user: postgres/user: onprest/' scripts/service-test-capability.yaml > dist/capability.input.yaml
+          sed -e 's/user: postgres/user: onprest/' scripts/service-test-capability.yaml > dist/capability.input.yaml
           chmod +x scripts/test_service_lifecycle_unix.sh
-          ./scripts/test_service_lifecycle_unix.sh ./dist/onprest-agent ./dist/capability.input.yaml
+          ./scripts/test_service_lifecycle_unix.sh ./dist/onprest-agent ./dist/onprest-gateway ./dist/capability.input.yaml
 
   windows-service:
     runs-on: windows-latest
@@ -88,6 +80,9 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           go build -trimpath -o dist/onprest-gateway.exe ./cmd/gateway
           go build -trimpath -o dist/onprest-agent.exe ./cmd/agent
+      - name: Validate crash recovery and path safety on Windows host
+        shell: powershell
+        run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1
       - name: Install PostgreSQL
         shell: powershell
         run: |
@@ -100,6 +95,4 @@ jobs:
       - name: Exercise actual Windows Service lifecycle
         shell: powershell
         run: |
-          $privateKey = (& .\dist\onprest-gateway.exe create-agent-secret | ConvertFrom-Json).agent_private_key
-          (Get-Content scripts\service-test-capability.yaml -Raw).Replace('PRIVATE_KEY', $privateKey) | Set-Content dist\capability.input.yaml
-          .\scripts\test_service_lifecycle_windows.ps1 -AgentBin .\dist\onprest-agent.exe -CapabilityFile .\dist\capability.input.yaml
+          .\scripts\test_service_lifecycle_windows.ps1 -AgentBin .\dist\onprest-agent.exe -GatewayBin .\dist\onprest-gateway.exe -CapabilityFile .\scripts\service-test-capability.yaml
