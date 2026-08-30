@@ -29,6 +29,7 @@ var mutationDriverSequence atomic.Uint64
 type mutationDriverState struct {
 	mu                                       sync.Mutex
 	calls                                    []string
+	opens, closes                            int
 	beginCtx                                 context.Context
 	execErr, rowsErr, commitErr, rollbackErr error
 	beginErr                                 error
@@ -48,6 +49,20 @@ type mutationDriverState struct {
 	rollbackDoneOnce                         sync.Once
 }
 
+type observedCancellationContext struct {
+	context.Context
+	once     sync.Once
+	observed chan struct{}
+}
+
+func (c *observedCancellationContext) Err() error {
+	err := c.Context.Err()
+	if err != nil {
+		c.once.Do(func() { close(c.observed) })
+	}
+	return err
+}
+
 func (s *mutationDriverState) call(name string) {
 	s.mu.Lock()
 	s.calls = append(s.calls, name)
@@ -57,13 +72,21 @@ func (s *mutationDriverState) call(name string) {
 type mutationTestDriver struct{ state *mutationDriverState }
 
 func (d mutationTestDriver) Open(string) (driver.Conn, error) {
+	d.state.mu.Lock()
+	d.state.opens++
+	d.state.mu.Unlock()
 	return &mutationTestConn{state: d.state}, nil
 }
 
 type mutationTestConn struct{ state *mutationDriverState }
 
 func (c *mutationTestConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("unused") }
-func (c *mutationTestConn) Close() error                        { return nil }
+func (c *mutationTestConn) Close() error {
+	c.state.mu.Lock()
+	c.state.closes++
+	c.state.mu.Unlock()
+	return nil
+}
 func (c *mutationTestConn) Begin() (driver.Tx, error) {
 	return c.BeginTx(context.Background(), driver.TxOptions{})
 }
@@ -103,7 +126,7 @@ func TestBeginMutationTxPoolAcquisitionAndDriverStartupAreBounded(t *testing.T) 
 		execCtx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 		defer cancel()
 		start := time.Now()
-		_, beginState, err := beginMutationTx(t.Context(), execCtx, runner.db)
+		_, beginState, err := beginMutationTx(t.Context(), execCtx, runner.db, "postgres")
 		if !errors.Is(err, context.DeadlineExceeded) || beginState != beginNotStarted {
 			t.Fatalf("state=%v error=%v", beginState, err)
 		}
@@ -140,6 +163,17 @@ func TestBeginMutationTxPoolAcquisitionAndDriverStartupAreBounded(t *testing.T) 
 		case <-time.After(time.Second):
 			t.Fatal("canceled BeginTx did not return")
 		}
+		conn, err := runner.db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+		state.mu.Lock()
+		opens := state.opens
+		state.mu.Unlock()
+		if opens != 2 {
+			t.Fatalf("outcome-unknown BeginTx connection was reused: opens=%d", opens)
+		}
 	})
 
 	t.Run("transaction start and cancellation race never commits", func(t *testing.T) {
@@ -162,7 +196,7 @@ func TestBeginMutationTxPoolAcquisitionAndDriverStartupAreBounded(t *testing.T) 
 				}
 				result := make(chan beginResult, 1)
 				go func() {
-					mtx, beginState, err := beginMutationTx(t.Context(), execCtx, runner.db)
+					mtx, beginState, err := beginMutationTx(t.Context(), execCtx, runner.db, "postgres")
 					result <- beginResult{mtx: mtx, state: beginState, err: err}
 				}()
 				select {
@@ -242,6 +276,75 @@ func TestBeginMutationTxPoolAcquisitionAndDriverStartupAreBounded(t *testing.T) 
 			}()
 		}
 	})
+}
+
+func TestOracleMutationStartCancellationKeepsTransactionContextAliveForRollback(t *testing.T) {
+	for iteration := range 100 {
+		state := &mutationDriverState{
+			beginStarted: make(chan struct{}),
+			beginRelease: make(chan struct{}),
+		}
+		runner := mutationRunner(t, state)
+		runner.cf.Database.Driver = "oracle"
+		baseExecCtx, cancel := context.WithCancel(t.Context())
+		execCtx := &observedCancellationContext{Context: baseExecCtx, observed: make(chan struct{})}
+		type beginResult struct {
+			mtx   *mutationTx
+			state beginState
+			err   error
+		}
+		result := make(chan beginResult, 1)
+		go func() {
+			mtx, state, err := beginMutationTx(t.Context(), execCtx, runner.db, "oracle")
+			result <- beginResult{mtx: mtx, state: state, err: err}
+		}()
+		select {
+		case <-state.beginStarted:
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: BeginTx did not start", iteration)
+		}
+		cancel()
+		select {
+		case <-execCtx.observed:
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: start gate watcher did not win cancellation", iteration)
+		}
+		close(state.beginRelease)
+		var got beginResult
+		select {
+		case got = <-result:
+		case <-time.After(time.Second):
+			t.Fatalf("iteration %d: canceled Oracle mutation did not return", iteration)
+		}
+		if got.mtx == nil || got.state != beginCanceledWithTx || !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("iteration %d: result=%+v, want canceled Oracle transaction", iteration, got)
+		}
+		failure := runner.canceledMutationStartFailure(got.mtx, got.err)
+		if failure == nil || failure.code != "AGENT_QUERY_TIMEOUT" {
+			t.Fatalf("iteration %d: failure=%+v", iteration, failure)
+		}
+		got.mtx.close()
+		conn, err := runner.db.Conn(t.Context())
+		if err != nil {
+			t.Fatalf("iteration %d: reacquire connection: %v", iteration, err)
+		}
+		_ = conn.Close()
+		state.mu.Lock()
+		beginCtxErr := state.beginCtx.Err()
+		rollbackCtxErr := state.rollbackCtxErr
+		calls := append([]string(nil), state.calls...)
+		opens, closes := state.opens, state.closes
+		state.mu.Unlock()
+		if rollbackCtxErr != nil {
+			t.Fatalf("iteration %d: Oracle transaction context canceled before rollback: %v", iteration, rollbackCtxErr)
+		}
+		if got := joinCalls(calls); got != "begin,rollback" {
+			t.Fatalf("iteration %d: calls=%s beginCtxErr=%v opens=%d closes=%d, want begin,rollback", iteration, got, beginCtxErr, opens, closes)
+		}
+		if opens != 2 || closes < 1 {
+			t.Fatalf("iteration %d: canceled Oracle transaction connection was reused: opens=%d closes=%d", iteration, opens, closes)
+		}
+	}
 }
 
 func (c *mutationTestConn) ExecContext(ctx context.Context, _ string, _ []driver.NamedValue) (driver.Result, error) {
@@ -490,16 +593,17 @@ func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 		maxBytes  string
 		wantCode  string
 		wantCalls string
+		discard   bool
 	}{
 		{name: "success zero", state: mutationDriverState{rows: 0}, wantCalls: "begin,exec,rows,commit"},
 		{name: "rows error", state: mutationDriverState{rowsErr: errors.New("rows")}, wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
 		{name: "negative rows", state: mutationDriverState{rows: -1}, wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
 		{name: "max bytes before commit", state: mutationDriverState{rows: 1}, maxBytes: "1B", wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
 		{name: "exec connection lost", state: mutationDriverState{execErr: errors.New("connection reset by peer")}, wantCode: "AGENT_DB_UNREACHABLE", wantCalls: "begin,exec,rollback"},
-		{name: "exec connection lost rollback unknown", state: mutationDriverState{execErr: errors.New("connection reset by peer"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback"},
-		{name: "rollback unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback"},
-		{name: "rollback tx done unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: sql.ErrTxDone}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback"},
-		{name: "commit unknown", state: mutationDriverState{rows: 2, commitErr: errors.New("commit")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit"},
+		{name: "exec connection lost rollback unknown", state: mutationDriverState{execErr: errors.New("connection reset by peer"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
+		{name: "rollback unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
+		{name: "rollback tx done unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: sql.ErrTxDone}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
+		{name: "commit unknown", state: mutationDriverState{rows: 2, commitErr: errors.New("commit")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit", discard: true},
 		{name: "cancel before pool acquisition", state: mutationDriverState{}, cancel: true, wantCode: "AGENT_QUERY_TIMEOUT", wantCalls: ""},
 	}
 	for i := range tests {
@@ -534,6 +638,20 @@ func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 			}
 			if rollbackCtxErr != nil {
 				t.Fatalf("transaction lifetime context was canceled before rollback completed: %v", rollbackCtxErr)
+			}
+			if tc.discard {
+				conn, err := r.db.Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.Close()
+				tc.state.mu.Lock()
+				opens := tc.state.opens
+				closes := tc.state.closes
+				tc.state.mu.Unlock()
+				if opens != 2 || closes < 1 {
+					t.Fatalf("outcome-unknown connection was reused: opens=%d closes=%d", opens, closes)
+				}
 			}
 		})
 	}

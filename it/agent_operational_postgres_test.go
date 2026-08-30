@@ -7,10 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +54,23 @@ func TestProvisioningCLIOutputsRunGatewayAndAgentBinaries(t *testing.T) {
 	}
 
 	addr := freeAddr(t)
+	probe, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gatewayConnections atomic.Int64
+	probeDone := make(chan struct{})
+	go func() {
+		defer close(probeDone)
+		for {
+			conn, err := probe.Accept()
+			if err != nil {
+				return
+			}
+			gatewayConnections.Add(1)
+			_ = conn.Close()
+		}
+	}()
 	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `  echo_customer:
     sql: select :id::int as id
     params:
@@ -65,6 +85,43 @@ func TestProvisioningCLIOutputsRunGatewayAndAgentBinaries(t *testing.T) {
     result:
       id:
         type: integer`)
+	validate := exec.Command(agentBin, "validate", "--config", capabilityFile, "--format", "json")
+	validate.Dir = t.TempDir()
+	validateOutput, err := validate.CombinedOutput()
+	if err != nil {
+		t.Fatalf("validate before Gateway startup: %v\n%s", err, validateOutput)
+	}
+	if got := string(validateOutput); !strings.Contains(got, `"valid":true`) || !strings.Contains(got, `"database_driver":"postgres"`) || strings.Contains(got, "agent_ready") || strings.Contains(got, "gateway_") {
+		t.Fatalf("validate output=%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "onprest-agent.validate.log")); !os.IsNotExist(err) {
+		t.Fatalf("validate success left detail log: %v", err)
+	}
+
+	pingSentinel := "private_ping_sentinel"
+	missingDB := db
+	missingDB.Name = pingSentinel
+	pingConfig := writePostgresCapability(t, t.TempDir(), missingDB, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, capabilityBlock("ping_failure", "select 1::int as id"))
+	startupPing := exec.Command(agentBin, "--config", pingConfig)
+	startupPingOutput, startupPingErr := startupPing.CombinedOutput()
+	if exitCodeOf(startupPingErr) != 1 || bytes.Contains(startupPingOutput, []byte(pingSentinel)) || !bytes.Contains(startupPingOutput, []byte("agent startup failed")) {
+		t.Fatalf("normal startup ping failure exit=%d output=%s", exitCodeOf(startupPingErr), startupPingOutput)
+	}
+	explainSentinel := "private_explain_sentinel"
+	explainConfig := writePostgresCapability(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `  explain_failure:
+    sql: select * from `+explainSentinel+`
+    policy: {readonly: true, timeout: 2s, max_rows: 1, max_bytes: 128KB}
+    result: {id: {type: integer}}`)
+	startupExplain := exec.Command(agentBin, "--config", explainConfig)
+	startupExplainOutput, startupExplainErr := startupExplain.CombinedOutput()
+	if exitCodeOf(startupExplainErr) != 1 || bytes.Contains(startupExplainOutput, []byte(explainSentinel)) || !bytes.Contains(startupExplainOutput, []byte("agent startup failed")) {
+		t.Fatalf("normal startup EXPLAIN failure exit=%d output=%s", exitCodeOf(startupExplainErr), startupExplainOutput)
+	}
+	_ = probe.Close()
+	<-probeDone
+	if got := gatewayConnections.Load(); got != 0 {
+		t.Fatalf("validate attempted %d Gateway connection(s)", got)
+	}
 	gatewayCmd, _ := startProcessWithOutput(t, tmp, gatewayBin, nil, []string{
 		"GATEWAY_ADDR=" + addr,
 		"GATEWAY_AGENT_PUBLIC_KEY=" + agentKeys.PublicKey,
@@ -98,7 +155,7 @@ func TestAgentCapabilityRestartUpdatesGatewayMetadata(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +180,7 @@ func TestAgentCapabilityRestartUpdatesGatewayMetadata(t *testing.T) {
 	}
 
 	writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, capabilityBlock("second_capability", "select 2::int as id"))
-	runner, err = agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err = agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +222,7 @@ func TestAgentInvalidCapabilityRestartDoesNotConnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +248,7 @@ func TestAgentInvalidCapabilityRestartDoesNotConnect(t *testing.T) {
     result:
       id:
         type: integer`)
-	if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil); err == nil {
+	if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil); err == nil {
 		t.Fatal("NewRunner succeeded with invalid readonly update")
 	}
 	waitForHealthAgentState(t, baseURL, false)
@@ -329,7 +386,7 @@ func TestAgentRejectsUnknownCapabilityFromGateway(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +417,7 @@ func TestPostgresReadOnlyDBUserAllowsReadAndBlocksMutationAtStartup(t *testing.T
 
 	addr := freeAddr(t)
 	readFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, capabilityBlock("read_current_user", "select 1::int as id"))
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: readFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: readFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatalf("readonly DB user could not initialize read capability: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -243,15 +244,29 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	release := readWorkflow(t, filepath.Join(workflowDir, "release-gate.yml"))
 	assertMainWorkflowTriggers(t, release)
 	releaseJobs := workflowSection(t, release, "jobs")
-	if _, ok := releaseJobs["integration-linux"]; !ok {
-		t.Fatal("release gate workflow missing integration-linux job")
+	for _, job := range []string{"integration-linux", "service-lifecycle", "release-ready"} {
+		if _, ok := releaseJobs[job]; !ok {
+			t.Fatalf("release gate workflow missing %s job", job)
+		}
 	}
-	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") {
-		t.Fatal("release gate workflow does not run make test-it-release-gate")
+	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") ||
+		!strings.Contains(text, "uses: ./.github/workflows/service-lifecycle.yml") ||
+		!strings.Contains(text, "SERVICE_RESULT") || !strings.Contains(text, "concurrency:") || !strings.Contains(text, "cancel-in-progress: true") {
+		t.Fatal("release gate workflow does not aggregate Linux integration and reusable service lifecycle")
 	}
 
 	service := readWorkflow(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
-	assertMainWorkflowTriggers(t, service)
+	serviceEvents := workflowSection(t, service, "on")
+	for _, event := range []string{"workflow_call", "workflow_dispatch"} {
+		if _, ok := serviceEvents[event]; !ok {
+			t.Fatalf("service lifecycle workflow missing %s trigger", event)
+		}
+	}
+	for _, event := range []string{"push", "pull_request"} {
+		if _, ok := serviceEvents[event]; ok {
+			t.Fatalf("service lifecycle workflow must be triggered through release-gate, found direct %s", event)
+		}
+	}
 	serviceJobs := workflowSection(t, service, "jobs")
 	for _, job := range []string{"linux-systemd", "macos-launchd", "windows-service"} {
 		if _, ok := serviceJobs[job]; !ok {
@@ -259,11 +274,131 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		}
 	}
 	serviceText := readText(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
+	if strings.Contains(serviceText, "concurrency:") {
+		t.Fatal("called service lifecycle workflow must not share caller concurrency and cancel its own release gate")
+	}
 	if strings.Contains(serviceText, "\n    paths:") {
 		t.Fatal("service lifecycle must run unconditionally for main PRs and pushes")
 	}
 	if !strings.Contains(serviceText, "scripts/service-test-systemd.Dockerfile") {
 		t.Fatal("linux service lifecycle does not build the systemd test image")
+	}
+	if strings.Count(serviceText, "TestValidateLatestLogCrashRecoveryProcess") != 3 {
+		t.Fatal("service lifecycle must run validate crash recovery on Linux, macOS, and Windows")
+	}
+	for _, testName := range []string{
+		"TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths",
+		"TestValidationRejectsInvalidFixedPathsWithoutMutation",
+	} {
+		if strings.Count(serviceText, testName) != 3 {
+			t.Fatalf("service lifecycle must run %s on Linux, macOS, and Windows", testName)
+		}
+	}
+	for path, required := range map[string][]string{
+		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
+		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "runtimeWriter", "[Guid]::NewGuid().ToString('N').Substring(0, 10)", "$readerCreated", "$primaryFailure", "$cleanupFailure", "temporaryLog"},
+	} {
+		text := readText(t, filepath.Join(root, filepath.FromSlash(path)))
+		for _, marker := range required {
+			if !strings.Contains(text, marker) {
+				t.Fatalf("%s does not exercise production runtime rotation/validation isolation marker %q", path, marker)
+			}
+		}
+	}
+	unixLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_unix.sh"))
+	windowsLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_windows.ps1"))
+	if strings.Contains(windowsLifecycle, "OnprestValidateReader") {
+		t.Fatal("Windows lifecycle uses a local account name longer than the Windows 20-character limit")
+	}
+	if strings.Contains(windowsLifecycle, "OnprestVal$PID") ||
+		!strings.Contains(windowsLifecycle, "if ($null -ne $cleanupFailure)") ||
+		!strings.Contains(windowsLifecycle, "throw $cleanupFailure") {
+		t.Fatal("Windows lifecycle does not use a collision-resistant account name and fail a successful run on final account cleanup failure")
+	}
+	readerPasswordMatch := regexp.MustCompile(`\$readerPasswordPlain = '([^']+)'`).FindStringSubmatch(windowsLifecycle)
+	if len(readerPasswordMatch) != 2 || len(readerPasswordMatch[1]) > 14 {
+		t.Fatal("Windows lifecycle reader password must not trigger net.exe's interactive legacy-compatibility prompt")
+	}
+	readerPassword := readerPasswordMatch[1]
+	for class, pattern := range map[string]string{
+		"uppercase": `[A-Z]`,
+		"lowercase": `[a-z]`,
+		"digit":     `[0-9]`,
+		"symbol":    `[^A-Za-z0-9]`,
+	} {
+		if !regexp.MustCompile(pattern).MatchString(readerPassword) {
+			t.Fatalf("Windows lifecycle reader password does not satisfy the %s complexity class", class)
+		}
+	}
+	for path, text := range map[string]string{
+		"Unix lifecycle":    unixLifecycle,
+		"Windows lifecycle": windowsLifecycle,
+	} {
+		if strings.Contains(text, "onprest_validate_missing") {
+			t.Fatalf("%s uses a redacted password substring in its missing-database marker", path)
+		}
+		for _, marker := range []string{"validate_missing_database_a", "validate_missing_database_b"} {
+			if !strings.Contains(text, marker) {
+				t.Fatalf("%s does not assert unredacted missing-database marker %q", path, marker)
+			}
+		}
+	}
+	for path, lifecycle := range map[string]struct {
+		text     string
+		settings []string
+	}{
+		"Unix lifecycle": {
+			text: unixLifecycle,
+			settings: []string{
+				"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=1000",
+				"GATEWAY_RATE_LIMIT_BURST=1000",
+			},
+		},
+		"Windows lifecycle": {
+			text: windowsLifecycle,
+			settings: []string{
+				"$env:GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND = '1000'",
+				"$env:GATEWAY_RATE_LIMIT_BURST = '1000'",
+			},
+		},
+	} {
+		for _, setting := range lifecycle.settings {
+			if !strings.Contains(lifecycle.text, setting) {
+				t.Fatalf("%s does not set high test-only rate limit %q", path, setting)
+			}
+		}
+	}
+	if strings.Contains(unixLifecycle, "stat -f '%Lp' \"$fixed_log\" 2>/dev/null || stat -c") ||
+		!strings.Contains(unixLifecycle, "Darwin) stat -f") || !strings.Contains(unixLifecycle, "Linux) stat -c") {
+		t.Fatal("Unix lifecycle does not select permission/size stat syntax by operating system")
+	}
+	if strings.Contains(windowsLifecycle, "Get-FileHash") {
+		t.Fatal("Windows lifecycle hashes a live Agent log without write/delete sharing")
+	}
+	for _, marker := range []string{
+		"function Get-SharedFileHash",
+		"[System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete",
+		"$hasher.ComputeHash($stream)",
+		"$runtimeBefore = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))",
+		"$runtimeAfter = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))",
+	} {
+		if !strings.Contains(windowsLifecycle, marker) {
+			t.Fatalf("Windows lifecycle does not hash live Agent logs with sharing-compatible helper %q", marker)
+		}
+	}
+	trapAt := strings.Index(unixLifecycle, "trap cleanup EXIT")
+	installAt := strings.Index(unixLifecycle, `"${elevate[@]}" "$agent_bin" service install`)
+	if trapAt < 0 || installAt <= trapAt || strings.Contains(unixLifecycle[trapAt:installAt], "\ncleanup\n") {
+		t.Fatal("Unix lifecycle invokes final cleanup after starting the Gateway but before installing the service")
+	}
+	for _, invocation := range []string{
+		"test_service_lifecycle_unix.sh /workspace/dist/onprest-agent /workspace/dist/onprest-gateway",
+		"test_service_lifecycle_unix.sh ./dist/onprest-agent ./dist/onprest-gateway",
+		"test_service_lifecycle_windows.ps1 -AgentBin .\\dist\\onprest-agent.exe -GatewayBin .\\dist\\onprest-gateway.exe",
+	} {
+		if !strings.Contains(serviceText, invocation) {
+			t.Fatalf("service lifecycle workflow does not pass both production binaries: %q", invocation)
+		}
 	}
 	systemdImage := readText(t, filepath.Join(root, "scripts", "service-test-systemd.Dockerfile"))
 	for _, want := range []string{"systemd-sysv", "postgresql", `CMD ["/sbin/init"]`} {

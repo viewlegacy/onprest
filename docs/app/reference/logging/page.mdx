@@ -50,4 +50,6 @@ logging:
   max_files: 3
 ```
 
-`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the local detail log. OS service managers may redirect agent stdout/stderr to separate process log files; those files do not replace `onprest-agent.log`.
+`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the rotating local detail log. OS service managers may redirect agent stdout/stderr to separate process log files; those files do not replace `onprest-agent.log`.
+
+`onprest-agent validate` uses separate, non-rotating files that are not governed by `logging.max_size` or `logging.max_files`. Read a validation diagnostic only when that invocation returns its path. See [Agent Local Logs](/agent/local-logs) for the authoritative file lifecycle, size bound, and access controls.

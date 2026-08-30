@@ -13,7 +13,9 @@ import (
 )
 
 func main() {
-	if handled, code := agent.HandleCLI(os.Args[1:], os.Stdout, os.Stderr); handled {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if handled, code := agent.HandleCLI(ctx, os.Args[1:], os.Stdout, os.Stderr); handled {
 		os.Exit(code)
 	}
 	if handled, err := runAsPlatformService(os.Args[1:]); handled {
@@ -24,8 +26,6 @@ func main() {
 		return
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	if err := runAgent(ctx, os.Args[1:], os.Stdout); err != nil && ctx.Err() == nil {
 		log.Fatalf("agent stopped: %v", err)
 	}
@@ -36,7 +36,7 @@ func runAgent(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("agent config: %w", err)
 	}
-	runner, err := agent.NewRunner(cfg, stdout)
+	runner, err := agent.NewRunner(ctx, cfg, stdout)
 	if err != nil {
 		return fmt.Errorf("agent init: %w", err)
 	}

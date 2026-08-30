@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,6 +111,13 @@ type mutationTx struct {
 	startWatcherDone <-chan struct{}
 	releaseOnce      sync.Once
 	release          context.CancelFunc
+	discard          bool
+}
+
+func (m *mutationTx) discardConnection() {
+	if m != nil {
+		m.discard = true
+	}
 }
 
 func (m *mutationTx) close() {
@@ -118,15 +126,25 @@ func (m *mutationTx) close() {
 	}
 	m.releaseOnce.Do(func() {
 		m.release()
+		if m.discard {
+			discardSQLConn(m.conn)
+		}
 		_ = m.conn.Close()
 	})
+}
+
+func discardSQLConn(conn *sql.Conn) {
+	if conn == nil {
+		return
+	}
+	_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 }
 
 // beginMutationTx bounds both pool acquisition and driver transaction startup
 // with execCtx without attaching the execution deadline to the established
 // transaction. The gate is disarmed atomically when BeginTx succeeds, leaving
 // the transaction alive until explicit commit/rollback completes.
-func beginMutationTx(requestCtx, execCtx context.Context, db *sql.DB) (*mutationTx, beginState, error) {
+func beginMutationTx(requestCtx, execCtx context.Context, db *sql.DB, driverName string) (*mutationTx, beginState, error) {
 	conn, err := db.Conn(execCtx)
 	if err != nil {
 		return nil, beginNotStarted, err
@@ -156,7 +174,14 @@ func beginMutationTx(requestCtx, execCtx context.Context, db *sql.DB) (*mutation
 		cancelStart(err)
 	}
 
-	tx, err := conn.BeginTx(startCtx, &sql.TxOptions{Isolation: sql.LevelDefault})
+	beginCtx := context.Context(startCtx)
+	if driverName == "oracle" {
+		// go-ora starts a transaction without network I/O. Keeping its
+		// database/sql transaction context detached from the execution deadline
+		// prevents a late cancellation break from poisoning the next operation.
+		beginCtx = lifetimeCtx
+	}
+	tx, err := conn.BeginTx(beginCtx, &sql.TxOptions{Isolation: sql.LevelDefault})
 	if err == nil {
 		startedFirst := gate.CompareAndSwap(0, 1)
 		stopWatcher()
@@ -182,6 +207,9 @@ func beginMutationTx(requestCtx, execCtx context.Context, db *sql.DB) (*mutation
 	stopWatcher()
 	cancelStart(context.Canceled)
 	releaseLifetime()
+	if canceledFirst {
+		discardSQLConn(conn)
+	}
 	_ = conn.Close()
 	if canceledFirst {
 		return nil, beginOutcomeUnknown, err
@@ -190,7 +218,7 @@ func beginMutationTx(requestCtx, execCtx context.Context, db *sql.DB) (*mutation
 }
 
 func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap CapabilityDef, query string, args []any) (json.RawMessage, int64, *mutationFailure) {
-	mtx, state, err := beginMutationTx(requestCtx, execCtx, r.db)
+	mtx, state, err := beginMutationTx(requestCtx, execCtx, r.db, r.cf.Database.Driver)
 	if err != nil {
 		if state == beginOutcomeUnknown {
 			return nil, 0, &mutationFailure{errorOutcomeUnknown, "transaction outcome is unknown", err.Error()}
@@ -212,12 +240,14 @@ func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap Capabi
 		mtx.close()
 	}()
 	failAfterRollback := func(original error, code, message string) (json.RawMessage, int64, *mutationFailure) {
-		rb := rollbackMutation(tx)
+		failure := rollbackMutationFailure(mtx, original, code, message, false)
 		terminal = true
-		return nil, 0, mutationFailureForRollback(original, rb, code, message)
+		return nil, 0, failure
 	}
 	if state == beginCanceledWithTx {
-		return failAfterRollback(execCtx.Err(), "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
+		failure := r.canceledMutationStartFailure(mtx, execCtx.Err())
+		terminal = true
+		return nil, 0, failure
 	}
 	result, err := tx.ExecContext(execCtx, query, args...)
 	if err != nil {
@@ -256,10 +286,26 @@ func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap Capabi
 	}
 	if err := tx.Commit(); err != nil {
 		terminal = true
+		mtx.discardConnection()
 		return nil, 0, &mutationFailure{errorOutcomeUnknown, "transaction outcome is unknown", err.Error()}
 	}
 	terminal = true
 	return payload, count, nil
+}
+
+func (r *Runner) canceledMutationStartFailure(mtx *mutationTx, cause error) *mutationFailure {
+	return rollbackMutationFailure(mtx, cause, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail, r.cf.Database.Driver == "oracle")
+}
+
+func rollbackMutationFailure(mtx *mutationTx, original error, code, message string, discard bool) *mutationFailure {
+	if discard {
+		mtx.discardConnection()
+	}
+	rb := rollbackMutation(mtx.tx)
+	if rb.state != rollbackConfirmed {
+		mtx.discardConnection()
+	}
+	return mutationFailureForRollback(original, rb, code, message)
 }
 
 func mutationFailureForRollback(original error, rb rollbackResult, code, message string) *mutationFailure {
@@ -485,30 +531,9 @@ func (r *Runner) errorResponse(req protocol.Request, code, message, detail strin
 	return protocol.Response{ID: req.ID, Error: &protocol.Error{Code: code, Message: message}}
 }
 
-func (r *Runner) explainAll(parent context.Context) error {
-	for _, cap := range r.cf.CapabilityList() {
-		params := dummyParams(cap)
-		query, args, err := buildSQL(r.cf.Database.Driver, cap.SQL, params)
-		if err != nil {
-			return fmt.Errorf("%s explain build: %w", cap.Name, err)
-		}
-		d, err := timeout(cap.Policy)
-		if err != nil {
-			return fmt.Errorf("%s timeout: %w", cap.Name, err)
-		}
-		ctx, cancel := context.WithTimeout(parent, d)
-		err = r.explainQuery(ctx, query, args)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("%s explain failed: %w", cap.Name, err)
-		}
-	}
-	return nil
-}
-
-func (r *Runner) explainQuery(ctx context.Context, query string, args []any) error {
-	if r.cf.Database.Driver == "sqlserver" {
-		conn, err := r.db.Conn(ctx)
+func explainQuery(ctx context.Context, db *sql.DB, driver, query string, args []any) error {
+	if driver == "sqlserver" {
+		conn, err := db.Conn(ctx)
 		if err != nil {
 			return err
 		}
@@ -533,8 +558,8 @@ func (r *Runner) explainQuery(ctx context.Context, query string, args []any) err
 		}
 		return cleanup()
 	}
-	if r.cf.Database.Driver == "oracle" {
-		conn, err := r.db.Conn(ctx)
+	if driver == "oracle" {
+		conn, err := db.Conn(ctx)
 		if err != nil {
 			return err
 		}
@@ -553,11 +578,11 @@ func (r *Runner) explainQuery(ctx context.Context, query string, args []any) err
 		}
 		return execErr
 	}
-	explain, ok := buildExplainSQL(r.cf.Database.Driver, query)
+	explain, ok := buildExplainSQL(driver, query)
 	if !ok {
-		return fmt.Errorf("unsupported driver: %s", r.cf.Database.Driver)
+		return fmt.Errorf("unsupported driver: %s", driver)
 	}
-	rows, err := r.db.QueryContext(ctx, explain, args...)
+	rows, err := db.QueryContext(ctx, explain, args...)
 	if err != nil {
 		return err
 	}

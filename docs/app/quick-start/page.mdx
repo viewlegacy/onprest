@@ -166,9 +166,23 @@ capabilities:
 
 The example API key explicitly allows only `get_customer` and `update_customer`. Mutation success is `{"count": n}`. Zero affected rows is still success; decide whether that is a business error in the caller.
 
-At startup, the agent runs YAML lint, DB ping, and SQL EXPLAIN verification. If startup validation fails, DB-specific detail and SQL text are not written to stderr; detail is written to `onprest-agent.log` next to the agent binary.
+## 6. Validate the Agent Configuration
 
-## 6. Start Gateway and Agent
+Validate the exact configuration file that the Agent will start with. For the repository example, run:
+
+```bash
+./dist/onprest-agent validate --config ./examples/capability.postgres.yaml
+```
+
+If you created your own file in step 5, run this instead:
+
+```bash
+./dist/onprest-agent validate --config ./capability.yaml
+```
+
+Validation performs YAML lint, DB Ping, and SQL EXPLAIN preparation without connecting to the Gateway or executing a capability. If validation fails, do not start the Agent. Read a validation log only when the command reports a detail-log path; configuration and concurrent-validation errors are CLI-only, and a diagnostic-finalization failure deliberately reports no diagnostic path. See [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure) and [Agent Local Logs](/agent/local-logs).
+
+## 7. Start Gateway and Agent
 
 The commands below use the repository example files. If you created your own files in steps 2-5, replace `./examples/gateway.env` with `./gateway.env` and `./examples/capability.postgres.yaml` with `./capability.yaml`.
 
@@ -181,17 +195,23 @@ set +a
 ./dist/onprest-gateway
 ```
 
-Start the agent in another terminal.
+Start the Agent in another terminal, passing the same configuration path that succeeded in step 6. For the repository example, run:
 
 ```bash
 ./dist/onprest-agent --config ./examples/capability.postgres.yaml
+```
+
+If you validated your own file, run this instead:
+
+```bash
+./dist/onprest-agent --config ./capability.yaml
 ```
 
 If `--config` and `AGENT_CAPABILITY_FILE` are both omitted, the agent reads `capability.yaml` next to the `onprest-agent` binary.
 
 The agent connects outbound to `/ws/agent`. During connection, the gateway verifies the signature with the agent public key. After connection, the gateway calls the internal `meta` capability to fetch the agent-generated OpenAPI spec and caches it in memory (see [OpenAPI](/api/openapi)).
 
-## 7. Verify Health
+## 8. Verify Health
 
 ```bash
 curl -s http://localhost:8080/healthz
@@ -206,7 +226,7 @@ curl -s http://localhost:8080/healthz
 }
 ```
 
-## 8. Verify REST Read and Mutation
+## 9. Verify REST Read and Mutation
 
 Set the plaintext API key in the shell that will call the gateway. If you are using the repository example files, use the example plaintext key.
 
@@ -249,7 +269,7 @@ curl -s \
 { "count": 1 }
 ```
 
-## 9. Verify OpenAPI
+## 10. Verify OpenAPI
 
 ```bash
 curl -s \
@@ -259,7 +279,7 @@ curl -s \
 
 OpenAPI is fetched from agent metadata, cached by the gateway, and filtered by the API key's allowed capabilities. It does not include SQL text or DB connection information.
 
-## 10. Verify MCP
+## 11. Verify MCP
 
 ```bash
 curl -s \
@@ -279,7 +299,7 @@ curl -s \
 
 The tool result contains `structuredContent: {"count": 1}`. MCP `tools/list` is generated from the OpenAPI document and filtered by the API key's allowed capabilities.
 
-## 11. Verify Committed Database State
+## 12. Verify Committed Database State
 
 Read through the capability boundary again:
 
@@ -300,7 +320,7 @@ docker compose -f examples/postgres.compose.yml exec -T postgres \
 
 The command prints `Ada MCP`, confirming the REST update and subsequent MCP update committed.
 
-## 12. Stop Example Database
+## 13. Stop Example Database
 
 ```bash
 make quickstart-db-down

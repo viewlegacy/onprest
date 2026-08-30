@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -18,7 +19,19 @@ import (
 	agentpkg "github.com/viewlegacy/onprest/internal/agent"
 )
 
+func exitCodeOf(err error) int {
+	if err == nil {
+		return 0
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
 func TestContainerDBDriverSmoke(t *testing.T) {
+	agentBin := filepath.Join(t.TempDir(), "onprest-agent")
+	buildBinary(t, repoRoot(t), agentBin, "./cmd/agent")
 	for _, tc := range []struct {
 		name   string
 		driver string
@@ -39,11 +52,21 @@ func TestContainerDBDriverSmoke(t *testing.T) {
 			addr := freeAddr(t)
 			tmp := t.TempDir()
 			capabilityFile := writeContainerCapability(t, tmp, tc.driver, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, tc.sql)
+			validate := exec.Command(agentBin, "validate", "--config", capabilityFile, "--format", "json")
+			validate.Dir = tmp
+			validateOutput, err := validate.CombinedOutput()
+			if err != nil {
+				t.Fatalf("production validate failed for %s: %v\n%s", tc.driver, err, validateOutput)
+			}
+			validation := string(validateOutput)
+			if !strings.Contains(validation, `"valid":true`) || !strings.Contains(validation, `"database_driver":"`+tc.driver+`"`) || strings.Contains(validation, "agent_ready") || strings.Contains(validation, "gateway_") {
+				t.Fatalf("production validate output for %s: %s", tc.driver, validation)
+			}
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			baseURL := startInternalGateway(t, ctx, addr, secrets, 2*time.Second)
-			runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+			runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -99,7 +122,7 @@ func TestContainerDBDriverMCPInt64BoundaryReachesRealDatabaseExactly(t *testing.
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			baseURL := startInternalGateway(t, ctx, addr, secrets, 3*time.Second)
-			runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+			runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,7 +173,7 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 			defer cancel()
 			gatewayLogs := &lockedBuffer{}
 			baseURL := startInternalGatewayWithLog(t, ctx, addr, secrets, 8*time.Second, gatewayLogs)
-			runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+			runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -487,7 +510,7 @@ func TestMySQLDSNSpecialCredentialsConnectToRealDatabase(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, 2*time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatalf("NewRunner with special MySQL credentials: %v", err)
 	}
@@ -541,7 +564,7 @@ func TestContainerDBDriverReadonlyBackslashQuoteCannotExecuteSecondStatement(t *
 			execDBStatements(t, tc.driver, cfg, tc.setup)
 			secrets := newITSecrets(t)
 			path := writeContainerCapability(t, t.TempDir(), tc.driver, cfg, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, tc.attack)
-			if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: path, ReconnectEvery: time.Second}, nil); err == nil {
+			if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: path, ReconnectEvery: time.Second}, nil); err == nil {
 				t.Fatal("readonly lint accepted a backslash-quote multi-statement attack")
 			}
 
@@ -576,7 +599,7 @@ func TestPostgresNestedBlockCommentCannotBypassReadonly(t *testing.T) {
 	secrets := newITSecrets(t)
 	attack := "/* outer /* inner */ SELECT */ UPDATE onprest_nested_comment_guard SET value = 99 WHERE id = 1"
 	path := writeContainerCapability(t, t.TempDir(), "postgres", cfg, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, attack)
-	if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: path, ReconnectEvery: time.Second}, nil); err == nil {
+	if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: path, ReconnectEvery: time.Second}, nil); err == nil {
 		t.Fatal("readonly lint accepted a nested block-comment classification bypass")
 	}
 	db, err := sql.Open(sqlDriverName("postgres"), integrationDBDSN("postgres", cfg))
@@ -615,7 +638,7 @@ func TestContainerDBDriverWritableMultipleStatementsCannotReachDatabase(t *testi
 			secrets := newITSecrets(t)
 			attack := "update onprest_writable_guard set value = 99 where id = 1; delete from onprest_writable_guard where id = 1"
 			path := writeContainerWritableCapability(t, t.TempDir(), driver, cfg, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, attack)
-			if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: path, ReconnectEvery: time.Second}, nil); err == nil {
+			if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: path, ReconnectEvery: time.Second}, nil); err == nil {
 				t.Fatal("writable lint accepted multiple statements")
 			}
 			if got := mutationGuardValue(t, driver, cfg, "onprest_writable_guard"); got != 7 {
@@ -651,7 +674,7 @@ func TestContainerDBDriverErrorsAreHiddenFromGatewayResponse(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			baseURL := startInternalGateway(t, ctx, addr, secrets, 2*time.Second)
-			runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+			runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -713,7 +736,7 @@ func TestContainerDBDriverTimeoutsAreNormalized(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			baseURL := startInternalGateway(t, ctx, addr, secrets, 1500*time.Millisecond)
-			runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+			runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -861,6 +884,24 @@ func TestContainerDBDriverStartupDMLExplainPermissionErrorsArePrivate(t *testing
 			agentBin := filepath.Join(tmp, "onprest-agent")
 			buildBinary(t, repoRoot(t), agentBin, "./cmd/agent")
 			capabilityFile := writeContainerPermissionCapability(t, tmp, tc.driver, restricted, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, query)
+			validate := exec.Command(agentBin, "validate", "--config", capabilityFile, "--format", "json")
+			validate.Dir = tmp
+			validateOutput, validateErr := validate.CombinedOutput()
+			if exitCodeOf(validateErr) != 1 || !bytes.Contains(validateOutput, []byte(`"stage":"capability_explain"`)) {
+				t.Fatalf("%s validate permission failure exit=%d output=%s", tc.driver, exitCodeOf(validateErr), validateOutput)
+			}
+			for _, leaked := range []string{query, restricted.User, restricted.Password} {
+				if leaked != "" && bytes.Contains(bytes.ToLower(validateOutput), bytes.ToLower([]byte(leaked))) {
+					t.Fatalf("validate output leaked %s detail %q: %s", tc.driver, leaked, validateOutput)
+				}
+			}
+			validateLog, err := os.ReadFile(filepath.Join(tmp, "onprest-agent.validate.log"))
+			if err != nil || bytes.Contains(validateLog, []byte(restricted.Password)) {
+				t.Fatalf("validate detail log error=%v content=%s", err, validateLog)
+			}
+			if _, err := os.Stat(agentBin + ".log"); !os.IsNotExist(err) {
+				t.Fatalf("validate touched runtime log: %v", err)
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			baseURL := startInternalGateway(t, ctx, addr, secrets, 2*time.Second)
@@ -1000,7 +1041,7 @@ func TestContainerDBDriverPolicySemantics(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			baseURL := startInternalGateway(t, ctx, addr, secrets, 2*time.Second)
-			runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+			runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1063,7 +1104,7 @@ func TestContainerDBDriverStartupRejectsUnreachableDB(t *testing.T) {
 				Password: itDBPassword,
 			}
 			capabilityFile := writeContainerStartupCapability(t, tmp, tc.driver, db, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, tc.sql)
-			if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil); err == nil {
+			if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil); err == nil {
 				t.Fatalf("%s agent runner started against an unreachable DB, want startup failure", tc.driver)
 			}
 		})

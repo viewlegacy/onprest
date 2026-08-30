@@ -11,16 +11,30 @@ onprest-agent.log.3
 
 The local log is the place for DB-specific and SQL execution detail. Gateway stdout and HTTP responses intentionally omit those details.
 
+The standalone validation command uses separate files in the same directory:
+
+```text
+onprest-agent.validate.log
+.onprest-agent.validate.<32-lowercase-hex-run-id>.tmp
+.onprest-agent.validate.lock
+```
+
+`onprest-agent.validate.log` contains only the latest completed, recordable validation failure. A later recordable failure atomically replaces it, and a fully completed success deletes it. Configuration and busy failures do not replace an older fixed log. A temporary file can exist while validation is running, after an abnormal process exit, or when cleanup itself fails; the next lock owner recovers only strictly named orphan temporary files. The contentless lock file serializes validation processes and must not be edited, renamed, or removed.
+
 When the agent runs in a terminal, process-level events such as `agent_ready` are written to stdout and fatal startup messages are written to stderr. When installed as an OS service, the service manager may redirect those streams to separate stdout/stderr files. These service stdout/stderr files are process logs, not replacements for `onprest-agent.log`.
 
 ## When Detail Is Logged
 
-Agent writes local detail when:
+The runtime Agent writes `onprest-agent.log` detail when:
 
 - DB ping fails at startup.
 - SQL EXPLAIN fails at startup.
 - Runtime capability execution fails.
 - DB permissions, syntax, timeout, or connectivity errors occur.
+
+The `validate` command can commit private detail for failures after configuration load, including database open, Ping, EXPLAIN, cancellation during DB checks, and DB-close failure. It returns the fixed path only after the temporary record has been written, synced, closed, and atomically committed.
+
+Read `onprest-agent.validate.log` only when the same invocation names it: text output says `see validation detail log`, or JSON contains `detail_log`. Configuration and busy failures are safe CLI messages and return no path. If diagnostic creation or finalization fails, the CLI returns stage `detail_log` without `detail_log`; an older fixed log is not the current failure. A JSON `cleanup_path`, when present, names an incomplete temporary file, not a diagnostic to read.
 
 ## Rotation
 
@@ -37,3 +51,5 @@ When `onprest-agent.log` exceeds `logging.max_size`, agent rotates the file by s
 ## Operational Guidance
 
 Treat agent local logs as sensitive operational artifacts. They may contain DB-specific detail required for debugging. Keep them on the on-prem side and do not forward them to the gateway or remote aggregation pipelines.
+
+Runtime rotation settings do not apply to validation files. A completed validation log is limited to 1 MiB; while validation runs, the previous fixed log and one 1 MiB temporary may coexist. Unix creates validation files with mode `0600`; Windows uses a protected DACL limited to the invoking user, SYSTEM, and Administrators. See [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure) for failure-specific operator actions.
