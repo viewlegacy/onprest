@@ -319,9 +319,11 @@ function Assert-NewCapabilityAbsent {
     }
   }
   # Windows local account names are limited to 20 characters. A random suffix
-  # avoids colliding with an account left by an interrupted previous run.
+  # avoids colliding with an account left by an interrupted previous run. Keep
+  # the password at 14 characters or fewer so net.exe does not prompt for
+  # pre-Windows 2000 compatibility in this non-interactive CI session.
   $readerName = "OnprestVal$([Guid]::NewGuid().ToString('N').Substring(0, 10))"
-  $readerPasswordPlain = 'Onprest-Validate-Reader-42!'
+  $readerPasswordPlain = 'Onpr3st-Val42!'
   & net.exe user $readerName $readerPasswordPlain /add 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "failed to create test reader account: exit $LASTEXITCODE" }
   $readerCreated = $true

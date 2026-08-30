@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -313,6 +314,21 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		!strings.Contains(windowsLifecycle, "if ($null -ne $cleanupFailure)") ||
 		!strings.Contains(windowsLifecycle, "throw $cleanupFailure") {
 		t.Fatal("Windows lifecycle does not use a collision-resistant account name and fail a successful run on final account cleanup failure")
+	}
+	readerPasswordMatch := regexp.MustCompile(`\$readerPasswordPlain = '([^']+)'`).FindStringSubmatch(windowsLifecycle)
+	if len(readerPasswordMatch) != 2 || len(readerPasswordMatch[1]) > 14 {
+		t.Fatal("Windows lifecycle reader password must not trigger net.exe's interactive legacy-compatibility prompt")
+	}
+	readerPassword := readerPasswordMatch[1]
+	for class, pattern := range map[string]string{
+		"uppercase": `[A-Z]`,
+		"lowercase": `[a-z]`,
+		"digit":     `[0-9]`,
+		"symbol":    `[^A-Za-z0-9]`,
+	} {
+		if !regexp.MustCompile(pattern).MatchString(readerPassword) {
+			t.Fatalf("Windows lifecycle reader password does not satisfy the %s complexity class", class)
+		}
 	}
 	for path, text := range map[string]string{
 		"Unix lifecycle":    unixLifecycle,
