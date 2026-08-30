@@ -77,6 +77,27 @@ function Get-OpenAPIText {
     -Headers @{Authorization="Bearer $($apiSecret.api_key)"}).Content
 }
 
+function Get-SharedFileHash([string]$Path) {
+  $stream = [System.IO.FileStream]::new(
+    $Path,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+  )
+  try {
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      return ([System.BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '')
+    }
+    finally {
+      $hasher.Dispose()
+    }
+  }
+  finally {
+    $stream.Dispose()
+  }
+}
+
 function Assert-OldPublicContract {
   $rest = Invoke-RestMethod -Uri http://127.0.0.1:18080/api/v1/capabilities/runtime_marker_a -Method Post `
     -Headers @{Authorization="Bearer $($apiSecret.api_key)"} -ContentType 'application/json' -Body '{"runtime_marker_a":"service-old"}'
@@ -244,7 +265,7 @@ function Assert-NewCapabilityAbsent {
   }
   $postRotationStatus = Invoke-AgentService @('status')
   if ($postRotationStatus -notmatch '(?m)^state: running$') { throw "service stopped during runtime rotation: $postRotationStatus" }
-  $runtimeBefore = @((Get-FileHash $runtimeLog).Hash, (Get-FileHash $rotatedLog).Hash)
+  $runtimeBefore = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))
 
   $invalidA = Join-Path (Split-Path $AgentBin) 'capability.validate-a.yaml'
   $invalidB = Join-Path (Split-Path $AgentBin) 'capability.validate-b.yaml'
@@ -315,7 +336,7 @@ function Assert-NewCapabilityAbsent {
     Remove-Job $blackhole -Force -ErrorAction SilentlyContinue
   }
   $lockFile = Join-Path (Split-Path $AgentBin) '.onprest-agent.validate.lock'
-  $fixedHashBeforeBusy = (Get-FileHash $fixedLog).Hash
+  $fixedHashBeforeBusy = Get-SharedFileHash $fixedLog
   $temporaryBeforeBusy = @((Get-ChildItem (Split-Path $AgentBin) -Filter '.onprest-agent.validate.*.tmp' -File).FullName)
   $lockStream = [System.IO.FileStream]::new(
     $lockFile,
@@ -329,7 +350,7 @@ function Assert-NewCapabilityAbsent {
     if ($LASTEXITCODE -ne 1 -or ($busy -join "`n") -notmatch '"stage":"busy"') {
       throw "second validate did not report busy: $busy"
     }
-    if ((Get-FileHash $fixedLog).Hash -ne $fixedHashBeforeBusy) {
+    if ((Get-SharedFileHash $fixedLog) -ne $fixedHashBeforeBusy) {
       throw 'busy validation changed the completed failure log'
     }
     $temporaryAfterBusy = @((Get-ChildItem (Split-Path $AgentBin) -Filter '.onprest-agent.validate.*.tmp' -File).FullName)
@@ -343,7 +364,7 @@ function Assert-NewCapabilityAbsent {
   }
   $success = & $AgentBin validate --config $DefaultConfig
   if ($LASTEXITCODE -ne 0 -or (Test-Path $fixedLog)) { throw "validate success cleanup failed: $success" }
-  $runtimeAfter = @((Get-FileHash $runtimeLog).Hash, (Get-FileHash $rotatedLog).Hash)
+  $runtimeAfter = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))
   if (($runtimeBefore -join ',') -ne ($runtimeAfter -join ',')) { throw 'validate changed runtime logs' }
   Remove-Item $invalidA, $invalidB -Force
 

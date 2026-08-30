@@ -348,6 +348,20 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		!strings.Contains(unixLifecycle, "Darwin) stat -f") || !strings.Contains(unixLifecycle, "Linux) stat -c") {
 		t.Fatal("Unix lifecycle does not select permission/size stat syntax by operating system")
 	}
+	if strings.Contains(windowsLifecycle, "Get-FileHash") {
+		t.Fatal("Windows lifecycle hashes a live Agent log without write/delete sharing")
+	}
+	for _, marker := range []string{
+		"function Get-SharedFileHash",
+		"[System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete",
+		"$hasher.ComputeHash($stream)",
+		"$runtimeBefore = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))",
+		"$runtimeAfter = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))",
+	} {
+		if !strings.Contains(windowsLifecycle, marker) {
+			t.Fatalf("Windows lifecycle does not hash live Agent logs with sharing-compatible helper %q", marker)
+		}
+	}
 	trapAt := strings.Index(unixLifecycle, "trap cleanup EXIT")
 	installAt := strings.Index(unixLifecycle, `"${elevate[@]}" "$agent_bin" service install`)
 	if trapAt < 0 || installAt <= trapAt || strings.Contains(unixLifecycle[trapAt:installAt], "\ncleanup\n") {
