@@ -5,7 +5,6 @@ package it
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -93,7 +92,12 @@ func TestContainerDBDriverOracleTransactionStartIsImmediateAndRollbackable(t *te
 
 	db.SetMaxOpenConns(1)
 	for iteration := range 100 {
-		beginCtx, cancelBegin := context.WithCancel(t.Context())
+		conn, err := db.Conn(t.Context())
+		if err != nil {
+			t.Fatalf("iteration %d: acquire dedicated connection: %v", iteration, err)
+		}
+		execCtx, cancelBegin := context.WithCancel(t.Context())
+		beginCtx := context.WithoutCancel(execCtx)
 		barrier := make(chan struct{})
 		type beginResult struct {
 			tx      *sql.Tx
@@ -104,7 +108,7 @@ func TestContainerDBDriverOracleTransactionStartIsImmediateAndRollbackable(t *te
 		go func() {
 			<-barrier
 			started := time.Now()
-			tx, err := db.BeginTx(beginCtx, &sql.TxOptions{})
+			tx, err := conn.BeginTx(beginCtx, &sql.TxOptions{})
 			result <- beginResult{tx: tx, err: err, elapsed: time.Since(started)}
 		}()
 		canceled := make(chan struct{})
@@ -120,17 +124,19 @@ func TestContainerDBDriverOracleTransactionStartIsImmediateAndRollbackable(t *te
 			t.Fatalf("iteration %d: Oracle BeginTx/cancel race took %s", iteration, got.elapsed)
 		}
 		if got.tx == nil {
-			if !errors.Is(got.err, context.Canceled) {
-				t.Fatalf("iteration %d: tx=nil error=%v", iteration, got.err)
-			}
+			t.Fatalf("iteration %d: detached Oracle BeginTx failed: %v", iteration, got.err)
 		} else {
 			if got.err != nil {
 				t.Fatalf("iteration %d: tx returned with error=%v", iteration, got.err)
 			}
-			if err := got.tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			if err := got.tx.Rollback(); err != nil {
 				t.Fatalf("iteration %d: rollback error=%v", iteration, err)
 			}
 		}
+		if err := conn.PingContext(t.Context()); err != nil {
+			t.Fatalf("iteration %d: detached Oracle transaction poisoned its connection: %v", iteration, err)
+		}
+		_ = conn.Close()
 		pingCtx, cancelPing := context.WithTimeout(t.Context(), time.Second)
 		if err := db.PingContext(pingCtx); err != nil {
 			cancelPing()

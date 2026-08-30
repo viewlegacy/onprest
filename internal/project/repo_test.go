@@ -295,7 +295,7 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	}
 	for path, required := range map[string][]string{
 		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
-		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "runtimeWriter", "OnprestValidateReader", "temporaryLog"},
+		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "runtimeWriter", "[Guid]::NewGuid().ToString('N').Substring(0, 10)", "$readerCreated", "$primaryFailure", "$cleanupFailure", "temporaryLog"},
 	} {
 		text := readText(t, filepath.Join(root, filepath.FromSlash(path)))
 		for _, marker := range required {
@@ -306,6 +306,14 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	}
 	unixLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_unix.sh"))
 	windowsLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_windows.ps1"))
+	if strings.Contains(windowsLifecycle, "OnprestValidateReader") {
+		t.Fatal("Windows lifecycle uses a local account name longer than the Windows 20-character limit")
+	}
+	if strings.Contains(windowsLifecycle, "OnprestVal$PID") ||
+		!strings.Contains(windowsLifecycle, "if ($null -ne $cleanupFailure)") ||
+		!strings.Contains(windowsLifecycle, "throw $cleanupFailure") {
+		t.Fatal("Windows lifecycle does not use a collision-resistant account name and fail a successful run on final account cleanup failure")
+	}
 	for path, text := range map[string]string{
 		"Unix lifecycle":    unixLifecycle,
 		"Windows lifecycle": windowsLifecycle,

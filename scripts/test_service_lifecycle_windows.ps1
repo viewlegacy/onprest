@@ -15,6 +15,9 @@ $blockingValidation = $null
 $blackhole = $null
 $runtimeWriter = $null
 $readerName = $null
+$readerCreated = $false
+$primaryFailure = $null
+$cleanupFailure = $null
 $previousGatewayAddr = [Environment]::GetEnvironmentVariable('GATEWAY_ADDR', 'Process')
 $previousAgentPublicKey = [Environment]::GetEnvironmentVariable('GATEWAY_AGENT_PUBLIC_KEY', 'Process')
 $previousAPIKeys = [Environment]::GetEnvironmentVariable('GATEWAY_API_KEYS_JSON', 'Process')
@@ -315,9 +318,13 @@ function Assert-NewCapabilityAbsent {
       }
     }
   }
-  $readerName = 'OnprestValidateReader'
+  # Windows local account names are limited to 20 characters. A random suffix
+  # avoids colliding with an account left by an interrupted previous run.
+  $readerName = "OnprestVal$([Guid]::NewGuid().ToString('N').Substring(0, 10))"
   $readerPasswordPlain = 'Onprest-Validate-Reader-42!'
-  & net.exe user $readerName $readerPasswordPlain /add | Out-Null
+  & net.exe user $readerName $readerPasswordPlain /add 2>$null | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "failed to create test reader account: exit $LASTEXITCODE" }
+  $readerCreated = $true
   try {
     $readerPassword = ConvertTo-SecureString $readerPasswordPlain -AsPlainText -Force
     $credential = [pscredential]::new("$env:COMPUTERNAME\$readerName", $readerPassword)
@@ -327,7 +334,15 @@ function Assert-NewCapabilityAbsent {
     }
   }
   finally {
-    & net.exe user $readerName /delete | Out-Null
+    if ($readerCreated) {
+      & net.exe user $readerName /delete 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        $readerCreated = $false
+      }
+      else {
+        Write-Warning "test reader cleanup failed; final cleanup will retry: exit $LASTEXITCODE"
+      }
+    }
     if (-not $blockingValidation.HasExited) {
       Stop-Process -Id $blockingValidation.Id -Force
       $blockingValidation.WaitForExit()
@@ -384,6 +399,9 @@ function Assert-NewCapabilityAbsent {
     throw "service was not removed: $removed"
   }
 }
+catch {
+  $primaryFailure = $_
+}
 finally {
   try {
     Remove-AgentServiceIfPresent
@@ -405,8 +423,17 @@ finally {
     Stop-Process -Id $gatewayProcess.Id -Force
     $gatewayProcess.WaitForExit()
   }
-  if ($null -ne $readerName) {
+  if ($readerCreated) {
     & net.exe user $readerName /delete 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      $cleanupFailure = "final test reader cleanup failed: exit $LASTEXITCODE"
+      if ($null -ne $primaryFailure) {
+        Write-Warning $cleanupFailure
+      }
+    }
+    else {
+      $readerCreated = $false
+    }
   }
   Remove-Item -Force -ErrorAction SilentlyContinue @(
     $DefaultConfig,
@@ -425,4 +452,10 @@ finally {
   [Environment]::SetEnvironmentVariable('GATEWAY_RATE_LIMIT_BURST', $previousRateLimitBurst, 'Process')
   $apiSecret = $null
   $agentSecret = $null
+}
+if ($null -ne $primaryFailure) {
+  throw $primaryFailure
+}
+if ($null -ne $cleanupFailure) {
+  throw $cleanupFailure
 }
