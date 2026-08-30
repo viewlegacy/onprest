@@ -87,42 +87,16 @@ func (i *inflightRegistry) cancelAll() {
 	}
 }
 
-func NewRunner(cfg Config, logOut io.Writer) (*Runner, error) {
-	cf, err := LoadCapabilityFile(cfg.CapabilityFile)
+func NewRunner(ctx context.Context, cfg Config, logOut io.Writer) (*Runner, error) {
+	prepared, err := prepareAgent(ctx, cfg, newRuntimeDetailLogFactory())
 	if err != nil {
-		return nil, err
-	}
-	detailLog, err := newAgentDetailLog(cf.Logging)
-	if err != nil {
-		return nil, fmt.Errorf("agent detail log: %w", err)
-	}
-	closeDetailLog := true
-	defer func() {
-		if closeDetailLog {
-			_ = detailLog.Close()
+		if pe, ok := err.(*preparationError); ok && pe.stage == validationStageConfig {
+			return nil, pe
 		}
-	}()
-	db, err := openDatabase(cf.Database)
-	if err != nil {
-		writeStartupDetail(detailLog, "AGENT_STARTUP_FAILED", err.Error())
 		return nil, startupFailure()
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := db.PingContext(ctx); err != nil {
-		cancel()
-		writeStartupDetail(detailLog, "AGENT_DB_UNREACHABLE", err.Error())
-		_ = db.Close()
-		return nil, startupFailure()
-	}
-	cancel()
-	r := &Runner{cfg: cfg, cf: cf, caps: cf.ByName(), db: db, logOut: logOut, detailLog: detailLog, detailLogCloser: detailLog}
-	if err := r.explainAll(context.Background()); err != nil {
-		r.detailError("", "AGENT_STARTUP_FAILED", "agent startup failed", err.Error(), "")
-		_ = db.Close()
-		return nil, startupFailure()
-	}
-	closeDetailLog = false
-	r.log("agent_ready", map[string]any{"capabilities": len(cf.Capabilities), "driver": cf.Database.Driver, "max_concurrent_requests": *cf.Runtime.MaxConcurrentRequests})
+	r := &Runner{cfg: cfg, cf: prepared.cf, caps: prepared.caps, db: prepared.db, logOut: logOut, detailLog: prepared.detailLog.Writer, detailLogCloser: preparationLogCloser{prepared.detailLog}}
+	r.log("agent_ready", map[string]any{"capabilities": len(prepared.cf.Capabilities), "driver": prepared.cf.Database.Driver, "max_concurrent_requests": *prepared.cf.Runtime.MaxConcurrentRequests})
 	return r, nil
 }
 
@@ -172,20 +146,9 @@ func startupFailure() error {
 	return fmt.Errorf("agent startup failed; see agent detail log")
 }
 
-func writeStartupDetail(w io.Writer, code, detail string) {
-	if w == nil {
-		return
-	}
-	fields := map[string]any{
-		"ts":         time.Now().UTC().Format(time.RFC3339Nano),
-		"event":      "agent_error",
-		"capability": "",
-		"error_code": code,
-		"message":    "agent startup failed",
-		"detail":     detail,
-	}
-	_ = json.NewEncoder(w).Encode(fields)
-}
+type preparationLogCloser struct{ log *preparationDetailLog }
+
+func (c preparationLogCloser) Close() error { return c.log.Close() }
 
 func (r *Runner) Run(ctx context.Context) error {
 	defer r.db.Close()

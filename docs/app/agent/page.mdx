@@ -23,7 +23,7 @@ Before connecting to the gateway, the agent performs:
 3. DB ping.
 4. SQL EXPLAIN verification for each capability.
 
-If DB ping or EXPLAIN fails, startup is aborted. Detail is written to `onprest-agent.log`; stderr stays generic so SQL and DB-specific detail are not exposed to process supervisors or remote logs.
+Normal startup and `onprest-agent validate` share checks 1–4. Validation closes its DB and finalizes its dedicated detail-log lifecycle before reporting the result, and never connects to the Gateway. Normal-startup DB failures write private detail to `onprest-agent.log`. For standalone validation, inspect a validation log only when the CLI returns its `detail_log` path (or the text equivalent); configuration and busy failures are CLI-only, and diagnostic-finalization failure has no current diagnostic path. Fatal stderr and validation output stay safe so SQL and DB-specific detail are not exposed to process supervisors or remote logs. See [Agent Local Logs](/agent/local-logs) and [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure).
 
 ## Execution Flow
 

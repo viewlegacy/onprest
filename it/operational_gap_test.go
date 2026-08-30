@@ -52,7 +52,7 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 	defer cancel()
 	logs := &bytes.Buffer{}
 	baseURL := startInternalGatewayWithLog(t, ctx, addr, secrets, time.Second, logs)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestAgentRejectsUnknownCapabilityFromCompromisedGateway(t *testing.T) {
 
 	tmp := t.TempDir()
 	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, capabilityBlock("known_capability", "select 1::int as id"))
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

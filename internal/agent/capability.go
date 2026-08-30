@@ -175,7 +175,7 @@ func paramDefYAMLFields(node *yaml.Node, stack map[*yaml.Node]bool) (map[string]
 			continue
 		}
 		if _, ok := allowed[key]; !ok {
-			return nil, fmt.Errorf("field %s not found in parameter definition", key)
+			return nil, fmt.Errorf("field %s not found in parameter definition", publicFieldName(key))
 		}
 		fields[key] = struct{}{}
 	}
@@ -269,46 +269,59 @@ func (cf *CapabilityFile) Lint() error {
 	nameRe := regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`)
 	for name, cap := range cf.Capabilities {
 		if !nameRe.MatchString(name) {
-			return fmt.Errorf("capabilities.%s name is invalid", name)
+			return fmt.Errorf("capabilities.%s name is invalid", publicFieldName(name))
 		}
 		cap.Name = name
 		cap.Policy = mergePolicy(cf.Defaults, cap.Policy)
+		capabilityPath := publicFieldName(name)
 		if strings.TrimSpace(cap.SQL) == "" {
-			return fmt.Errorf("%s.sql is required", name)
+			return fmt.Errorf("%s.sql is required", capabilityPath)
 		}
-		if err := cap.Policy.lint(name + ".policy"); err != nil {
+		if err := cap.Policy.lint(capabilityPath + ".policy"); err != nil {
 			return err
 		}
 		classification := classifySQL(cf.Database.Driver, cap.SQL)
 		if !classification.single {
-			return fmt.Errorf("%s.sql must contain exactly one statement", name)
+			return fmt.Errorf("%s.sql must contain exactly one statement", capabilityPath)
 		}
 		if classification.operation == "" {
-			return fmt.Errorf("%s.sql operation %s is not supported", name, classification.keyword)
+			return fmt.Errorf("%s.sql operation is not supported", capabilityPath)
 		}
 		if readonly(cap.Policy) && classification.operation != sqlOperationSelect {
-			return fmt.Errorf("%s.sql must be SELECT when policy.readonly is true", name)
+			return fmt.Errorf("%s.sql must be SELECT when policy.readonly is true", capabilityPath)
 		}
 		if classification.operation.mutation() && classification.returnsRows {
-			return fmt.Errorf("%s.sql returning rows from DML is not supported", name)
+			return fmt.Errorf("%s.sql returning rows from DML is not supported", capabilityPath)
 		}
 		if classification.operation.mutation() && cap.Result != nil {
-			return fmt.Errorf("%s.result is only supported for SELECT", name)
+			return fmt.Errorf("%s.result is only supported for SELECT", capabilityPath)
 		}
 		cap.Operation = classification.operation
 		for pname, p := range cap.Params {
-			if err := p.lint(name + ".params." + pname); err != nil {
+			if err := p.lint(capabilityPath + ".params." + publicFieldName(pname)); err != nil {
 				return err
 			}
 		}
 		for cname, col := range cap.Result {
 			if !validType(col.Type) {
-				return fmt.Errorf("%s.result.%s.type is invalid", name, cname)
+				return fmt.Errorf("%s.result.%s.type is invalid", capabilityPath, publicFieldName(cname))
 			}
 		}
 		cf.Capabilities[name] = cap
 	}
 	return nil
+}
+
+var publicFieldNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]{0,127}$`)
+
+// publicFieldName keeps configuration diagnostics on one physical line and
+// prevents YAML-controlled map keys from injecting terminal control sequences.
+// Only bounded identifier-like keys are intentionally echoed.
+func publicFieldName(name string) string {
+	if publicFieldNamePattern.MatchString(name) {
+		return name
+	}
+	return "<invalid-key>"
 }
 
 func lintGatewayURL(raw string, allowInsecureNonLoopback bool) error {
@@ -338,7 +351,7 @@ func (l *LoggingDef) lint() error {
 		l.MaxSize = "10MB"
 	}
 	if _, err := parseByteSize(l.MaxSize); err != nil {
-		return fmt.Errorf("logging.max_size is invalid: %w", err)
+		return fmt.Errorf("logging.max_size is invalid")
 	}
 	if l.MaxFiles <= 0 {
 		l.MaxFiles = 3
@@ -484,7 +497,7 @@ func (p ParamDef) lint(path string) error {
 	}
 	if p.Pattern != "" {
 		if _, err := regexp.Compile(p.Pattern); err != nil {
-			return fmt.Errorf("%s.pattern is invalid: %w", path, err)
+			return fmt.Errorf("%s.pattern is invalid", path)
 		}
 	}
 	switch p.Format {
@@ -527,7 +540,7 @@ func (p ParamDef) hasDefault() bool {
 
 func (p PolicyDef) lint(path string) error {
 	if duration, err := timeout(p); err != nil {
-		return fmt.Errorf("%s.timeout is invalid: %w", path, err)
+		return fmt.Errorf("%s.timeout is invalid", path)
 	} else if duration <= 0 {
 		return fmt.Errorf("%s.timeout must be > 0", path)
 	}
@@ -535,7 +548,7 @@ func (p PolicyDef) lint(path string) error {
 		return fmt.Errorf("%s.max_rows must be > 0", path)
 	}
 	if _, err := maxBytes(p); err != nil {
-		return fmt.Errorf("%s.max_bytes is invalid: %w", path, err)
+		return fmt.Errorf("%s.max_bytes is invalid", path)
 	}
 	return nil
 }

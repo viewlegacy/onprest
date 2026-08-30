@@ -57,6 +57,43 @@ capabilities:
 `)
 }
 
+func TestConfigurationDiagnosticsDoNotEchoUnsafeDynamicKeys(t *testing.T) {
+	const sentinel = "RAW_KEY_SENTINEL"
+	tests := []string{
+		`"bad\n` + sentinel + `\x1b[31m": {type: unsupported}`,
+		`value:
+  type: string
+  "bad\r` + sentinel + `": true`,
+		`"bad ` + sentinel + `": {type: unsupported}`,
+		`value:
+  type: string
+  "bad-\"` + sentinel + `": true`,
+	}
+	for _, params := range tests {
+		_, err := LoadCapabilityFile(writeParamsCapabilityFixture(t, params))
+		if err == nil {
+			t.Fatalf("unsafe key fixture unexpectedly loaded: %s", params)
+		}
+		message := err.Error()
+		if strings.Contains(message, sentinel) || strings.ContainsAny(message, "\r\n\x1b") || !strings.Contains(message, "<invalid-key>") {
+			t.Fatalf("unsafe key reached public diagnostic: %q", message)
+		}
+	}
+
+	path := writeCapabilityFixture(t, `
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database: {driver: postgres, host: localhost, port: 5432, name: test, user: test}
+capabilities:
+  "bad `+sentinel+`": {sql: "select 1"}
+`)
+	_, err := LoadCapabilityFile(path)
+	if err == nil || strings.Contains(err.Error(), sentinel) || strings.ContainsAny(err.Error(), "\r\n\x1b") || !strings.Contains(err.Error(), "<invalid-key>") {
+		t.Fatalf("unsafe capability key diagnostic=%q", err)
+	}
+}
+
 func TestLoadCapabilityFileYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "capability.yaml")
 	err := os.WriteFile(path, []byte(`
@@ -353,7 +390,7 @@ value:
 		{name: "unknown direct field", want: "field unknown_direct_field", params: `value:
   type: string
   unknown_direct_field: true`},
-		{name: "quoted merge spelling is an unknown direct field", want: "field <<", params: `value:
+		{name: "quoted merge spelling is an unknown direct field", want: "field <invalid-key>", params: `value:
   type: string
   "<<": {type: string}`},
 	} {
@@ -1143,7 +1180,7 @@ func TestCapabilityOperationMatrixAndDMLClauses(t *testing.T) {
 		{"sqlserver nested leading comment", "sqlserver", "/* outer /* inner */ SELECT */ UPDATE t SET v=1", true, nil, "", "must be SELECT"},
 		{"postgres nested trailing trivia", "postgres", "SELECT 1; /* outer /* inner */ still outer */", true, nil, sqlOperationSelect, ""},
 		{"sqlserver nested trailing trivia", "sqlserver", "SELECT 1; /* outer /* inner */ still outer */", true, nil, sqlOperationSelect, ""},
-		{"cte", "postgres", "WITH x AS (SELECT 1) SELECT * FROM x", false, nil, "", "operation with is not supported"},
+		{"cte", "postgres", "WITH x AS (SELECT 1) SELECT * FROM x", false, nil, "", "operation is not supported"},
 		{"returning", "postgres", "insert into t(v) values (1) RETURNING id", false, nil, "", "returning rows"},
 		{"output", "sqlserver", "update t set v=1 OUTPUT inserted.id", false, nil, "", "returning rows"},
 		{"empty result", "postgres", "delete from t", false, ResultDef{}, "", "result is only supported"},
