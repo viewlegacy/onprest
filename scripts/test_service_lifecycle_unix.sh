@@ -9,6 +9,29 @@ gateway_bin=$(cd "$(dirname "$gateway_bin")" && pwd)/$(basename "$gateway_bin")
 config_path=$(cd "$(dirname "$config_path")" && pwd)/$(basename "$config_path")
 artifact_dir=$(dirname "$agent_bin")
 default_config=$artifact_dir/capability.yaml
+platform=$(uname -s)
+
+file_mode() {
+  case "$platform" in
+    Darwin) stat -f '%Lp' "$1" ;;
+    Linux) stat -c '%a' "$1" ;;
+    *)
+      echo "unsupported Unix service test platform: $platform" >&2
+      return 1
+      ;;
+  esac
+}
+
+file_size() {
+  case "$platform" in
+    Darwin) stat -f '%z' "$1" ;;
+    Linux) stat -c '%s' "$1" ;;
+    *)
+      echo "unsupported Unix service test platform: $platform" >&2
+      return 1
+      ;;
+  esac
+}
 
 if [[ $(id -u) -eq 0 ]]; then
   elevate=()
@@ -65,6 +88,7 @@ api_key=$(jq -r .api_key <<<"$api_secret")
 api_keys_json=$(jq -c '[{name:.name,key_hash:.key_hash,capabilities:.capabilities}]' <<<"$api_secret")
 gateway_output=$(dirname "$agent_bin")/service-test-gateway.jsonl
 GATEWAY_ADDR=127.0.0.1:18080 GATEWAY_AGENT_PUBLIC_KEY=$agent_public_key GATEWAY_API_KEYS_JSON=$api_keys_json \
+  GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=1000 GATEWAY_RATE_LIMIT_BURST=1000 \
   "$gateway_bin" >"$gateway_output" 2>&1 &
 gateway_pid=$!
 for _ in {1..100}; do
@@ -100,7 +124,7 @@ installed=$("${elevate[@]}" "$agent_bin" service status)
 grep -q '^installed: true$' <<<"$installed"
 grep -Fq "config: $default_config" <<<"$installed"
 grep -Fq "binary: $agent_bin" <<<"$installed"
-case "$(uname -s)" in
+case "$platform" in
   Linux)
     grep -q '^native: systemd$' <<<"$installed"
     if ! "${elevate[@]}" systemd-analyze verify /etc/systemd/system/onprest-agent.service; then
@@ -121,7 +145,7 @@ case "$(uname -s)" in
     fi
     ;;
   *)
-    echo "unsupported Unix service test platform: $(uname -s)" >&2
+    echo "unsupported Unix service test platform: $platform" >&2
     exit 1
     ;;
 esac
@@ -272,8 +296,8 @@ runtime_before=$("${elevate[@]}" cksum "$runtime_log" "$runtime_log.1")
 
 invalid_a=$(dirname "$agent_bin")/capability.validate-a.yaml
 invalid_b=$(dirname "$agent_bin")/capability.validate-b.yaml
-sed 's/name: postgres/name: onprest_validate_missing_a/' "$default_config" > "$invalid_a"
-sed 's/name: postgres/name: onprest_validate_missing_b/' "$default_config" > "$invalid_b"
+sed 's/name: postgres/name: validate_missing_database_a/' "$default_config" > "$invalid_a"
+sed 's/name: postgres/name: validate_missing_database_b/' "$default_config" > "$invalid_b"
 if "${elevate[@]}" "$agent_bin" validate --config "$invalid_a" --format json >"$invalid_a.out"; then
   echo 'validate unexpectedly accepted missing database A' >&2
   exit 1
@@ -281,22 +305,22 @@ fi
 grep -q '"stage":"database_ping"' "$invalid_a.out"
 fixed_log=$(dirname "$agent_bin")/onprest-agent.validate.log
 test -f "$fixed_log"
-"${elevate[@]}" grep -q 'onprest_validate_missing_a' "$fixed_log"
+"${elevate[@]}" grep -q 'validate_missing_database_a' "$fixed_log"
 if "${elevate[@]}" "$agent_bin" validate --config "$invalid_b" --format json >"$invalid_b.out"; then
   echo 'validate unexpectedly accepted missing database B' >&2
   exit 1
 fi
 grep -q '"stage":"database_ping"' "$invalid_b.out"
-"${elevate[@]}" grep -q 'onprest_validate_missing_b' "$fixed_log"
-if "${elevate[@]}" grep -q 'onprest_validate_missing_a' "$fixed_log"; then
+"${elevate[@]}" grep -q 'validate_missing_database_b' "$fixed_log"
+if "${elevate[@]}" grep -q 'validate_missing_database_a' "$fixed_log"; then
   echo 'validate retained an older failure' >&2
   exit 1
 fi
-test "$(stat -f '%Lp' "$fixed_log" 2>/dev/null || stat -c '%a' "$fixed_log")" = 600
+test "$(file_mode "$fixed_log")" = 600
 lock_file=$(dirname "$agent_bin")/.onprest-agent.validate.lock
 test -f "$lock_file"
-test "$(stat -f '%Lp' "$lock_file" 2>/dev/null || stat -c '%a' "$lock_file")" = 600
-test "$(stat -f '%z' "$lock_file" 2>/dev/null || stat -c '%s' "$lock_file")" = 0
+test "$(file_mode "$lock_file")" = 600
+test "$(file_size "$lock_file")" = 0
 
 # Hold a production validate inside DB Ping long enough to inspect its live
 # temporary file. It must be private from the instant it is created.
@@ -314,7 +338,7 @@ for _ in {1..100}; do
   sleep 0.05
 done
 [[ -n $temporary_log ]]
-test "$(stat -f '%Lp' "$temporary_log" 2>/dev/null || stat -c '%a' "$temporary_log")" = 600
+test "$(file_mode "$temporary_log")" = 600
 "${elevate[@]}" kill "$blocking_validate_pid"
 wait "$blocking_validate_pid" 2>/dev/null || true
 blocking_validate_pid=

@@ -18,6 +18,8 @@ $readerName = $null
 $previousGatewayAddr = [Environment]::GetEnvironmentVariable('GATEWAY_ADDR', 'Process')
 $previousAgentPublicKey = [Environment]::GetEnvironmentVariable('GATEWAY_AGENT_PUBLIC_KEY', 'Process')
 $previousAPIKeys = [Environment]::GetEnvironmentVariable('GATEWAY_API_KEYS_JSON', 'Process')
+$previousRateLimitRPS = [Environment]::GetEnvironmentVariable('GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND', 'Process')
+$previousRateLimitBurst = [Environment]::GetEnvironmentVariable('GATEWAY_RATE_LIMIT_BURST', 'Process')
 
 try {
 $agentSecret = (& $GatewayBin create-agent-secret | ConvertFrom-Json)
@@ -26,6 +28,8 @@ $apiSecret = (& $GatewayBin create-key --name service-test --capabilities runtim
 $env:GATEWAY_ADDR = '127.0.0.1:18080'
 $env:GATEWAY_AGENT_PUBLIC_KEY = $agentSecret.agent_public_key
 $env:GATEWAY_API_KEYS_JSON = ConvertTo-Json -Compress -InputObject @(@{name=$apiSecret.name; key_hash=$apiSecret.key_hash; capabilities=@($apiSecret.capabilities)})
+$env:GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND = '1000'
+$env:GATEWAY_RATE_LIMIT_BURST = '1000'
 $gatewayOutput = Join-Path (Split-Path $AgentBin) 'service-test-gateway.jsonl'
 $gatewayProcess = Start-Process -FilePath $GatewayBin -RedirectStandardOutput $gatewayOutput -RedirectStandardError "$gatewayOutput.stderr" -PassThru -WindowStyle Hidden
 for ($i = 0; $i -lt 100; $i++) {
@@ -244,14 +248,14 @@ function Assert-NewCapabilityAbsent {
 
   $invalidA = Join-Path (Split-Path $AgentBin) 'capability.validate-a.yaml'
   $invalidB = Join-Path (Split-Path $AgentBin) 'capability.validate-b.yaml'
-  (Get-Content $DefaultConfig -Raw).Replace('name: postgres', 'name: onprest_validate_missing_a') | Set-Content $invalidA
-  (Get-Content $DefaultConfig -Raw).Replace('name: postgres', 'name: onprest_validate_missing_b') | Set-Content $invalidB
+  (Get-Content $DefaultConfig -Raw).Replace('name: postgres', 'name: validate_missing_database_a') | Set-Content $invalidA
+  (Get-Content $DefaultConfig -Raw).Replace('name: postgres', 'name: validate_missing_database_b') | Set-Content $invalidB
   $failureA = & $AgentBin validate --config $invalidA --format json
   if ($LASTEXITCODE -ne 1 -or ($failureA -join "`n") -notmatch '"stage":"database_ping"') {
     throw "validate missing database A contract failed: $failureA"
   }
   $fixedLog = Join-Path (Split-Path $AgentBin) 'onprest-agent.validate.log'
-  if ((Get-Content $fixedLog -Raw) -notmatch 'onprest_validate_missing_a') {
+  if ((Get-Content $fixedLog -Raw) -notmatch 'validate_missing_database_a') {
     throw 'first validate detail was not committed'
   }
   $failureB = & $AgentBin validate --config $invalidB --format json
@@ -259,7 +263,7 @@ function Assert-NewCapabilityAbsent {
     throw "validate missing database B contract failed: $failureB"
   }
   $latest = Get-Content $fixedLog -Raw
-  if ($latest -notmatch 'onprest_validate_missing_b' -or $latest -match 'onprest_validate_missing_a') {
+  if ($latest -notmatch 'validate_missing_database_b' -or $latest -match 'validate_missing_database_a') {
     throw 'validate latest-failure replacement contract failed'
   }
 
@@ -396,6 +400,8 @@ finally {
   [Environment]::SetEnvironmentVariable('GATEWAY_ADDR', $previousGatewayAddr, 'Process')
   [Environment]::SetEnvironmentVariable('GATEWAY_AGENT_PUBLIC_KEY', $previousAgentPublicKey, 'Process')
   [Environment]::SetEnvironmentVariable('GATEWAY_API_KEYS_JSON', $previousAPIKeys, 'Process')
+  [Environment]::SetEnvironmentVariable('GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND', $previousRateLimitRPS, 'Process')
+  [Environment]::SetEnvironmentVariable('GATEWAY_RATE_LIMIT_BURST', $previousRateLimitBurst, 'Process')
   $apiSecret = $null
   $agentSecret = $null
 }

@@ -305,6 +305,49 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		}
 	}
 	unixLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_unix.sh"))
+	windowsLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_windows.ps1"))
+	for path, text := range map[string]string{
+		"Unix lifecycle":    unixLifecycle,
+		"Windows lifecycle": windowsLifecycle,
+	} {
+		if strings.Contains(text, "onprest_validate_missing") {
+			t.Fatalf("%s uses a redacted password substring in its missing-database marker", path)
+		}
+		for _, marker := range []string{"validate_missing_database_a", "validate_missing_database_b"} {
+			if !strings.Contains(text, marker) {
+				t.Fatalf("%s does not assert unredacted missing-database marker %q", path, marker)
+			}
+		}
+	}
+	for path, lifecycle := range map[string]struct {
+		text     string
+		settings []string
+	}{
+		"Unix lifecycle": {
+			text: unixLifecycle,
+			settings: []string{
+				"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=1000",
+				"GATEWAY_RATE_LIMIT_BURST=1000",
+			},
+		},
+		"Windows lifecycle": {
+			text: windowsLifecycle,
+			settings: []string{
+				"$env:GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND = '1000'",
+				"$env:GATEWAY_RATE_LIMIT_BURST = '1000'",
+			},
+		},
+	} {
+		for _, setting := range lifecycle.settings {
+			if !strings.Contains(lifecycle.text, setting) {
+				t.Fatalf("%s does not set high test-only rate limit %q", path, setting)
+			}
+		}
+	}
+	if strings.Contains(unixLifecycle, "stat -f '%Lp' \"$fixed_log\" 2>/dev/null || stat -c") ||
+		!strings.Contains(unixLifecycle, "Darwin) stat -f") || !strings.Contains(unixLifecycle, "Linux) stat -c") {
+		t.Fatal("Unix lifecycle does not select permission/size stat syntax by operating system")
+	}
 	trapAt := strings.Index(unixLifecycle, "trap cleanup EXIT")
 	installAt := strings.Index(unixLifecycle, `"${elevate[@]}" "$agent_bin" service install`)
 	if trapAt < 0 || installAt <= trapAt || strings.Contains(unixLifecycle[trapAt:installAt], "\ncleanup\n") {

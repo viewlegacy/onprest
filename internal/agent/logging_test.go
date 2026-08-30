@@ -330,6 +330,33 @@ type errorReader struct{ err error }
 
 func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
+func writePrivateValidationFileForTest(t *testing.T, path, content string) {
+	t.Helper()
+	file, err := createPrivateValidationFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+	}()
+	if n, err := file.Write([]byte(content)); err != nil || n != len(content) {
+		t.Fatalf("write private validation file: n=%d err=%v", n, err)
+	}
+	if err := file.Sync(); err != nil {
+		t.Fatalf("sync private validation file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close private validation file: %v", err)
+	}
+	closed = true
+	if err := validateExistingPrivateFile(path); err != nil {
+		t.Fatalf("private validation file contract: %v", err)
+	}
+}
+
 func TestValidateLatestLogCrashRecoveryProcess(t *testing.T) {
 	if target := os.Getenv("ONPREST_VALIDATE_CRASH_HELPER_DIR"); target != "" {
 		executablePath = func() (string, error) { return filepath.Join(target, "onprest-agent"), nil }
@@ -409,9 +436,7 @@ func TestValidateLatestLogCrashRecoveryProcess(t *testing.T) {
 
 	dir := t.TempDir()
 	fixed := filepath.Join(dir, "onprest-agent.validate.log")
-	if err := os.WriteFile(fixed, []byte("previous"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePrivateValidationFileForTest(t, fixed, "previous")
 	old := executablePath
 	executablePath = func() (string, error) { return filepath.Join(dir, "onprest-agent"), nil }
 	defer func() { executablePath = old }()
@@ -420,27 +445,51 @@ func TestValidateLatestLogCrashRecoveryProcess(t *testing.T) {
 		_ = os.Remove(filepath.Join(dir, "checkpoint"))
 		cmd := exec.Command(os.Args[0], "-test.run=^TestValidateLatestLogCrashRecoveryProcess$")
 		cmd.Env = append(os.Environ(), "ONPREST_VALIDATE_CRASH_HELPER_DIR="+dir, "ONPREST_VALIDATE_CRASH_CONTENT="+content, "ONPREST_VALIDATE_CRASH_POINT="+point)
+		var helperOutput bytes.Buffer
+		cmd.Stdout = &helperOutput
+		cmd.Stderr = &helperOutput
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		deadline := time.Now().Add(5 * time.Second)
+		waitCh := make(chan error, 1)
+		go func() { waitCh <- cmd.Wait() }()
+		waited := false
+		defer func() {
+			if !waited {
+				_ = cmd.Process.Kill()
+				<-waitCh
+			}
+		}()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
 		for {
 			if _, err := os.Stat(filepath.Join(dir, "checkpoint")); err == nil {
 				break
 			}
-			if time.Now().After(deadline) {
+			select {
+			case err := <-waitCh:
+				waited = true
+				t.Fatalf("helper exited before checkpoint %q: %v; output=%q", point, err, helperOutput.String())
+			case <-timer.C:
 				_ = cmd.Process.Kill()
-				t.Fatal("helper checkpoint timeout")
+				err := <-waitCh
+				waited = true
+				t.Fatalf("helper checkpoint %q timeout: %v; output=%q", point, err, helperOutput.String())
+			case <-ticker.C:
 			}
-			time.Sleep(5 * time.Millisecond)
 		}
 		if whileAlive != nil {
 			whileAlive()
 		}
 		if err := cmd.Process.Kill(); err != nil {
-			t.Fatal(err)
+			waitErr := <-waitCh
+			waited = true
+			t.Fatalf("kill helper at checkpoint %q: %v (wait: %v; output=%q)", point, err, waitErr, helperOutput.String())
 		}
-		_ = cmd.Wait()
+		_ = <-waitCh
+		waited = true
 	}
 
 	_ = os.Remove(filepath.Join(dir, ".onprest-agent.validate.lock"))
@@ -456,9 +505,7 @@ func TestValidateLatestLogCrashRecoveryProcess(t *testing.T) {
 		}
 	})
 	orphan := filepath.Join(dir, ".onprest-agent.validate.0123456789abcdef0123456789abcdef.tmp")
-	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePrivateValidationFileForTest(t, orphan, "orphan")
 	runKilledHelper("orphan-recovery", "", nil)
 	assertFileContent(t, orphan, "orphan")
 
