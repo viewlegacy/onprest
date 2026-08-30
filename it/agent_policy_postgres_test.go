@@ -72,7 +72,7 @@ func TestPostgresPolicyAndQueryFailures(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, 1500*time.Millisecond)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestReadonlyMultiStatementIsRejectedBeforeRealPostgresExecution(t *testing.
     result:
       value:
         type: integer`)
-	if _, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile}, nil); err == nil {
+	if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile}, nil); err == nil {
 		t.Fatal("NewRunner accepted readonly multi-statement SQL")
 	}
 	var value int
@@ -192,7 +192,7 @@ func TestAgentExecutesIndependentRequestsConcurrentlyAgainstPostgres(t *testing.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, 3*time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 		cfg.AgentWriteTimeout = 100 * time.Millisecond
 	})
 	var agentLogs bytes.Buffer
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, &agentLogs)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, &agentLogs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestPostgresDBUnreachableDuringQuery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, 8*time.Second)
-	runner, err := agentpkg.NewRunner(agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

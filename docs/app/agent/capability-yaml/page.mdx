@@ -2,6 +2,8 @@
 
 `capability.yaml` is the agent-side source of truth. It defines what can be called, what input is accepted, what SQL is executed, and—for SELECT—which output columns may leave the database boundary. DML returns affected count only.
 
+Normal Agent startup and `onprest-agent validate --config PATH` use the same full-load, lint, database Ping, and driver-specific EXPLAIN preparation path. Validation does not connect to the Gateway, reload a running process, or execute a capability. To apply an edit, follow the [existing-service procedure](/operations/capability-changes#apply-a-change-to-an-existing-service).
+
 ## Read and mutation capabilities
 
 `policy.readonly` defaults to `true`. Omitted or `true` accepts one top-level `SELECT`; explicit `false` accepts one `SELECT`, `INSERT`, `UPDATE`, or `DELETE`. The agent rejects multiple statements, `WITH`, `MERGE`, procedure calls, DDL, transaction control, and DML `RETURNING`/`OUTPUT` during startup lint. Quotes and comments are scanned using the selected DB dialect, including nested block comments in PostgreSQL and SQL Server, so keywords or semicolons inside them do not become statements.
@@ -184,7 +186,7 @@ Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`.
 
 `max_size` accepts a non-negative integer followed by an optional `B`, `KB`, `MB`, or `GB` suffix, such as `10MB`. A bare integer is treated as bytes. Fractions, unknown suffixes, trailing text, and values that overflow `int64` are rejected.
 
-The local detail log path is the agent executable path plus `.log`, for example `onprest-agent.log`.
+Normal Agent runtime detail uses the executable path plus `.log`, for example `onprest-agent.log`. Standalone validation never opens that rotating file; a successfully recorded validation diagnostic returns its separate path beside the binary. See [Agent Local Logs](/agent/local-logs) for the authoritative lifecycle.
 
 ## Defaults
 

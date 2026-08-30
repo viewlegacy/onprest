@@ -131,6 +131,8 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - reconnect every 30 seconds
 - up to `runtime.max_concurrent_requests` concurrent capability executions per connection (default 16), with an equally bounded waiting queue
 
+Normal startup and `onprest-agent validate` use one preparation path for full YAML load/lint, local diagnostic initialization, DB open, bounded Ping, and every capability's driver-specific EXPLAIN. Validation closes those resources and exits without retrieving a Gateway challenge, opening a WebSocket, publishing metadata, executing a business capability, or emitting `agent_ready`. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
+
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 
 Request IDs correlate responses, so concurrent responses may arrive out of request order. Execution workers do not own the WebSocket reader, allowing ping/pong processing while all workers are busy. One bounded writer sends response frames in sequence; each network write has five seconds to finish after it starts. A full execution wait queue returns `AGENT_BUSY`. The transport handles fragmentation, ping/pong/close control frames, mask-direction validation, bounded messages, and handshake deadlines.

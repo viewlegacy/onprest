@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -82,7 +83,7 @@ func TestLoadConfigRejectsUnexpectedArgs(t *testing.T) {
 
 func TestAgentUsageMentionsServiceCommands(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	handled, code := HandleCLI([]string{"--help"}, &stdout, &stderr)
+	handled, code := HandleCLI(context.Background(), []string{"--help"}, &stdout, &stderr)
 	if !handled || code != 0 {
 		t.Fatalf("HandleCLI handled=%t code=%d stderr=%q", handled, code, stderr.String())
 	}

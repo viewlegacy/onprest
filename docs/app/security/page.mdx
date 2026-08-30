@@ -105,4 +105,4 @@ External HTTP responses and gateway stdout never include raw detail. The HTTP re
 }
 ```
 
-DB-specific errors, SQL execution detail, DB credentials, stack traces, and submitted param values stay in the agent local log. The agent local log is `onprest-agent.log` next to the agent binary.
+DB-specific errors and SQL execution detail stay in an agent-local log; DB credentials, Agent keys, API keys, authorization values, and submitted param values are not emitted as public diagnostics. Normal runtime uses `onprest-agent.log` next to the binary. Standalone validation never opens that runtime log and returns its separately locked validation-log path only for a successfully recorded diagnostic. See [Agent Local Logs](/agent/local-logs) for the failure-stage and file-lifecycle boundary.

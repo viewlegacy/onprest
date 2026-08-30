@@ -2,7 +2,7 @@
 
 This page is the canonical reference for Onprest test commands and what each one verifies. Other pages link here instead of repeating the command list.
 
-Test commands require Go 1.26.5 or later as declared in `go.mod`.
+Test commands require Go 1.26.6 or later as declared in `go.mod`.
 
 ## Command Summary
 
@@ -15,7 +15,9 @@ Test commands require Go 1.26.5 or later as declared in `go.mod`.
 | `make test-it-postgres-stability` | DB-interruption stability test (`TestPostgresDBUnreachableDuringQuery`) run 5 times in a row to confirm the agent handles a database that drops mid-query. |
 | `make test-it-all-db` | Every `TestContainerDBDriver*` test across PostgreSQL, MySQL, SQL Server, and Oracle, with a 30-minute timeout. The common prefix includes the Oracle transaction-start contract and the PostgreSQL nullable OpenAPI and timestamp compatibility cases. Covers real mutation REST/MCP, constraints, timeout/cancel, permissions, transaction-start cancellation, persisted state, OpenAPI 3.1 response validation, and exact timestamp JSON/timezone coercion. |
 | `make test-it-docker-ops` | Operational tests for the Docker image build and Docker Compose env-file handling (verifies `GATEWAY_API_KEYS_JSON` and bcrypt `$` survive env-file loading). |
-| `make test-it-release-gate` | Full release gate. Runs vulnerability analysis, unit, integration, stability, all-DB conformance, MySQL special-credential, PostgreSQL TLS, SQL Server TLS, and Docker operational checks, and asserts zero reachable vulnerabilities, zero test/subtest skips, and zero leftover Testcontainers resources. See [Release Gate](/operations/release-gate). |
+| `make test-it-release-gate` | Linux integration component of the full release gate. Runs vulnerability analysis, unit, integration, stability, all-DB conformance, MySQL special-credential, PostgreSQL TLS, SQL Server TLS, and Docker operational checks, and asserts zero reachable vulnerabilities, zero test/subtest skips, and zero leftover Testcontainers resources. Full release readiness additionally requires all native service jobs and `release-ready`; see [Release Gate](/operations/release-gate). |
+
+The GitHub release workflow additionally calls the reusable native service lifecycle workflow. Linux, macOS, and Windows each run `TestValidateLatestLogCrashRecoveryProcess`, `TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths`, and `TestValidationRejectsInvalidFixedPathsWithoutMutation` on the host OS before exercising the installed Agent service. These tests cover cleanup-boundary crashes and real symlink/reparse-point, directory, and non-regular path handling. The service checks then drive multiple safe validation failures through a real Gateway into the running production Agent, verify their markers across rotated runtime-log generations while production `validate` overlaps the writes, and verify latest-failure replacement, success cleanup, and OS-private fixed, temporary, and lock files. Windows also denies reads from a separate non-privileged local user.
 
 ## Unit
 
@@ -57,7 +59,7 @@ make test-it-postgres-ci         # PostgreSQL CI run, 3x, no Docker build tests
 make test-it-postgres-stability  # DB-interruption stability, 5x
 make test-it-all-db              # all-DB + Oracle start + nullable OpenAPI + timestamp, 30m
 make test-it-docker-ops          # Docker image + compose env-file ops tests
-make test-it-release-gate        # full release gate
+make test-it-release-gate        # Linux integration component of the full release gate
 ```
 
 See the [Command Summary](#command-summary) above for what each target verifies.
