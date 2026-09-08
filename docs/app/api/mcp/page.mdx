@@ -26,6 +26,25 @@ Accept: application/json, text/event-stream
 
 The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The gateway also bounds body-read time. See [Gateway Configuration](/gateway/configuration).
 
+## Client configuration
+
+Paste this connection configuration into an MCP client that supports the `mcpServers` format:
+
+```json
+{
+  "mcpServers": {
+    "onprest": {
+      "headers": {
+        "Authorization": "Bearer <YOUR_ONPREST_API_KEY>"
+      },
+      "url": "https://gateway.example.com/mcp"
+    }
+  }
+}
+```
+
+This is client connection configuration. The `initialize` JSON below is a wire-protocol request sent by an MCP client or SDK; clients normally negotiate initialization and send the subsequent protocol header themselves, so do not add a fixed `MCP-Protocol-Version` to this configuration.
+
 ## Methods
 
 | Method | Purpose |
@@ -36,6 +55,8 @@ The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be chang
 | `tools/call` | Execute a capability |
 
 ## `initialize`
+
+The following is a JSON-RPC wire-protocol example, not an `mcpServers` client configuration file.
 
 ```json
 {
