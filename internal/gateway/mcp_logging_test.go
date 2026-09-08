@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -68,6 +69,46 @@ func TestMCPPreToolCallBranchesEmitNoRequestEvent(t *testing.T) {
 				t.Fatalf("pre-tools/call branch emitted request event: %#v; all logs=%s", entries, logs.String())
 			}
 		})
+	}
+}
+
+func TestMCPRecognizedNotificationInvalidParamsUsesControlEvent(t *testing.T) {
+	var calls atomic.Int32
+	s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		calls.Add(1)
+		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"rows":[],"count":0}`)}
+	})
+	defer cleanup()
+
+	req := newMCPCompatibilityRequest(http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"sensitive-token","progress":"not-a-number"}}`)
+	rec := serveMCPCompatibility(s, apiKey, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want HTTP 400", rec.Code, rec.Body.String())
+	}
+	assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "invalid notification params")
+	assertMCPErrorIDNull(t, rec.Body.Bytes())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("agent calls=%d, want 0", got)
+	}
+
+	entries := logEntries(t, logs)
+	if len(entries) != 1 {
+		t.Fatalf("log entries=%d, want one control event: %s", len(entries), logs.String())
+	}
+	entry := entries[0]
+	if entry["event"] != "mcp_http_rejected" ||
+		entry["http_status"] != float64(http.StatusBadRequest) ||
+		entry["error_code"] != errJSONRPCInvalidParams ||
+		entry["error_message"] != "invalid notification params" {
+		t.Fatalf("control event=%#v", entry)
+	}
+	if requests := requestLogEntries(t, logs); len(requests) != 0 {
+		t.Fatalf("invalid notification emitted request events: %#v", requests)
+	}
+	for _, forbidden := range []string{"sensitive-token", "not-a-number", "progressToken"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("control log contains input detail %q: %s", forbidden, logs.String())
+		}
 	}
 }
 

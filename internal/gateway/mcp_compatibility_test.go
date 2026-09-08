@@ -55,6 +55,19 @@ func decodeMCPCompatibilityResponse(t *testing.T, rec *httptest.ResponseRecorder
 	return body
 }
 
+func assertMCPErrorIDNull(t *testing.T, raw []byte) {
+	t.Helper()
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode MCP error id: %v; body=%s", err, raw)
+	}
+	if !bytes.Equal(bytes.TrimSpace(envelope.ID), []byte("null")) {
+		t.Fatalf("MCP error id=%s, want explicit null; body=%s", envelope.ID, raw)
+	}
+}
+
 type mcpTestToolCallEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -1190,10 +1203,11 @@ func TestMCPTaskStatusNotificationVersionedParamsAndIDs(t *testing.T) {
 				t.Run("invalid/"+invalid.name, func(t *testing.T) {
 					rec := post(invalid.params, false)
 					if version.latest {
-						if rec.Code != http.StatusOK {
+						if rec.Code != http.StatusBadRequest {
 							t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 						}
 						assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "invalid notification params")
+						assertMCPErrorIDNull(t, rec.Body.Bytes())
 					} else if rec.Code != http.StatusBadRequest {
 						t.Fatalf("unsupported version status=%d body=%s, want HTTP 400", rec.Code, rec.Body.String())
 					}
@@ -1238,12 +1252,22 @@ func TestMCPNotificationsValidateVersionedParamsAndIDs(t *testing.T) {
 	notifications := []struct {
 		method        string
 		validParams   string
+		paramsOmitted bool
 		invalidParams []string
 	}{
 		{method: "notifications/cancelled", validParams: `{"requestId":42,"reason":"done","_meta":{"progressToken":null,"array":[],"object":{"nested":true},"scalar":"opaque"}}`, invalidParams: []string{`{"reason":"done"}`, `{"requestId":null}`, `{"requestId":42,"_meta":null}`, `{"requestId":42,"_meta":[]}`, `{"requestId":42,"_meta":"opaque"}`}},
-		{method: "notifications/initialized", validParams: `{"_meta":{"progressToken":[],"array":[null],"object":{"nested":true},"scalar":false}}`, invalidParams: []string{`null`, `{"_meta":null}`, `{"_meta":[]}`, `{"_meta":"opaque"}`}},
-		{method: "notifications/progress", validParams: `{"progressToken":"p","progress":1.5,"message":"half","total":3,"_meta":{"progressToken":{"opaque":true},"array":[],"object":null}}`, invalidParams: []string{`{"progressToken":"p","progress":"1"}`, `{"progressToken":"p","progress":1,"_meta":null}`, `{"progressToken":"p","progress":1,"_meta":[]}`, `{"progressToken":"p","progress":1,"_meta":"opaque"}`}},
-		{method: "notifications/roots/list_changed", validParams: `{"_meta":{"progressToken":null,"array":{},"object":[],"scalar":7}}`, invalidParams: []string{`[]`, `{"_meta":null}`, `{"_meta":[]}`, `{"_meta":"opaque"}`}},
+		{method: "notifications/initialized", validParams: `{"_meta":{"progressToken":[],"array":[null],"object":{"nested":true},"scalar":false}}`, paramsOmitted: true, invalidParams: []string{`null`, `{"_meta":null}`, `{"_meta":[]}`, `{"_meta":"opaque"}`}},
+		{method: "notifications/progress", validParams: `{"progressToken":"p","progress":1.5,"message":"half","total":3,"_meta":{"progressToken":{"opaque":true},"array":[],"object":null}}`, invalidParams: []string{`{"progress":1}`, `{"progressToken":"p","progress":"1"}`, `{"progressToken":"p","progress":1,"_meta":null}`, `{"progressToken":"p","progress":1,"_meta":[]}`, `{"progressToken":"p","progress":1,"_meta":"opaque"}`}},
+		{method: "notifications/roots/list_changed", validParams: `{"_meta":{"progressToken":null,"array":{},"object":[],"scalar":7}}`, paramsOmitted: true, invalidParams: []string{`[]`, `{"_meta":null}`, `{"_meta":[]}`, `{"_meta":"opaque"}`}},
+	}
+	type notificationCase struct {
+		name        string
+		params      string
+		omitParams  bool
+		withID      bool
+		wantCode    int
+		wantRPCCode int
+		wantMessage string
 	}
 	for _, version := range versions {
 		version := version
@@ -1251,35 +1275,18 @@ func TestMCPNotificationsValidateVersionedParamsAndIDs(t *testing.T) {
 			for _, notification := range notifications {
 				notification := notification
 				t.Run(notification.method, func(t *testing.T) {
-					cases := []struct {
-						name        string
-						params      string
-						withID      bool
-						wantCode    int
-						wantRPCCode int
-						wantMessage string
-					}{
+					cases := []notificationCase{
 						{name: "valid notification", params: notification.validParams, wantCode: http.StatusAccepted},
 						{name: "valid id-bearing", params: notification.validParams, withID: true, wantCode: http.StatusOK, wantRPCCode: -32600, wantMessage: "notification must not include id"},
 					}
+					if notification.paramsOmitted {
+						cases = append(cases, notificationCase{name: "valid notification params omitted", omitParams: true, wantCode: http.StatusAccepted})
+						cases = append(cases, notificationCase{name: "id-bearing params omitted", omitParams: true, withID: true, wantCode: http.StatusOK, wantRPCCode: -32600, wantMessage: "notification must not include id"})
+					}
 					for invalidIndex, invalidParams := range notification.invalidParams {
 						cases = append(cases,
-							struct {
-								name        string
-								params      string
-								withID      bool
-								wantCode    int
-								wantRPCCode int
-								wantMessage string
-							}{name: fmt.Sprintf("invalid notification %d", invalidIndex), params: invalidParams, wantCode: http.StatusOK, wantRPCCode: -32602, wantMessage: "invalid notification params"},
-							struct {
-								name        string
-								params      string
-								withID      bool
-								wantCode    int
-								wantRPCCode int
-								wantMessage string
-							}{name: fmt.Sprintf("invalid id-bearing %d", invalidIndex), params: invalidParams, withID: true, wantCode: http.StatusOK, wantRPCCode: -32600, wantMessage: "notification must not include id"},
+							notificationCase{name: fmt.Sprintf("invalid notification %d", invalidIndex), params: invalidParams, wantCode: http.StatusBadRequest, wantRPCCode: -32602, wantMessage: "invalid notification params"},
+							notificationCase{name: fmt.Sprintf("invalid id-bearing %d", invalidIndex), params: invalidParams, withID: true, wantCode: http.StatusOK, wantRPCCode: -32600, wantMessage: "notification must not include id"},
 						)
 					}
 					for _, tc := range cases {
@@ -1288,7 +1295,11 @@ func TestMCPNotificationsValidateVersionedParamsAndIDs(t *testing.T) {
 							if tc.withID {
 								id = `,"id":"notification-id"`
 							}
-							body := fmt.Sprintf(`{"jsonrpc":"2.0","method":%q%s,"params":%s}`, notification.method, id, tc.params)
+							params := ""
+							if !tc.omitParams {
+								params = fmt.Sprintf(`,"params":%s`, tc.params)
+							}
+							body := fmt.Sprintf(`{"jsonrpc":"2.0","method":%q%s%s}`, notification.method, id, params)
 							req := newMCPCompatibilityRequest(http.MethodPost, body)
 							if version.header != "" {
 								req.Header.Set(mcpProtocolHeader, version.header)
@@ -1299,6 +1310,9 @@ func TestMCPNotificationsValidateVersionedParamsAndIDs(t *testing.T) {
 							}
 							if tc.wantRPCCode != 0 {
 								assertMCPErrorMessage(t, rec.Body.Bytes(), tc.wantRPCCode, map[int]string{-32600: errJSONRPCInvalidRequest, -32602: errJSONRPCInvalidParams}[tc.wantRPCCode], tc.wantMessage)
+								if tc.wantRPCCode == -32602 {
+									assertMCPErrorIDNull(t, rec.Body.Bytes())
+								}
 							}
 						})
 					}

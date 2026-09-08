@@ -24,7 +24,11 @@ func writeMCP(w http.ResponseWriter, id any, result any, e *protocol.Error) {
 }
 
 func writeMCPError(w http.ResponseWriter, id any, rpcCode int, appCode, message string) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeMCPErrorStatus(w, http.StatusOK, id, rpcCode, appCode, message)
+}
+
+func writeMCPErrorStatus(w http.ResponseWriter, status int, id any, rpcCode int, appCode, message string) {
+	writeJSON(w, status, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"error": map[string]any{

@@ -352,6 +352,7 @@ curl -sS \
   -H "Authorization: Bearer $ONPREST_API_KEY" \
   -H "Content-Type: application/json" \
   -H "MCP-Protocol-Version: 2025-11-25" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"update_customer","arguments":{"customer_id":1,"name":"Ada MCP"}}}' \
   http://localhost:8080/mcp
 ```

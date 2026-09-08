@@ -121,7 +121,8 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !validMCPNotificationParams(protocolVersion, req.Method, req.Params) {
-			writeMCPError(w, nil, -32602, errJSONRPCInvalidParams, "invalid notification params")
+			s.mcpHTTPRejected(http.StatusBadRequest, errJSONRPCInvalidParams, "invalid notification params")
+			writeMCPErrorStatus(w, http.StatusBadRequest, nil, -32602, errJSONRPCInvalidParams, "invalid notification params")
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
