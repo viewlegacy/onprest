@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -535,6 +536,8 @@ func TestAgentErrorCodeAndMessagePassThroughForRESTAndMCPHTTP(t *testing.T) {
 			defer cleanup()
 			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":7}}}`))
 			req.Header.Set("Authorization", "Bearer "+apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 			rec := httptest.NewRecorder()
 			s.httpSrv.Handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
@@ -603,8 +606,9 @@ func TestMCPRequiresPost(t *testing.T) {
 
 func TestMCPAcceptsNotificationWithoutResponseBody(t *testing.T) {
 	s, _, apiKey := testServer(t)
-	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"ping"}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
 	s.httpSrv.Handler.ServeHTTP(rec, req)
@@ -630,13 +634,27 @@ func TestMCPToolCallPreservesInt64ArgumentsAndStructuredContent(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":`+boundary+`}}}`))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 	rec := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"id":`+boundary) {
-		t.Fatalf("MCP response lost int64 precision: %s", rec.Body.String())
+	response := decodeMCPToolCallEnvelope(t, rec.Body.Bytes())
+	if response.Result.IsError || string(response.ID) != `1` {
+		t.Fatalf("MCP response=%#v, want successful id 1 result", response)
+	}
+	var textValue, structuredValue any
+	decodeMCPJSONUseNumber(t, []byte(response.Result.Content[0].Text), &textValue)
+	requireMCPStructuredObject(t, response.Result.StructuredContent)
+	decodeMCPJSONUseNumber(t, response.Result.StructuredContent, &structuredValue)
+	want := map[string]any{
+		"data":  []any{map[string]any{"id": json.Number(boundary)}},
+		"count": json.Number("1"),
+	}
+	if !reflect.DeepEqual(textValue, want) || !reflect.DeepEqual(structuredValue, want) || !reflect.DeepEqual(textValue, structuredValue) {
+		t.Fatalf("MCP response lost int64 precision: text=%#v structured=%#v want=%#v", textValue, structuredValue, want)
 	}
 }
 
@@ -649,7 +667,7 @@ func TestMCPInitializePingParseAndMethodErrors(t *testing.T) {
 		wantMsg    string
 		wantResult bool
 	}{
-		{name: "initialize", body: `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, wantResult: true},
+		{name: "initialize", body: mcpInitializePayload(1, mcpProtocolVersion20250326), wantResult: true},
 		{name: "ping", body: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, wantResult: true},
 		{name: "parse", body: `{`, wantRPC: -32700, wantApp: errJSONRPCParseError, wantMsg: "invalid json rpc"},
 		{name: "method", body: `{"jsonrpc":"2.0","id":1,"method":"unknown"}`, wantRPC: -32601, wantApp: errJSONRPCMethodNotFound, wantMsg: "unsupported MCP method"},
@@ -659,6 +677,7 @@ func TestMCPInitializePingParseAndMethodErrors(t *testing.T) {
 			s, _, apiKey := testServer(t)
 			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(tc.body))
 			req.Header.Set("Authorization", "Bearer "+apiKey)
+			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			s.httpSrv.Handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
@@ -693,6 +712,7 @@ func TestMCPToolsListOfflineAndFiltered(t *testing.T) {
 	s, _, apiKey := testServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -703,6 +723,7 @@ func TestMCPToolsListOfflineAndFiltered(t *testing.T) {
 	s.openapi = testOpenAPIDoc()
 	req = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -731,27 +752,25 @@ func TestMCPToolsCallUsesAgentResultAsContentAndStructuredContent(t *testing.T) 
 	defer cleanup()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":7}}}`))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 	rec := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var body struct {
-		Result struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-			StructuredContent map[string]any `json:"structuredContent"`
-		} `json:"result"`
+	response := decodeMCPToolCallEnvelope(t, rec.Body.Bytes())
+	if response.Result.IsError || string(response.ID) != `1` {
+		t.Fatalf("MCP response=%#v, want successful id 1 result", response)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if len(body.Result.Content) != 1 || body.Result.Content[0].Text != agentPayload {
-		t.Fatalf("content = %#v, want exact agent payload %s", body.Result.Content, agentPayload)
-	}
-	if body.Result.StructuredContent["count"] != float64(1) {
-		t.Fatalf("structuredContent = %#v", body.Result.StructuredContent)
+	var textValue, structuredValue any
+	decodeMCPJSONUseNumber(t, []byte(response.Result.Content[0].Text), &textValue)
+	requireMCPStructuredObject(t, response.Result.StructuredContent)
+	decodeMCPJSONUseNumber(t, response.Result.StructuredContent, &structuredValue)
+	var want any
+	decodeMCPJSONUseNumber(t, []byte(agentPayload), &want)
+	if !reflect.DeepEqual(textValue, want) || !reflect.DeepEqual(structuredValue, want) || !reflect.DeepEqual(textValue, structuredValue) {
+		t.Fatalf("content=%#v structuredContent=%#v want=%#v", textValue, structuredValue, want)
 	}
 }
 
@@ -760,6 +779,8 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 		s, _, apiKey := testServer(t)
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`))
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 		rec := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(rec, req)
 		assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "invalid tools/call params")
@@ -768,6 +789,7 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 		s, _, apiKey := testServer(t)
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_orders","arguments":{}}}`))
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
@@ -782,6 +804,7 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 		defer cleanup()
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`))
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -882,7 +905,7 @@ func TestCORSPreflightAllowsConfiguredOrigin(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:8090" {
 		t.Fatalf("Access-Control-Allow-Origin = %q", got)
 	}
-	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, X-API-Key, Content-Type" {
+	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, X-API-Key, Content-Type, Accept, MCP-Protocol-Version" {
 		t.Fatalf("Access-Control-Allow-Headers = %q", got)
 	}
 }
@@ -1313,28 +1336,22 @@ func assertMCPErrorMessage(t *testing.T, body []byte, wantRPC int, wantApp, want
 
 func assertMCPToolError(t *testing.T, body []byte, wantCode, wantMessage string) {
 	t.Helper()
-	var got struct {
-		Result struct {
-			IsError bool `json:"isError"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-			StructuredContent struct {
-				Error struct {
-					Code    string `json:"code"`
-					Message string `json:"message"`
-				} `json:"error"`
-			} `json:"structuredContent"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatal(err)
-	}
-	if !got.Result.IsError || len(got.Result.Content) != 1 || got.Result.Content[0].Type != "text" ||
-		got.Result.Content[0].Text != wantMessage || got.Result.StructuredContent.Error.Code != wantCode ||
-		got.Result.StructuredContent.Error.Message != wantMessage {
+	got := decodeMCPToolCallEnvelope(t, body)
+	if !got.Result.IsError || got.Result.Content[0].Text != wantMessage {
 		t.Fatalf("MCP tool error mismatch; body=%s", string(body))
+	}
+	requireMCPStructuredObject(t, got.Result.StructuredContent)
+	var structured struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(got.Result.StructuredContent, &structured); err != nil {
+		t.Fatalf("decode MCP structured tool error: %v; body=%s", err, string(body))
+	}
+	if structured.Error.Code != wantCode || structured.Error.Message != wantMessage {
+		t.Fatalf("MCP tool structured error=(%q, %q), want (%q, %q); body=%s", structured.Error.Code, structured.Error.Message, wantCode, wantMessage, string(body))
 	}
 }
 

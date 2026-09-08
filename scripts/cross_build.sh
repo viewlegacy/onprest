@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 DIST_DIR="${DIST_DIR:-dist}"
+VERSION="${VERSION:-dev}"
+VERSION_LDFLAGS="-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION}"
 
 TARGETS=(
 	"linux/amd64"
@@ -26,7 +28,7 @@ build_one() {
 	mkdir -p "$out_dir"
 	echo "==> $goos/$goarch $name"
 	CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-		go build -trimpath -ldflags="-s -w" -o "$out_dir/$name$ext" "./cmd/$cmd"
+		go build -trimpath -ldflags="$VERSION_LDFLAGS" -o "$out_dir/$name$ext" "./cmd/$cmd"
 }
 
 for target in "${TARGETS[@]}"; do

@@ -309,9 +309,14 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 	}
 
 	mcpBusyStart := time.Now()
-	mcpBusy := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":"busy","method":"tools/call","params":{"name":"second_blocking_query","arguments":{}}}`)
-	if !bytes.Contains(mcpBusy, []byte(`"isError":true`)) || !bytes.Contains(mcpBusy, []byte(`"code":"AGENT_BUSY"`)) {
-		t.Fatalf("MCP request beyond bounded queue did not return an AGENT_BUSY tool result: %s", mcpBusy)
+	mcpBusyLegacy := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":"busy-legacy","method":"tools/call","params":{"name":"second_blocking_query","arguments":{}}}`)
+	legacyBusyText := requireMCPToolErrorText(t, mcpBusyLegacy)
+	if legacyBusyText == "" {
+		t.Fatal("legacy MCP busy text is empty")
+	}
+	mcpBusy := postMCPPayloadWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":"busy","method":"tools/call","params":{"name":"second_blocking_query","arguments":{}}}`)
+	if modernBusyText := requireMCPToolErrorCode(t, mcpBusy, "AGENT_BUSY"); modernBusyText != legacyBusyText {
+		t.Fatalf("legacy/modern MCP busy text differs: legacy=%q modern=%q", legacyBusyText, modernBusyText)
 	}
 	if elapsed := time.Since(mcpBusyStart); elapsed > 750*time.Millisecond {
 		t.Fatalf("MCP bounded-queue rejection waited %s instead of failing promptly", elapsed)

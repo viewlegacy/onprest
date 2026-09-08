@@ -109,7 +109,7 @@ func TestDirectHTTPIgnoresForwardedHeadersWhenNoTrustedProxy(t *testing.T) {
 	baseURL := "http://" + addr
 	waitForHTTP(t, baseURL+"/healthz", "", http.StatusOK)
 
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(validMCPInitializePayload))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +125,7 @@ func TestDirectHTTPIgnoresForwardedHeadersWhenNoTrustedProxy(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, string(body))
 	}
+	assertMCPInitializeResponse(t, body, "dev")
 }
 
 func TestGatewayCacheUpdatesWhenAgentReconnects(t *testing.T) {

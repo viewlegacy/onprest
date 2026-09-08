@@ -245,6 +245,7 @@ Build the two binaries:
 
 ```sh
 make build
+# VERSION=1.2.4 make build  # optional release version injection
 ```
 
 This creates:
@@ -397,6 +398,7 @@ Cross-build gateway and agent binaries for common OS/CPU targets:
 
 ```sh
 make build-cross
+# VERSION=1.2.4 make build-cross  # inject the same version into every target
 ```
 
 The binaries are built with `CGO_ENABLED=0` so they are suitable for copying to legacy environments without installing Docker or native database client libraries.

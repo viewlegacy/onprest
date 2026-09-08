@@ -3,6 +3,7 @@
 package it
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -47,6 +48,129 @@ type itSecrets struct {
 	APIKey          string
 	APIKeyHash      string
 	APIKeysJSON     string
+}
+
+const validMCPInitializePayload = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"onprest-it","version":"test"}}}`
+
+const modernMCPProtocolVersion = "2025-11-25"
+
+type mcpToolCallResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Error   json.RawMessage `json:"error"`
+	Result  struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		StructuredContent json.RawMessage `json:"structuredContent"`
+	} `json:"result"`
+}
+
+type mcpRowsResult struct {
+	Rows []struct {
+		ID    json.Number `json:"id"`
+		Name  string      `json:"name"`
+		Email string      `json:"email"`
+	} `json:"rows"`
+	Count json.Number `json:"count"`
+}
+
+func requireMCPToolCallResponse(t *testing.T, body []byte, wantID string, wantStructured bool) mcpToolCallResponse {
+	t.Helper()
+	var response mcpToolCallResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode MCP tools/call response: %v; body=%s", err, body)
+	}
+	if response.JSONRPC != "2.0" || (len(response.Error) != 0 && string(response.Error) != "null") {
+		t.Fatalf("MCP tools/call envelope=%#v; body=%s", response, body)
+	}
+	if string(response.ID) != wantID {
+		t.Fatalf("MCP tools/call id=%s want %s; body=%s", response.ID, wantID, body)
+	}
+	if response.Result.IsError || len(response.Result.Content) != 1 || response.Result.Content[0].Type != "text" || response.Result.Content[0].Text == "" {
+		t.Fatalf("MCP tools/call result=%#v, want successful one-text result; body=%s", response.Result, body)
+	}
+	if err := validateMCPStructuredContent(response.Result.StructuredContent, wantStructured); err != nil {
+		t.Fatalf("MCP tools/call structuredContent: %v; body=%s", err, body)
+	}
+	return response
+}
+
+func validateMCPStructuredContent(raw json.RawMessage, wantStructured bool) error {
+	if !wantStructured {
+		if len(raw) != 0 {
+			return fmt.Errorf("legacy response must omit structuredContent, got %s", raw)
+		}
+		return nil
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return fmt.Errorf("modern response is missing structuredContent")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return fmt.Errorf("modern structuredContent is not an object: %w", err)
+	}
+	if object == nil {
+		return fmt.Errorf("modern structuredContent must be an object, got %s", raw)
+	}
+	return nil
+}
+
+func TestMCPStructuredContentPresenceValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		raw            json.RawMessage
+		wantStructured bool
+		wantErr        bool
+	}{
+		{name: "legacy absent", wantErr: false},
+		{name: "legacy null", raw: json.RawMessage(`null`), wantErr: true},
+		{name: "legacy object", raw: json.RawMessage(`{"rows":[]}`), wantErr: true},
+		{name: "modern absent", wantStructured: true, wantErr: true},
+		{name: "modern null", raw: json.RawMessage(`null`), wantStructured: true, wantErr: true},
+		{name: "modern object", raw: json.RawMessage(`{"rows":[]}`), wantStructured: true, wantErr: false},
+		{name: "modern array", raw: json.RawMessage(`[]`), wantStructured: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateMCPStructuredContent(tc.raw, tc.wantStructured); (err != nil) != tc.wantErr {
+				t.Fatalf("validateMCPStructuredContent(%q, %t) error=%v wantErr=%t", tc.raw, tc.wantStructured, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func decodeMCPJSON(t *testing.T, raw []byte, target any) {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		t.Fatalf("decode MCP JSON value: %v; raw=%s", err, raw)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		t.Fatalf("MCP JSON value has trailing data: err=%v raw=%s", err, raw)
+	}
+}
+
+func assertMCPInitializeResponse(t *testing.T, body []byte, wantVersion string) {
+	t.Helper()
+	var response struct {
+		Result struct {
+			ProtocolVersion string `json:"protocolVersion"`
+			ServerInfo      struct {
+				Version string `json:"version"`
+			} `json:"serverInfo"`
+		} `json:"result"`
+		Error any `json:"error"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode MCP initialize response: %v; body=%s", err, body)
+	}
+	if response.Error != nil || response.Result.ProtocolVersion != "2025-03-26" || response.Result.ServerInfo.Version != wantVersion {
+		t.Fatalf("MCP initialize result=%#v error=%#v, want protocol 2025-03-26/version %q; body=%s", response.Result, response.Error, wantVersion, body)
+	}
 }
 
 func newITSecrets(t *testing.T) itSecrets {

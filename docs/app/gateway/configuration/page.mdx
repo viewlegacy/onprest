@@ -61,7 +61,7 @@ Set `GATEWAY_CORS_ALLOWED_ORIGINS` when browser-based clients, such as Swagger U
 GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
 ```
 
-The gateway allows `GET`, `POST`, and `OPTIONS` with `Authorization`, `X-API-Key`, and `Content-Type` only for configured origins. When omitted, the gateway does not emit CORS headers.
+The gateway allows `GET`, `POST`, and `OPTIONS` with `Authorization`, `X-API-Key`, `Content-Type`, `Accept`, and `MCP-Protocol-Version` only for configured origins. When omitted, the gateway does not emit CORS headers; MCP requests with an `Origin` that is not configured are rejected before authentication.
 
 ## Agent Public Key
 

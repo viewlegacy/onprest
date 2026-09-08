@@ -4,7 +4,8 @@ COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
 ARG TARGET=gateway
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/onprest ./cmd/${TARGET}
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION}" -o /out/onprest ./cmd/${TARGET}
 
 FROM gcr.io/distroless/base-debian12
 COPY --from=build --chown=nonroot:nonroot /out/onprest /app/onprest

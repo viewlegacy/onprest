@@ -78,8 +78,10 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          go build -trimpath -o dist/onprest-gateway.exe ./cmd/gateway
-          go build -trimpath -o dist/onprest-agent.exe ./cmd/agent
+          $version = if ($env:VERSION) { $env:VERSION } else { "dev" }
+          $ldflags = "-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=$version"
+          go build -trimpath -ldflags $ldflags -o dist/onprest-gateway.exe ./cmd/gateway
+          go build -trimpath -ldflags $ldflags -o dist/onprest-agent.exe ./cmd/agent
       - name: Validate crash recovery and path safety on Windows host
         shell: powershell
         run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1

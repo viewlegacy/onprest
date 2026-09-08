@@ -1,11 +1,13 @@
 .PHONY: build build-cross quickstart-db quickstart-db-down test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
 
 DIST_DIR ?= dist
+VERSION ?= dev
+VERSION_LDFLAGS := -s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=$(VERSION)
 
 build:
 	mkdir -p "$(DIST_DIR)"
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$(DIST_DIR)/onprest-gateway" ./cmd/gateway
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$(DIST_DIR)/onprest-agent" ./cmd/agent
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(DIST_DIR)/onprest-gateway" ./cmd/gateway
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(DIST_DIR)/onprest-agent" ./cmd/agent
 
 build-cross:
 	bash scripts/cross_build.sh

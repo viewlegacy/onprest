@@ -198,8 +198,11 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
 		t.Fatalf("compose REST status=%d body=%s", status, string(body))
 	}
 	mcpBody := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":8}}}`)
-	if !strings.Contains(string(mcpBody), `"id":8`) {
-		t.Fatalf("compose MCP tools/call body=%s", string(mcpBody))
+	response := requireMCPToolCallResponse(t, mcpBody, "1", false)
+	var textResult mcpRowsResult
+	decodeMCPJSON(t, []byte(response.Result.Content[0].Text), &textResult)
+	if textResult.Count.String() != "1" || len(textResult.Rows) != 1 || textResult.Rows[0].ID.String() != "8" {
+		t.Fatalf("compose MCP tools/call text result=%#v", textResult)
 	}
 }
 

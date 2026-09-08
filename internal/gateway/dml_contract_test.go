@@ -128,6 +128,8 @@ func TestRESTAndMCPMutationPayloadPassThroughAndCountLog(t *testing.T) {
 			s.responseKinds = map[string]responseKind{"get_customer": tc.kind}
 			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`))
 			req.Header.Set("Authorization", "Bearer "+apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 			rec := httptest.NewRecorder()
 			s.httpSrv.Handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"text":`+strconv.Quote(tc.payload)) {
@@ -172,6 +174,8 @@ func TestMissingCountClassificationThroughRESTAndMCPHandlers(t *testing.T) {
 				} else {
 					req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`))
 					req.Header.Set("Authorization", "Bearer "+apiKey)
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 					rec := httptest.NewRecorder()
 					s.httpSrv.Handler.ServeHTTP(rec, req)
 					assertMCPToolError(t, rec.Body.Bytes(), tc.wantCode, map[string]string{errAgentInternal: "agent internal error", errAgentTransactionOutcomeUnknown: "transaction outcome is unknown"}[tc.wantCode])

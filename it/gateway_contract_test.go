@@ -223,7 +223,7 @@ func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 
 	mcpDone := make(chan []byte, 1)
 	go func() {
-		status, body := postMCPStatus(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo_customer","arguments":{"secret":"dont-log-me-too"}}}`)
+		status, body := postMCPStatusWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo_customer","arguments":{"secret":"dont-log-me-too"}}}`)
 		if status != http.StatusOK {
 			body = []byte("status=" + http.StatusText(status) + " body=" + string(body))
 		}
@@ -251,7 +251,9 @@ func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 		t.Fatalf("write MCP agent error: %v", err)
 	}
 	mcpBody := <-mcpDone
-	requireMCPToolErrorCode(t, mcpBody, "AGENT_VALIDATION_FAILED")
+	if got := requireMCPToolErrorCode(t, mcpBody, "AGENT_VALIDATION_FAILED"); got != mcpAgentMessage {
+		t.Fatalf("MCP agent message=%q want %q; body=%s", got, mcpAgentMessage, mcpBody)
+	}
 	if !strings.Contains(string(mcpBody), mcpAgentMessage) || !strings.Contains(logs.String(), mcpAgentMessage) {
 		t.Fatalf("MCP agent message not propagated; body=%s logs=%s", string(mcpBody), logs.String())
 	}
@@ -341,7 +343,20 @@ func postMCPPayload(t *testing.T, baseURL, apiKey, payload string) []byte {
 	return body
 }
 
+func postMCPPayloadWithProtocol(t *testing.T, baseURL, apiKey, protocolVersion, payload string) []byte {
+	t.Helper()
+	status, body := postMCPStatusWithProtocol(t, baseURL, apiKey, protocolVersion, payload)
+	if status != http.StatusOK {
+		t.Fatalf("MCP status=%d body=%s", status, string(body))
+	}
+	return body
+}
+
 func postMCPStatus(t *testing.T, baseURL, apiKey, payload string) (int, []byte) {
+	return postMCPStatusWithProtocol(t, baseURL, apiKey, "", payload)
+}
+
+func postMCPStatusWithProtocol(t *testing.T, baseURL, apiKey, protocolVersion, payload string) (int, []byte) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(payload))
 	if err != nil {
@@ -349,6 +364,9 @@ func postMCPStatus(t *testing.T, baseURL, apiKey, payload string) (int, []byte) 
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	if protocolVersion != "" {
+		req.Header.Set("MCP-Protocol-Version", protocolVersion)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -358,24 +376,57 @@ func postMCPStatus(t *testing.T, baseURL, apiKey, payload string) (int, []byte) 
 	return resp.StatusCode, body
 }
 
-func requireMCPToolErrorCode(t *testing.T, body []byte, want string) {
-	t.Helper()
+func requireMCPToolErrorCode(t *testing.T, body []byte, want string) string {
+	text := requireMCPToolErrorVariant(t, body, true)
 	var response struct {
 		Result struct {
-			IsError           bool `json:"isError"`
-			StructuredContent struct {
-				Error struct {
-					Code string `json:"code"`
-				} `json:"error"`
-			} `json:"structuredContent"`
+			StructuredContent json.RawMessage `json:"structuredContent"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		t.Fatalf("decode MCP tool error: %v; body=%s", err, body)
 	}
-	if !response.Result.IsError || response.Result.StructuredContent.Error.Code != want {
-		t.Fatalf("MCP tool error code=%q isError=%t, want %q; body=%s", response.Result.StructuredContent.Error.Code, response.Result.IsError, want, body)
+	var structured struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
+	if err := json.Unmarshal(response.Result.StructuredContent, &structured); err != nil {
+		t.Fatalf("decode MCP structured tool error: %v; body=%s", err, body)
+	}
+	if structured.Error.Code != want || structured.Error.Message != text {
+		t.Fatalf("MCP tool error=(%q, %q) want (%q, %q); body=%s", structured.Error.Code, structured.Error.Message, want, text, body)
+	}
+	return text
+}
+
+func requireMCPToolErrorText(t *testing.T, body []byte) string {
+	return requireMCPToolErrorVariant(t, body, false)
+}
+
+func requireMCPToolErrorVariant(t *testing.T, body []byte, wantStructured bool) string {
+	t.Helper()
+	var response struct {
+		Result struct {
+			IsError bool `json:"isError"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			StructuredContent json.RawMessage `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		t.Fatalf("decode MCP tool error: %v; body=%s", err, body)
+	}
+	if !response.Result.IsError || len(response.Result.Content) != 1 || response.Result.Content[0].Type != "text" || response.Result.Content[0].Text == "" {
+		t.Fatalf("MCP tool error result=%#v, want isError with one text item; body=%s", response.Result, body)
+	}
+	if err := validateMCPStructuredContent(response.Result.StructuredContent, wantStructured); err != nil {
+		t.Fatalf("MCP tool error structuredContent: %v; body=%s", err, body)
+	}
+	return response.Result.Content[0].Text
 }
 
 func quoteJSON(v string) string {

@@ -111,6 +111,17 @@ func buildBinary(t *testing.T, repo, out, pkg string) {
 	}
 }
 
+func buildDistributionWithVersion(t *testing.T, repo, distDir, version string) {
+	t.Helper()
+	cmd := exec.Command("make", "build", "VERSION="+version, "DIST_DIR="+distDir)
+	cmd.Dir = repo
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("make build VERSION=%s failed: %v\n%s", version, err, stderr.String())
+	}
+}
+
 func freeAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -266,8 +277,12 @@ func assertMCPTools(t *testing.T, baseURL, apiKey string) {
 		}
 	})
 	callMCP(t, baseURL, apiKey, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo_customer","arguments":{"id":8,"name":"Grace"}}}`, func(body []byte) {
-		if !strings.Contains(string(body), `"count":1`) || !strings.Contains(string(body), "Grace") {
-			t.Fatalf("unexpected tools/call response: %s", string(body))
+		response := requireMCPToolCallResponse(t, body, "2", false)
+		var textResult mcpRowsResult
+		decodeMCPJSON(t, []byte(response.Result.Content[0].Text), &textResult)
+		if textResult.Count != json.Number("1") || len(textResult.Rows) != 1 ||
+			textResult.Rows[0].ID != json.Number("8") || textResult.Rows[0].Name != "Grace" {
+			t.Fatalf("unexpected tools/call text result: %#v", textResult)
 		}
 	})
 }

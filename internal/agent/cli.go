@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/viewlegacy/onprest/internal/buildinfo"
 )
 
 func HandleCLI(ctx context.Context, args []string, stdout, stderr io.Writer) (bool, int) {
@@ -17,6 +19,9 @@ func HandleCLI(ctx context.Context, args []string, stdout, stderr io.Writer) (bo
 		return false, 0
 	}
 	switch args[0] {
+	case "version", "--version", "-v":
+		fmt.Fprintln(stdout, buildinfo.Current())
+		return true, 0
 	case "validate":
 		return true, handleValidateCLI(ctx, args[1:], stdout, stderr)
 	case "service":
@@ -271,6 +276,9 @@ func rejectServiceArgs(command string, args []string, stderr io.Writer) bool {
 func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  onprest-agent [--config PATH] [--capability-file PATH]  start agent")
+	fmt.Fprintln(w, "  onprest-agent version                                 print agent version")
+	fmt.Fprintln(w, "  onprest-agent --version                               print agent version")
+	fmt.Fprintln(w, "  onprest-agent -v                                      print agent version")
 	fmt.Fprintln(w, "  onprest-agent validate [--config PATH] [--format text|json]")
 	fmt.Fprintln(w, "  onprest-agent service install [--config PATH]  install OS service")
 	fmt.Fprintln(w, "  onprest-agent service start                    start OS service")

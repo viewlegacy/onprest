@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/viewlegacy/onprest/internal/buildinfo"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -17,6 +18,9 @@ func HandleCLI(args []string, stdout, stderr io.Writer) bool {
 		return false
 	}
 	switch args[0] {
+	case "version", "--version", "-v":
+		fmt.Fprintln(stdout, buildinfo.Current())
+		return true
 	case "create-agent-secret":
 		createAgentSecret(stdout, stderr)
 		return true
@@ -109,6 +113,9 @@ func randomToken(n int) (string, error) {
 func printGatewayUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  gateway                         start gateway server")
+	fmt.Fprintln(w, "  gateway version                 print gateway version")
+	fmt.Fprintln(w, "  gateway --version               print gateway version")
+	fmt.Fprintln(w, "  gateway -v                      print gateway version")
 	fmt.Fprintln(w, "  gateway create-agent-secret     generate an Ed25519 agent keypair")
 	fmt.Fprintln(w, "  gateway create-agent            alias for create-agent-secret")
 	fmt.Fprintln(w, "  gateway create-key --name NAME --capabilities cap1,cap2")

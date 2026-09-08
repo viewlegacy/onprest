@@ -7,11 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -79,13 +81,38 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 		}
 	}
 
-	status, body = postMCPStatus(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"validated_lookup","arguments":{"id":1,"code":"leak-me"}}}`)
-	if status != http.StatusOK {
-		t.Fatalf("invalid MCP status=%d body=%s", status, string(body))
-	}
-	requireMCPToolErrorCode(t, body, "AGENT_VALIDATION_FAILED")
-	if strings.Contains(string(body), "leak-me") || strings.Contains(logs.String(), "leak-me") {
-		t.Fatalf("MCP validation detail leaked; body=%s logs=%s", string(body), logs.String())
+	var legacyErrorText string
+	for _, version := range []struct {
+		name           string
+		header         string
+		wantStructured bool
+	}{
+		{name: "legacy-headerless"},
+		{name: "modern", header: modernMCPProtocolVersion, wantStructured: true},
+	} {
+		version := version
+		t.Run("MCP validation/"+version.name, func(t *testing.T) {
+			status, body := postMCPStatusWithProtocol(t, baseURL, secrets.APIKey, version.header, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"validated_lookup","arguments":{"id":1,"code":"leak-me"}}}`)
+			if status != http.StatusOK {
+				t.Fatalf("invalid MCP status=%d body=%s", status, string(body))
+			}
+			var text string
+			if version.wantStructured {
+				text = requireMCPToolErrorCode(t, body, "AGENT_VALIDATION_FAILED")
+			} else {
+				text = requireMCPToolErrorText(t, body)
+				legacyErrorText = text
+			}
+			if text == "" {
+				t.Fatal("MCP validation error text is empty")
+			}
+			if version.wantStructured && legacyErrorText != "" && text != legacyErrorText {
+				t.Fatalf("legacy and modern MCP error text differ: legacy=%q modern=%q", legacyErrorText, text)
+			}
+			if strings.Contains(string(body), "leak-me") || strings.Contains(logs.String(), "leak-me") {
+				t.Fatalf("MCP validation detail leaked; body=%s logs=%s", string(body), logs.String())
+			}
+		})
 	}
 
 	cancel()
@@ -238,9 +265,74 @@ func TestDistCLIProvisioningRunsOutsideSourceTree(t *testing.T) {
 	if !strings.Contains(string(tools), "get_customer") {
 		t.Fatalf("provisioned tools/list = %s", string(tools))
 	}
-	mcpBody := postMCPPayload(t, baseURL, apiKey.APIKey, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":43}}}`)
-	if !strings.Contains(string(mcpBody), `"structuredContent"`) || !strings.Contains(string(mcpBody), `"id":43`) {
-		t.Fatalf("provisioned tools/call = %s", string(mcpBody))
+	for _, version := range []struct {
+		name           string
+		header         string
+		id             int
+		wantStructured bool
+	}{
+		{name: "legacy-headerless", id: 44},
+		{name: "middle", header: "2025-06-18", id: 45, wantStructured: true},
+		{name: "latest", header: modernMCPProtocolVersion, id: 43, wantStructured: true},
+	} {
+		version := version
+		t.Run("MCP/"+version.name, func(t *testing.T) {
+			payload := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":%d}}}`, version.id, version.id)
+			status, body := postMCPStatusWithProtocol(t, baseURL, apiKey.APIKey, version.header, payload)
+			if status != http.StatusOK {
+				t.Fatalf("MCP tools/call status=%d body=%s", status, body)
+			}
+			var response struct {
+				JSONRPC string          `json:"jsonrpc"`
+				ID      json.RawMessage `json:"id"`
+				Result  struct {
+					Content           []struct{ Type, Text string } `json:"content"`
+					StructuredContent json.RawMessage               `json:"structuredContent"`
+				} `json:"result"`
+				Error json.RawMessage `json:"error"`
+			}
+			if err := json.Unmarshal(body, &response); err != nil {
+				t.Fatalf("decode MCP tools/call response: %v; body=%s", err, body)
+			}
+			if response.JSONRPC != "2.0" || (len(response.Error) != 0 && string(response.Error) != "null") {
+				t.Fatalf("MCP tools/call envelope=%#v body=%s", response, body)
+			}
+			var gotID int
+			if err := json.Unmarshal(response.ID, &gotID); err != nil || gotID != version.id {
+				t.Fatalf("MCP tools/call id=%s want %d", response.ID, version.id)
+			}
+			if len(response.Result.Content) != 1 || response.Result.Content[0].Type != "text" {
+				t.Fatalf("MCP tools/call content=%#v want one text item", response.Result.Content)
+			}
+			var textValue any
+			decodeMCPJSON(t, []byte(response.Result.Content[0].Text), &textValue)
+			textObject, ok := textValue.(map[string]any)
+			rows, rowsOK := textObject["rows"].([]any)
+			row, rowOK := func() (map[string]any, bool) {
+				if len(rows) != 1 {
+					return nil, false
+				}
+				value, ok := rows[0].(map[string]any)
+				return value, ok
+			}()
+			rowID, idOK := row["id"].(json.Number)
+			count, countOK := textObject["count"].(json.Number)
+			if !ok || !rowsOK || !rowOK || !idOK || !countOK || count != json.Number("1") || rowID != json.Number(fmt.Sprintf("%d", version.id)) {
+				t.Fatalf("MCP tools/call text value=%#v want count=1/id=%d", textValue, version.id)
+			}
+			if version.wantStructured {
+				var structuredValue any
+				if err := validateMCPStructuredContent(response.Result.StructuredContent, true); err != nil {
+					t.Fatalf("MCP tools/call structuredContent: %v", err)
+				}
+				decodeMCPJSON(t, response.Result.StructuredContent, &structuredValue)
+				if !reflect.DeepEqual(structuredValue, textValue) {
+					t.Fatalf("MCP tools/call structured value=%#v differs from text=%#v", structuredValue, textValue)
+				}
+			} else if err := validateMCPStructuredContent(response.Result.StructuredContent, false); err != nil {
+				t.Fatalf("legacy MCP tools/call structuredContent: %v", err)
+			}
+		})
 	}
 }
 
@@ -333,7 +425,7 @@ func TestGatewayProcessDirectHTTPIgnoresForwardedHeaders(t *testing.T) {
 	})
 	defer stopProcess(t, cmd)
 	waitForHTTP(t, "http://"+addr+"/healthz", "", http.StatusOK)
-	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/mcp", strings.NewReader(validMCPInitializePayload))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +441,7 @@ func TestGatewayProcessDirectHTTPIgnoresForwardedHeaders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("direct process status=%d body=%s output=%s", resp.StatusCode, string(body), output.String())
 	}
+	assertMCPInitializeResponse(t, body, "dev")
 }
 
 func TestOperationalSensitiveDataAuditAcrossArtifacts(t *testing.T) {

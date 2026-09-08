@@ -29,6 +29,9 @@ func serveMCPForLogTest(s *Server, apiKey, method, body string) *httptest.Respon
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	recorder := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(recorder, req)
 	return recorder
@@ -47,7 +50,7 @@ func TestMCPPreToolCallBranchesEmitNoRequestEvent(t *testing.T) {
 		{"JSON parse", http.MethodPost, `{`, true},
 		{"trailing JSON", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}{}`, true},
 		{"JSON-RPC invalid", http.MethodPost, `{"jsonrpc":"1.0","id":1,"method":"tools/call"}`, true},
-		{"initialize", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, true},
+		{"initialize", http.MethodPost, mcpInitializePayload(1, mcpProtocolVersion20250326), true},
 		{"initialized notification", http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, true},
 		{"ping", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, true},
 		{"tools list", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, true},
@@ -115,6 +118,7 @@ func TestMCPMiddlewareRejectionsUseControlEventsNotRequestEvents(t *testing.T) {
 			panic(panicDetail)
 		}))
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`))
+		req.Header.Set("Content-Type", "application/json")
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, req)
 

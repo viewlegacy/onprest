@@ -35,6 +35,9 @@ func TestMakeBuildProducesOnlyRunnableGatewayAndAgent(t *testing.T) {
 			t.Fatalf("%s is not executable: %v", name, info.Mode())
 		}
 		runRepoCommand(t, root, nil, path, "--help")
+		if got := strings.TrimSpace(runRepoCommand(t, root, nil, path, "--version")); got != "dev" {
+			t.Fatalf("%s --version=%q, want dev for an uninjected build", name, got)
+		}
 	}
 	packages := runRepoCommand(t, root, nil, "go", "list", "./...")
 	if strings.Contains(strings.ToLower(packages), "dashboard") || strings.Contains(packages, "/manage") {
@@ -42,10 +45,24 @@ func TestMakeBuildProducesOnlyRunnableGatewayAndAgent(t *testing.T) {
 	}
 }
 
+func TestMakeBuildInjectsOneVersionIntoBothBinaries(t *testing.T) {
+	root := repoRoot(t)
+	dist := t.TempDir()
+	runRepoCommand(t, root, []string{"DIST_DIR=" + dist, "VERSION=1.2.4"}, "make", "build")
+	for _, name := range []string{"onprest-gateway", "onprest-agent"} {
+		for _, arg := range []string{"version", "--version", "-v"} {
+			got := strings.TrimSpace(runRepoCommand(t, root, nil, filepath.Join(dist, name), arg))
+			if got != "1.2.4" {
+				t.Fatalf("%s %s=%q, want 1.2.4", name, arg, got)
+			}
+		}
+	}
+}
+
 func TestMakeBuildCrossProducesBothBinariesForEveryTarget(t *testing.T) {
 	root := repoRoot(t)
 	dist := t.TempDir()
-	runRepoCommand(t, root, []string{"DIST_DIR=" + dist}, "make", "build-cross")
+	runRepoCommand(t, root, []string{"DIST_DIR=" + dist, "VERSION=1.2.4"}, "make", "build-cross")
 	targets := []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"}
 	for _, target := range targets {
 		ext := ""
@@ -71,6 +88,10 @@ func TestMakeBuildCrossProducesBothBinariesForEveryTarget(t *testing.T) {
 		for _, binary := range []string{"onprest-gateway", "onprest-agent"} {
 			if info, err := os.Stat(filepath.Join(dist, nativeTarget, binary)); err == nil && info.Mode()&0o111 == 0 {
 				t.Fatalf("native cross-built %s is not executable", binary)
+			}
+			got := strings.TrimSpace(runRepoCommand(t, root, nil, filepath.Join(dist, nativeTarget, binary), "--version"))
+			if got != "1.2.4" {
+				t.Fatalf("native cross-built %s --version=%q, want 1.2.4", binary, got)
 			}
 		}
 	}
@@ -107,7 +128,8 @@ func TestDockerfileBuildsSelectableSingleBinaryTargets(t *testing.T) {
 	dockerfile := string(b)
 	for _, want := range []string{
 		"ARG TARGET=gateway",
-		"go build -trimpath -ldflags=\"-s -w\" -o /out/onprest ./cmd/${TARGET}",
+		"ARG VERSION=dev",
+		"go build -trimpath -ldflags=\"-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION}\" -o /out/onprest ./cmd/${TARGET}",
 		"ENTRYPOINT [\"/app/onprest\"]",
 	} {
 		if !strings.Contains(dockerfile, want) {
