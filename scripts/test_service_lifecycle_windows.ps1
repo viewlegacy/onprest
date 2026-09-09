@@ -72,7 +72,11 @@ function Invoke-RuntimeMarker([string]$Capability) {
 
 function Invoke-MCP([string]$Body) {
   return Invoke-RestMethod -Uri http://127.0.0.1:18080/mcp -Method Post `
-    -Headers @{Authorization="Bearer $($apiSecret.api_key)"} -ContentType 'application/json' -Body $Body
+    -Headers @{
+      Authorization="Bearer $($apiSecret.api_key)"
+      'MCP-Protocol-Version'='2025-11-25'
+      Accept='application/json, text/event-stream'
+    } -ContentType 'application/json' -Body $Body
 }
 
 function Get-OpenAPIText {

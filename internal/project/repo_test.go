@@ -317,8 +317,8 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		}
 	}
 	for path, required := range map[string][]string{
-		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
-		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "runtimeWriter", "[Guid]::NewGuid().ToString('N').Substring(0, 10)", "$readerCreated", "$primaryFailure", "$cleanupFailure", "temporaryLog"},
+		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "MCP-Protocol-Version: 2025-11-25", "Accept: application/json, text/event-stream", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
+		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "MCP-Protocol-Version'='2025-11-25", "Accept='application/json, text/event-stream", "runtimeWriter", "[Guid]::NewGuid().ToString('N').Substring(0, 10)", "$readerCreated", "$primaryFailure", "$cleanupFailure", "temporaryLog"},
 	} {
 		text := readText(t, filepath.Join(root, filepath.FromSlash(path)))
 		for _, marker := range required {
