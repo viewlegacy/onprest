@@ -37,12 +37,15 @@ func TestGatewayProcessEnvFileMCPLogsAndShutdown(t *testing.T) {
 	waitForHTTP(t, "http://"+addr+"/healthz", "", http.StatusOK)
 
 	for _, payload := range []string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize"}`,
+		validMCPInitializePayload,
 		`{"jsonrpc":"2.0","id":2,"method":"ping"}`,
 	} {
 		body := postMCPPayload(t, "http://"+addr, secrets.APIKey, payload)
 		if !strings.Contains(string(body), `"result"`) {
 			t.Fatalf("MCP response missing result: %s", string(body))
+		}
+		if payload == validMCPInitializePayload {
+			assertMCPInitializeResponse(t, body, "dev")
 		}
 	}
 	status, body := postCapability(t, "http://"+addr, secrets.APIKey, "echo_customer", `{"secret":"must-not-log"}`)
@@ -77,6 +80,36 @@ func TestGatewayProcessEnvFileMCPLogsAndShutdown(t *testing.T) {
 	if strings.Contains(output.String(), "must-not-log") {
 		t.Fatalf("gateway stdout leaked params: %s", output.String())
 	}
+}
+
+func TestGatewayProcessVersionMatchesMCPInitialize(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	const wantVersion = "1.2.4"
+	distDir := filepath.Join(tmp, "dist")
+	buildDistributionWithVersion(t, repo, distDir, wantVersion)
+	gatewayBin := filepath.Join(distDir, "onprest-gateway")
+	versionOutput, err := exec.Command(gatewayBin, "--version").Output()
+	if err != nil {
+		t.Fatalf("gateway --version: %v", err)
+	}
+	if got := strings.TrimSpace(string(versionOutput)); got != wantVersion {
+		t.Fatalf("gateway --version=%q want %q", got, wantVersion)
+	}
+
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	cmd, output := startProcessWithOutput(t, tmp, gatewayBin, nil, []string{
+		"GATEWAY_ADDR=" + addr,
+		"GATEWAY_AGENT_PUBLIC_KEY=" + secrets.AgentPublicKey,
+		"GATEWAY_API_KEYS_JSON=" + secrets.APIKeysJSON,
+		"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=100",
+		"GATEWAY_RATE_LIMIT_BURST=100",
+	})
+	defer stopProcess(t, cmd)
+	waitForHTTP(t, "http://"+addr+"/healthz", "", http.StatusOK)
+	assertMCPInitializeResponse(t, postMCPPayload(t, "http://"+addr, secrets.APIKey, validMCPInitializePayload), wantVersion)
+	_ = output
 }
 
 func TestGatewayProcessTrustedProxyIPAllowAndRateLimit(t *testing.T) {

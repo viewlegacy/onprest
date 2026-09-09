@@ -20,7 +20,7 @@ Request event fields:
 | `error_message` | Matching public response message, or null on success |
 | `duration_ms` | Non-negative request duration in milliseconds |
 
-For REST and HTTP-level MCP errors, `error_code` and `error_message` match the HTTP `error.code` and `error.message`. For MCP JSON-RPC errors they match `error.data.code` and `error.message`; for MCP tool execution errors they match `result.structuredContent.error.code` and `result.structuredContent.error.message`.
+For REST and HTTP-level MCP errors, `error_code` and `error_message` match the HTTP `error.code` and `error.message`. For MCP JSON-RPC errors they match `error.data.code` and `error.message`; for MCP tool execution errors they match the public agent code/message, whether carried in the text result on `2025-03-26` or in `result.structuredContent.error` on the two newer versions.
 
 Gateway stdout excludes submitted param values, URL paths, SQL, DB credentials, agent raw detail, plaintext API keys, and agent private keys. See [Gateway Logs](/gateway/logs) for the rules that determine when REST, MCP, and control events are emitted.
 

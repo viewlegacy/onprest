@@ -78,20 +78,39 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          go build -trimpath -o dist/onprest-gateway.exe ./cmd/gateway
-          go build -trimpath -o dist/onprest-agent.exe ./cmd/agent
+          $version = if ($env:VERSION) { $env:VERSION } else { "dev" }
+          $ldflags = "-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=$version"
+          go build -trimpath -ldflags $ldflags -o dist/onprest-gateway.exe ./cmd/gateway
+          go build -trimpath -ldflags $ldflags -o dist/onprest-agent.exe ./cmd/agent
       - name: Validate crash recovery and path safety on Windows host
         shell: powershell
         run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1
-      - name: Install PostgreSQL
+      - name: Start preinstalled PostgreSQL
         shell: powershell
         run: |
-          choco install postgresql16 --params "'/Password:onprest'" --no-progress -y
+          $psql = Join-Path $env:PGBIN 'psql.exe'
+          $pgIsReady = Join-Path $env:PGBIN 'pg_isready.exe'
+          if (-not (Test-Path $psql) -or -not (Test-Path $pgIsReady)) {
+            throw "GitHub runner PostgreSQL tools were not found in PGBIN: $env:PGBIN"
+          }
+          $postgresVersion = Split-Path (Split-Path $env:PGBIN -Parent) -Leaf
+          $postgresService = Get-Service -Name "postgresql-x64-$postgresVersion" -ErrorAction SilentlyContinue
+          if ($null -eq $postgresService) {
+            throw "GitHub runner PostgreSQL service was not found for PGBIN: $env:PGBIN"
+          }
+          Set-Service -Name $postgresService.Name -StartupType Manual
+          Start-Service -Name $postgresService.Name
           for ($i = 0; $i -lt 60; $i++) {
-            if (Test-NetConnection 127.0.0.1 -Port 5432 -InformationLevel Quiet) { break }
+            & $pgIsReady -h 127.0.0.1 -p 5432 | Out-Null
+            if ($LASTEXITCODE -eq 0) { break }
             Start-Sleep -Seconds 1
           }
-          if (-not (Test-NetConnection 127.0.0.1 -Port 5432 -InformationLevel Quiet)) { throw 'PostgreSQL did not start' }
+          & $pgIsReady -h 127.0.0.1 -p 5432 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL did not start' }
+          $env:PGPASSWORD = 'root'
+          & $psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "ALTER USER postgres PASSWORD 'onprest';"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not configure the PostgreSQL test password' }
+          Remove-Item Env:PGPASSWORD
       - name: Exercise actual Windows Service lifecycle
         shell: powershell
         run: |

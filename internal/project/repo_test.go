@@ -35,6 +35,9 @@ func TestMakeBuildProducesOnlyRunnableGatewayAndAgent(t *testing.T) {
 			t.Fatalf("%s is not executable: %v", name, info.Mode())
 		}
 		runRepoCommand(t, root, nil, path, "--help")
+		if got := strings.TrimSpace(runRepoCommand(t, root, nil, path, "--version")); got != "dev" {
+			t.Fatalf("%s --version=%q, want dev for an uninjected build", name, got)
+		}
 	}
 	packages := runRepoCommand(t, root, nil, "go", "list", "./...")
 	if strings.Contains(strings.ToLower(packages), "dashboard") || strings.Contains(packages, "/manage") {
@@ -42,10 +45,24 @@ func TestMakeBuildProducesOnlyRunnableGatewayAndAgent(t *testing.T) {
 	}
 }
 
+func TestMakeBuildInjectsOneVersionIntoBothBinaries(t *testing.T) {
+	root := repoRoot(t)
+	dist := t.TempDir()
+	runRepoCommand(t, root, []string{"DIST_DIR=" + dist, "VERSION=1.2.4"}, "make", "build")
+	for _, name := range []string{"onprest-gateway", "onprest-agent"} {
+		for _, arg := range []string{"version", "--version", "-v"} {
+			got := strings.TrimSpace(runRepoCommand(t, root, nil, filepath.Join(dist, name), arg))
+			if got != "1.2.4" {
+				t.Fatalf("%s %s=%q, want 1.2.4", name, arg, got)
+			}
+		}
+	}
+}
+
 func TestMakeBuildCrossProducesBothBinariesForEveryTarget(t *testing.T) {
 	root := repoRoot(t)
 	dist := t.TempDir()
-	runRepoCommand(t, root, []string{"DIST_DIR=" + dist}, "make", "build-cross")
+	runRepoCommand(t, root, []string{"DIST_DIR=" + dist, "VERSION=1.2.4"}, "make", "build-cross")
 	targets := []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"}
 	for _, target := range targets {
 		ext := ""
@@ -71,6 +88,10 @@ func TestMakeBuildCrossProducesBothBinariesForEveryTarget(t *testing.T) {
 		for _, binary := range []string{"onprest-gateway", "onprest-agent"} {
 			if info, err := os.Stat(filepath.Join(dist, nativeTarget, binary)); err == nil && info.Mode()&0o111 == 0 {
 				t.Fatalf("native cross-built %s is not executable", binary)
+			}
+			got := strings.TrimSpace(runRepoCommand(t, root, nil, filepath.Join(dist, nativeTarget, binary), "--version"))
+			if got != "1.2.4" {
+				t.Fatalf("native cross-built %s --version=%q, want 1.2.4", binary, got)
 			}
 		}
 	}
@@ -107,7 +128,8 @@ func TestDockerfileBuildsSelectableSingleBinaryTargets(t *testing.T) {
 	dockerfile := string(b)
 	for _, want := range []string{
 		"ARG TARGET=gateway",
-		"go build -trimpath -ldflags=\"-s -w\" -o /out/onprest ./cmd/${TARGET}",
+		"ARG VERSION=dev",
+		"go build -trimpath -ldflags=\"-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION}\" -o /out/onprest ./cmd/${TARGET}",
 		"ENTRYPOINT [\"/app/onprest\"]",
 	} {
 		if !strings.Contains(dockerfile, want) {
@@ -283,6 +305,14 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	if !strings.Contains(serviceText, "scripts/service-test-systemd.Dockerfile") {
 		t.Fatal("linux service lifecycle does not build the systemd test image")
 	}
+	if strings.Contains(serviceText, "choco install postgresql") {
+		t.Fatal("Windows service lifecycle reinstalls PostgreSQL instead of using the runner-provided service")
+	}
+	for _, marker := range []string{"Start preinstalled PostgreSQL", "$env:PGBIN", "Get-Service -Name \"postgresql-x64-$postgresVersion\"", "Set-Service -Name $postgresService.Name -StartupType Manual", "Start-Service -Name $postgresService.Name", "ALTER USER postgres PASSWORD 'onprest'"} {
+		if !strings.Contains(serviceText, marker) {
+			t.Fatalf("Windows service lifecycle does not configure the runner-provided PostgreSQL service: missing %q", marker)
+		}
+	}
 	if strings.Count(serviceText, "TestValidateLatestLogCrashRecoveryProcess") != 3 {
 		t.Fatal("service lifecycle must run validate crash recovery on Linux, macOS, and Windows")
 	}
@@ -295,8 +325,8 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		}
 	}
 	for path, required := range map[string][]string{
-		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
-		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "runtimeWriter", "[Guid]::NewGuid().ToString('N').Substring(0, 10)", "$readerCreated", "$primaryFailure", "$cleanupFailure", "temporaryLog"},
+		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "MCP-Protocol-Version: 2025-11-25", "Accept: application/json, text/event-stream", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
+		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "MCP-Protocol-Version'='2025-11-25", "Accept='application/json, text/event-stream", "runtimeWriter", "[Guid]::NewGuid().ToString('N').Substring(0, 10)", "$readerCreated", "$primaryFailure", "$cleanupFailure", "temporaryLog"},
 	} {
 		text := readText(t, filepath.Join(root, filepath.FromSlash(path)))
 		for _, marker := range required {

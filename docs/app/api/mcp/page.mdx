@@ -1,33 +1,81 @@
 # MCP
 
-MCP is a first-class API surface in Onprest. It exposes agent-defined capabilities as tools, so AI agents call named business operations instead of receiving raw database access.
+MCP is a first-class API surface in Onprest. It exposes agent-defined capabilities as tools, so clients call named business operations instead of receiving raw database access.
 
-The MCP endpoint is JSON-RPC over HTTP.
+The MCP endpoint is stateless JSON-RPC over HTTP. It does not create an MCP session, retain negotiated versions, expose SSE history, or require a particular reverse proxy.
 
-Onprest's gateway does not know SQL, DB credentials, or business meaning. It builds `tools/list` from agent-owned OpenAPI metadata and filters it by API key capability authorization. `tools/call` still runs through the on-prem agent, where params, policy, SQL execution, SELECT result allow-lists, and the DML count-only response are enforced.
+## Endpoint and protocol versions
 
-Mutation capabilities use the same `tools/call` method. A successful mutation places `{"count": n}` in both text content and `structuredContent`; there is no separate mutation method or retry mode. `count: 0` remains success.
+The endpoint is `POST /mcp`. Supported protocol versions are `2025-03-26`, `2025-06-18`, and `2025-11-25`.
 
-## Endpoint
+An `initialize` request must include a string `params.protocolVersion`, an object `params.capabilities`, and an object `params.clientInfo` containing string `name` and `version` fields. A supported value is returned unchanged; an unknown value receives the latest supported value, `2025-11-25`. The initialize request's `MCP-Protocol-Version` header is not used for negotiation. The `serverInfo.version` value is the binary version (`dev` for an un-injected development build). Missing or incorrectly typed required fields return JSON-RPC `INVALID_PARAMS` and never call the agent.
+
+After initialization, a request may include `MCP-Protocol-Version`. If present, exactly one header value must be an exact match for one of the three supported values; explicit empty or whitespace values, duplicate values (including identical duplicates), comma-joined values, and unknown values return HTTP 400. If the header is absent, the request uses the `2025-03-26` compatibility behavior. Negotiation is per request; it is not stored globally or in a session.
 
 ```http
 POST /mcp
 Authorization: Bearer {api_key}
 Content-Type: application/json
+MCP-Protocol-Version: 2025-11-25
+Accept: application/json, text/event-stream
 ```
 
-`POST` is the only allowed HTTP method. Other methods return `GATEWAY_METHOD_NOT_ALLOWED`.
+`Content-Type` must be `application/json` (parameters such as `charset=utf-8` are allowed), otherwise the gateway returns HTTP 400. Because this gateway returns JSON only, `Accept` may be absent, `*/*`, `application/*`, `application/json`, or a value that includes `application/json` together with `text/event-stream`; an explicit value that does not allow JSON returns HTTP 406. Successful JSON-RPC responses use `Content-Type: application/json`.
+
+`GET`, `DELETE`, and other application methods return HTTP 405 with `Allow: POST`. `OPTIONS` is reserved for CORS preflight: an allowed `Origin` returns HTTP 204 with CORS headers, while a disallowed `Origin` returns HTTP 403. An `Origin` on an application request is checked against `GATEWAY_CORS_ALLOWED_ORIGINS` before authentication; a non-empty origin not in the allowlist (including an empty allowlist) is rejected. Requests without `Origin` remain valid for non-browser clients.
 
 The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The gateway also bounds body-read time. See [Gateway Configuration](/gateway/configuration).
+
+## Client configuration
+
+Paste this connection configuration into an MCP client that supports the `mcpServers` format:
+
+```json
+{
+  "mcpServers": {
+    "onprest": {
+      "headers": {
+        "Authorization": "Bearer <YOUR_ONPREST_API_KEY>"
+      },
+      "url": "https://gateway.example.com/mcp"
+    }
+  }
+}
+```
+
+This is client connection configuration. The `initialize` JSON below is a wire-protocol request sent by an MCP client or SDK; clients normally negotiate initialization and send the subsequent protocol header themselves, so do not add a fixed `MCP-Protocol-Version` to this configuration.
 
 ## Methods
 
 | Method | Purpose |
 |---|---|
-| `initialize` | MCP initialization response |
+| `initialize` | MCP initialization and per-request version selection |
 | `ping` | Liveness check |
 | `tools/list` | Return visible capabilities as MCP tools |
 | `tools/call` | Execute a capability |
+
+## `initialize`
+
+The following is a JSON-RPC wire-protocol example, not an `mcpServers` client configuration file.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {},
+    "clientInfo": {"name": "example-client", "version": "1.0.0"}
+  }
+}
+```
+
+The three supported protocol schemas require all three fields. `capabilities` and `clientInfo` must be JSON objects; `clientInfo.name` and `clientInfo.version` must be strings. The gateway does not store these values as global or session state.
+
+Optional `clientInfo` fields follow the selected protocol schema: `2025-03-26` defines none, `2025-06-18` defines string `title`, and `2025-11-25` defines string `title`, `description`, and `websiteUrl` plus an `icons` array. Fields not defined by that version are treated as opaque extensions.
+
+Method parameters follow the open extension shape of the supported schemas. `ping` and `tools/list` may omit `params` or send an object; `tools/list.cursor` must be a string. Request `_meta` is optional but must be an object; in every supported request method and protocol version, an `_meta.progressToken` value, when present, must be a string or number. Notification `_meta`, when present, must also be an object, but its members are opaque and may have any JSON values. Null, array, and scalar params, invalid cursor/`_meta` types, and other known type violations return `INVALID_PARAMS`; extension fields defined by a client are not rejected solely because they are unknown. The gateway does not advertise or implement the 2025-11-25 task capability, so a `tools/call.params.task` field is explicitly rejected with `INVALID_PARAMS`.
 
 ## `tools/list`
 
@@ -39,7 +87,7 @@ The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be chang
 }
 ```
 
-The gateway builds the tool list from cached OpenAPI metadata and filters it by the caller's API key capabilities.
+The gateway builds the tool list from cached agent-owned OpenAPI metadata and filters it by the caller's API key capabilities. For `2025-03-26` behavior (including a request without the version header), each tool exposes its input schema but not `outputSchema`. For `2025-06-18` and `2025-11-25`, `outputSchema` is copied from the capability's OpenAPI JSON response schema.
 
 ## `tools/call`
 
@@ -50,42 +98,25 @@ The gateway builds the tool list from cached OpenAPI metadata and filters it by 
   "method": "tools/call",
   "params": {
     "name": "get_customer",
-    "arguments": {
-      "customer_id": 1
-    }
+    "arguments": {"customer_id": 1}
   }
 }
 ```
 
-The tool name maps to a capability name. `arguments` maps to capability params.
+The tool name maps to a capability name and `arguments` maps to capability params. `params.name` is required and must be a string; a missing or non-string name is `INVALID_PARAMS`, while an empty string remains a string and follows the unknown-tool contract (`tool is not defined`). If `arguments` is omitted it is treated as an empty object; if present it must be a JSON object (explicit `null`, arrays, and scalars are invalid). Every successful call includes the exact agent result as a text `content` item. `2025-06-18` and `2025-11-25` additionally include the same JSON value as `structuredContent`; the legacy `2025-03-26` behavior omits `structuredContent`. The same version distinction applies to execution-error results: text and `isError` are always available, while structured error content is only included for the two newer versions.
 
-Successful calls return both a text `content` item and the decoded value in `structuredContent`.
+Mutation capabilities use the same `tools/call` method. A successful mutation returns its count-only result in the text fallback and, for newer versions, in `structuredContent`; `count: 0` remains success.
 
-## Notifications
+## IDs and notifications
 
-A structurally valid JSON-RPC message with no `id` is a notification. The gateway accepts it with HTTP 202 and an empty body; clients must not wait for a JSON-RPC response. This includes lifecycle notifications such as `notifications/initialized`.
+JSON-RPC IDs may be strings or numbers. `null`, booleans, objects, and arrays are invalid requests (`-32600`, `INVALID_REQUEST`) with a null response ID and no capability execution. A missing or non-string `method` is also `INVALID_REQUEST`; an empty string is a valid string, so an ID-bearing request receives `METHOD_NOT_FOUND`, while an ID-less message is rejected as an unknown notification with HTTP 400.
+
+An ID-less message is accepted as HTTP 202 with an empty body only for the official client-to-server notification methods supported by these protocol versions: `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, and `notifications/roots/list_changed`; `notifications/tasks/status` is accepted only with the `2025-11-25` header. The gateway does not advertise or implement task capability; a valid task status notification is validated and then handled as a no-op. `initialized` and `roots/list_changed` may omit `params`, but if present it must be an object. Notification `_meta`, when present, must be an object but its members are opaque and may use any JSON values. `cancelled` requires object `params.requestId` (string or number) in all three supported versions; because the gateway does not advertise or implement task cancellation, `2025-11-25` does not permit omission. All versions accept an optional string `reason`. `progress` requires object `params.progressToken` (string or number) and numeric `progress`, with optional string `message` and numeric `total`. `2025-11-25` task status params require string `taskId`, enum `status`, string `createdAt`/`lastUpdatedAt`, and integer-or-null `ttl`; optional `statusMessage` is a string and `pollInterval` an integer. For a recognized id-less notification, invalid or missing required parameters return HTTP 400 with a JSON-RPC `INVALID_PARAMS` body whose response ID is `null`; a valid notification remains HTTP 202 with an empty body. The task status method is HTTP 400 without a 2025-11-25 header. A notification method carrying an ID is rejected as JSON-RPC `INVALID_REQUEST`, and never calls the agent. An ID-less `ping`, `tools/call`, unknown method, or server-to-client notification is HTTP 400 and never calls the agent. Clients must not wait for a JSON-RPC response to an accepted notification.
 
 ## Errors
 
-JSON parse/shape errors, unsupported methods, and an unknown tool name are JSON-RPC errors with HTTP 200. `tools/list` without usable agent metadata is also HTTP 200 with JSON-RPC error `-32000` and `error.data.code: GATEWAY_AGENT_OFFLINE`.
+JSON parse/shape errors and ID-bearing unsupported method requests are JSON-RPC errors with HTTP 200. An ID-less unknown or unsupported method is rejected at the HTTP boundary with HTTP 400. An unknown tool name on an ID-bearing `tools/call` remains a JSON-RPC error with HTTP 200. `tools/list` without usable agent metadata is also HTTP 200 with JSON-RPC error `-32000` and `error.data.code: GATEWAY_AGENT_OFFLINE`.
 
-Once a known tool has been invoked, an agent/runtime failure is a normal JSON-RPC result with HTTP 200 and this shape:
+Once a known tool has been invoked, an agent/runtime failure is a normal JSON-RPC result with HTTP 200 and `isError: true`. Authentication, source-IP/rate-limit checks, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "content": [{"type": "text", "text": "query exceeded policy.timeout"}],
-    "structuredContent": {
-      "error": {
-        "code": "AGENT_QUERY_TIMEOUT",
-        "message": "query exceeded policy.timeout"
-      }
-    },
-    "isError": true
-  }
-}
-```
-
-Authentication, source-IP/rate-limit checks, and capability authorization happen at the HTTP boundary and therefore retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.
+The gateway filters metadata by API key and does not expose API keys, database credentials, SQL, or submitted arguments in public MCP responses or logs.

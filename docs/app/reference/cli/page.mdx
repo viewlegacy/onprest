@@ -2,6 +2,19 @@
 
 Provisioning commands are exposed by `onprest-gateway`.
 
+## Version
+
+Both binaries use the same embedded build version. `version`, `--version`, and `-v` print one line and exit successfully:
+
+```bash
+./onprest-gateway --version
+./onprest-agent --version
+./onprest-gateway -v
+./onprest-agent -v
+```
+
+Uninjected development binaries print `dev`. Release builds inject the value through the build's `VERSION` setting; for example, `make build VERSION=1.2.4` makes both binaries print `1.2.4`, and the same value is returned by MCP `initialize.serverInfo.version`.
+
 ## Generate Agent Secret
 
 ```bash
@@ -87,6 +100,7 @@ These are individual commands, not an apply-change sequence; there is no `servic
 
 ```bash
 make build
+# VERSION=1.2.4 make build  # optional release version injection
 ```
 
 Expected outputs:
@@ -100,6 +114,7 @@ dist/onprest-agent
 
 ```bash
 make build-cross
+# VERSION=1.2.4 make build-cross  # inject the same version into every target
 ```
 
 This writes OS-specific artifacts under `dist/<os>-<arch>/`, for example:

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -29,6 +30,9 @@ func serveMCPForLogTest(s *Server, apiKey, method, body string) *httptest.Respon
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	recorder := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(recorder, req)
 	return recorder
@@ -47,7 +51,7 @@ func TestMCPPreToolCallBranchesEmitNoRequestEvent(t *testing.T) {
 		{"JSON parse", http.MethodPost, `{`, true},
 		{"trailing JSON", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}{}`, true},
 		{"JSON-RPC invalid", http.MethodPost, `{"jsonrpc":"1.0","id":1,"method":"tools/call"}`, true},
-		{"initialize", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`, true},
+		{"initialize", http.MethodPost, mcpInitializePayload(1, mcpProtocolVersion20250326), true},
 		{"initialized notification", http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, true},
 		{"ping", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, true},
 		{"tools list", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, true},
@@ -65,6 +69,46 @@ func TestMCPPreToolCallBranchesEmitNoRequestEvent(t *testing.T) {
 				t.Fatalf("pre-tools/call branch emitted request event: %#v; all logs=%s", entries, logs.String())
 			}
 		})
+	}
+}
+
+func TestMCPRecognizedNotificationInvalidParamsUsesControlEvent(t *testing.T) {
+	var calls atomic.Int32
+	s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		calls.Add(1)
+		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"rows":[],"count":0}`)}
+	})
+	defer cleanup()
+
+	req := newMCPCompatibilityRequest(http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"sensitive-token","progress":"not-a-number"}}`)
+	rec := serveMCPCompatibility(s, apiKey, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want HTTP 400", rec.Code, rec.Body.String())
+	}
+	assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "invalid notification params")
+	assertMCPErrorIDNull(t, rec.Body.Bytes())
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("agent calls=%d, want 0", got)
+	}
+
+	entries := logEntries(t, logs)
+	if len(entries) != 1 {
+		t.Fatalf("log entries=%d, want one control event: %s", len(entries), logs.String())
+	}
+	entry := entries[0]
+	if entry["event"] != "mcp_http_rejected" ||
+		entry["http_status"] != float64(http.StatusBadRequest) ||
+		entry["error_code"] != errJSONRPCInvalidParams ||
+		entry["error_message"] != "invalid notification params" {
+		t.Fatalf("control event=%#v", entry)
+	}
+	if requests := requestLogEntries(t, logs); len(requests) != 0 {
+		t.Fatalf("invalid notification emitted request events: %#v", requests)
+	}
+	for _, forbidden := range []string{"sensitive-token", "not-a-number", "progressToken"} {
+		if strings.Contains(logs.String(), forbidden) {
+			t.Fatalf("control log contains input detail %q: %s", forbidden, logs.String())
+		}
 	}
 }
 
@@ -115,6 +159,7 @@ func TestMCPMiddlewareRejectionsUseControlEventsNotRequestEvents(t *testing.T) {
 			panic(panicDetail)
 		}))
 		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`))
+		req.Header.Set("Content-Type", "application/json")
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, req)
 

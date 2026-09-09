@@ -36,10 +36,20 @@ func (s *Server) withAccess(next http.Handler) http.Handler {
 		corsAllowed := s.applyCORS(w, r)
 		if r.Method == http.MethodOptions {
 			if !corsAllowed && r.Header.Get("Origin") != "" {
+				if r.URL.Path == "/mcp" {
+					s.mcpHTTPRejected(http.StatusForbidden, errGatewayInvalidRequest, "origin is not allowed")
+					writeJSON(w, http.StatusForbidden, apiError(errGatewayInvalidRequest, "origin is not allowed"))
+					return
+				}
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.URL.Path == "/mcp" && strings.TrimSpace(r.Header.Get("Origin")) != "" && !corsAllowed {
+			s.mcpHTTPRejected(http.StatusForbidden, errGatewayInvalidRequest, "origin is not allowed")
+			writeJSON(w, http.StatusForbidden, apiError(errGatewayInvalidRequest, "origin is not allowed"))
 			return
 		}
 		if len(s.cfg.IPAllowList) > 0 && !s.ipAllowed(r) {
@@ -79,7 +89,7 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) bool {
 	headers := w.Header()
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	headers.Set("Access-Control-Allow-Headers", "Authorization, X-API-Key, Content-Type")
+	headers.Set("Access-Control-Allow-Headers", "Authorization, X-API-Key, Content-Type, Accept, MCP-Protocol-Version")
 	headers.Set("Access-Control-Max-Age", "600")
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")

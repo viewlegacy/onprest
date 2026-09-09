@@ -81,7 +81,10 @@ Docker images and Docker Compose are supported operational paths, but Docker is 
 ```bash
 docker build --build-arg TARGET=gateway -t onprest-gateway .
 docker build --build-arg TARGET=agent -t onprest-agent .
+# Add --build-arg VERSION=1.2.4 to both commands for a release build.
 ```
+
+The Docker builder uses the same `VERSION` value as `make build`; an omitted or empty value is reported as `dev` by the binary and MCP `initialize` metadata.
 
 When running the agent container, mount `capability.yaml` and pass it to the container entrypoint:
 

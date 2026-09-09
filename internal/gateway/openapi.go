@@ -137,7 +137,7 @@ func publicURLFromAddr(addr string) string {
 	return fmt.Sprintf("http://%s", net.JoinHostPort(host, port))
 }
 
-func toolsFromOpenAPI(doc map[string]any) []map[string]any {
+func toolsFromOpenAPI(doc map[string]any, protocolVersion string) []map[string]any {
 	paths, _ := doc["paths"].(map[string]any)
 	tools := []map[string]any{}
 	for _, v := range paths {
@@ -159,6 +159,21 @@ func toolsFromOpenAPI(doc map[string]any) []map[string]any {
 					if app, _ := content["application/json"].(map[string]any); app != nil {
 						if schema, ok := app["schema"]; ok {
 							tool["inputSchema"] = mcpInputSchema(schema)
+						}
+					}
+				}
+			}
+			if mcpUsesStructuredContent(protocolVersion) {
+				if responses, _ := op["responses"].(map[string]any); responses != nil {
+					if response, _ := responses["200"].(map[string]any); response != nil {
+						if content, _ := response["content"].(map[string]any); content != nil {
+							if app, _ := content["application/json"].(map[string]any); app != nil {
+								if schema, ok := app["schema"].(map[string]any); ok {
+									if schemaType, _ := schema["type"].(string); schemaType == "object" {
+										tool["outputSchema"] = schema
+									}
+								}
+							}
 						}
 					}
 				}

@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -83,12 +85,17 @@ func TestContainerDBDriverSmoke(t *testing.T) {
 				!strings.Contains(string(body), `"ada@example.com"`) {
 				t.Fatalf("unexpected response: %s", string(body))
 			}
-			mcpBody := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":8}}}`)
-			if !strings.Contains(string(mcpBody), `"structuredContent"`) ||
-				!strings.Contains(string(mcpBody), `"count":1`) ||
-				!strings.Contains(string(mcpBody), `"Grace"`) ||
-				!strings.Contains(string(mcpBody), `"grace@example.com"`) {
-				t.Fatalf("unexpected MCP tools/call response: %s", string(mcpBody))
+			mcpBody := postMCPPayloadWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":8}}}`)
+			mcpResponse := requireMCPToolCallResponse(t, mcpBody, "1", true)
+			var textResult, structuredResult mcpRowsResult
+			decodeMCPJSON(t, []byte(mcpResponse.Result.Content[0].Text), &textResult)
+			decodeMCPJSON(t, mcpResponse.Result.StructuredContent, &structuredResult)
+			if textResult.Count != json.Number("1") || len(textResult.Rows) != 1 ||
+				textResult.Rows[0].ID != json.Number("8") ||
+				textResult.Rows[0].Name != "Grace" ||
+				textResult.Rows[0].Email != "grace@example.com" ||
+				!reflect.DeepEqual(textResult, structuredResult) {
+				t.Fatalf("unexpected MCP tools/call text=%#v structured=%#v", textResult, structuredResult)
 			}
 			cancel()
 			select {
@@ -129,9 +136,38 @@ func TestContainerDBDriverMCPInt64BoundaryReachesRealDatabaseExactly(t *testing.
 			errCh := make(chan error, 1)
 			go func() { errCh <- runner.Run(ctx) }()
 			waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
-			body := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":`+boundary+`}}}`)
-			if !strings.Contains(string(body), `"id":`+boundary) {
-				t.Fatalf("MCP -> agent -> %s changed int64 boundary: %s", tc.driver, body)
+			for _, version := range []struct {
+				name           string
+				header         string
+				wantStructured bool
+			}{
+				{name: "2025-03-26-headerless"},
+				{name: "2025-06-18", header: "2025-06-18", wantStructured: true},
+				{name: "2025-11-25", header: modernMCPProtocolVersion, wantStructured: true},
+			} {
+				version := version
+				t.Run("MCP/"+version.name, func(t *testing.T) {
+					payload := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":` + boundary + `}}}`
+					status, body := postMCPStatusWithProtocol(t, baseURL, secrets.APIKey, version.header, payload)
+					if status != http.StatusOK {
+						t.Fatalf("MCP version=%s status=%d body=%s", version.name, status, body)
+					}
+					response := requireMCPToolCallResponse(t, body, "1", version.wantStructured)
+					var textResult mcpRowsResult
+					decodeMCPJSON(t, []byte(response.Result.Content[0].Text), &textResult)
+					if textResult.Count != json.Number("1") || len(textResult.Rows) != 1 ||
+						textResult.Rows[0].ID != json.Number(boundary) ||
+						textResult.Rows[0].Name != "boundary" || textResult.Rows[0].Email != "x" {
+						t.Fatalf("MCP -> agent -> %s version=%s changed int64 boundary: text=%#v", tc.driver, version.name, textResult)
+					}
+					if version.wantStructured {
+						var structuredResult mcpRowsResult
+						decodeMCPJSON(t, response.Result.StructuredContent, &structuredResult)
+						if !reflect.DeepEqual(textResult, structuredResult) {
+							t.Fatalf("MCP -> agent -> %s version=%s structured result=%#v differs from text=%#v", tc.driver, version.name, structuredResult, textResult)
+						}
+					}
+				})
 			}
 			cancel()
 			select {
@@ -201,9 +237,52 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 			assertMutation("update_row", `{"id":999,"name":"Nobody"}`, 0)
 			assertMutation("delete_row", `{"id":1}`, 1)
 			assertMutation("delete_row", `{"id":1}`, 0)
-			mcp := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"insert_row","arguments":{"id":2,"name":"MCP"}}}`)
-			if !strings.Contains(string(mcp), `"structuredContent":{"count":1}`) {
-				t.Fatalf("MCP mutation response=%s", mcp)
+			for _, mcpVersion := range []struct {
+				name           string
+				header         string
+				id             int
+				rowName        string
+				wantStructured bool
+			}{
+				{name: "legacy-headerless", id: 2, rowName: "MCP", wantStructured: false},
+				{name: "middle", header: "2025-06-18", id: 3, rowName: "MCP-middle", wantStructured: true},
+				{name: "latest", header: modernMCPProtocolVersion, id: 4, rowName: "MCP-latest", wantStructured: true},
+			} {
+				mcpVersion := mcpVersion
+				t.Run("MCP/"+mcpVersion.name, func(t *testing.T) {
+					payload := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"insert_row","arguments":{"id":%d,"name":%q}}}`, mcpVersion.id, mcpVersion.id, mcpVersion.rowName)
+					status, body := postMCPStatusWithProtocol(t, baseURL, secrets.APIKey, mcpVersion.header, payload)
+					if status != http.StatusOK {
+						t.Fatalf("MCP mutation status=%d body=%s", status, body)
+					}
+					var response struct {
+						Result struct {
+							Content           []struct{ Type, Text string } `json:"content"`
+							StructuredContent json.RawMessage               `json:"structuredContent"`
+						} `json:"result"`
+						Error json.RawMessage `json:"error"`
+					}
+					if err := json.Unmarshal(body, &response); err != nil {
+						t.Fatalf("decode MCP mutation response: %v; body=%s", err, body)
+					}
+					if len(response.Error) != 0 && string(response.Error) != "null" {
+						t.Fatalf("MCP mutation error=%s", response.Error)
+					}
+					if len(response.Result.Content) != 1 || response.Result.Content[0].Type != "text" || response.Result.Content[0].Text != `{"count":1}` {
+						t.Fatalf("MCP mutation result=%#v, want exact count text", response.Result)
+					}
+					if mcpVersion.wantStructured {
+						var structured struct {
+							Count int `json:"count"`
+						}
+						if len(response.Result.StructuredContent) == 0 || string(response.Result.StructuredContent) == "null" || json.Unmarshal(response.Result.StructuredContent, &structured) != nil || structured.Count != 1 {
+							t.Fatalf("MCP mutation structuredContent=%s, want count 1", response.Result.StructuredContent)
+						}
+					} else if len(response.Result.StructuredContent) != 0 {
+						t.Fatalf("legacy MCP mutation unexpectedly returned structuredContent=%s", response.Result.StructuredContent)
+					}
+					assertMutationName(t, driver, dbCfg, mcpVersion.id, mcpVersion.rowName)
+				})
 			}
 			status, body := postCapability(t, baseURL, secrets.APIKey, "insert_row", `{"id":2,"name":"duplicate"}`)
 			if status != http.StatusConflict {
@@ -217,7 +296,7 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 				}
 				requireAPIErrorCode(t, body, "AGENT_CONSTRAINT_VIOLATION")
 			}
-			if got := mutationRowCount(t, driver, dbCfg); got != 3 {
+			if got := mutationRowCount(t, driver, dbCfg); got != 5 {
 				t.Fatalf("constraint failures changed DB row count to %d", got)
 			}
 			status, body = postCapability(t, baseURL, secrets.APIKey, "list_rows", `{}`)
