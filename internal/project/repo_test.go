@@ -305,6 +305,14 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	if !strings.Contains(serviceText, "scripts/service-test-systemd.Dockerfile") {
 		t.Fatal("linux service lifecycle does not build the systemd test image")
 	}
+	if strings.Contains(serviceText, "choco install postgresql") {
+		t.Fatal("Windows service lifecycle reinstalls PostgreSQL instead of using the runner-provided service")
+	}
+	for _, marker := range []string{"Start preinstalled PostgreSQL", "$env:PGBIN", "Get-Service -Name \"postgresql-x64-$postgresVersion\"", "Set-Service -Name $postgresService.Name -StartupType Manual", "Start-Service -Name $postgresService.Name", "ALTER USER postgres PASSWORD 'onprest'"} {
+		if !strings.Contains(serviceText, marker) {
+			t.Fatalf("Windows service lifecycle does not configure the runner-provided PostgreSQL service: missing %q", marker)
+		}
+	}
 	if strings.Count(serviceText, "TestValidateLatestLogCrashRecoveryProcess") != 3 {
 		t.Fatal("service lifecycle must run validate crash recovery on Linux, macOS, and Windows")
 	}
