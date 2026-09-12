@@ -1,8 +1,6 @@
 # Reverse Proxy
 
-TLS termination and reverse proxy choice are environment-owned. `onprest-gateway` works directly exposed or behind any compatible reverse proxy or load balancer.
-
-Onprest does not require Caddy, nginx, Envoy, ALB, or any specific proxy.
+A reverse proxy or load balancer is optional. Use this configuration when TLS or the public network edge is handled outside `onprest-gateway`; no specific proxy product is required.
 
 ## Required Routes
 

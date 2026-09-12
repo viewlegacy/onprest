@@ -81,10 +81,7 @@ Managed dashboards and operations are available separately; this repository cont
 ```text
 API user / MCP client
         |
-        | HTTPS
-        v
-reverse proxy / load balancer
-        |
+        | REST / MCP / OpenAPI
         v
 onprest-gateway
         ^
@@ -99,8 +96,6 @@ legacy database
 The gateway knows routing, identity, rate limits, and which API keys may call which capability names.
 
 The agent knows what each capability means, how parameters are validated, which prepared SQL is executed, and—for SELECT—which result fields are allowed to leave the customer environment. Mutations return affected count only.
-
-TLS termination is environment-owned. Use any reverse proxy, platform proxy, or load balancer that supports HTTPS and WebSocket forwarding.
 
 ## Responsibility Split
 

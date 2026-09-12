@@ -7,11 +7,11 @@ The agent classifies each capability as SELECT or mutation at startup. Mutations
 ```text
 [API user / MCP client]
   |
-  | HTTPS: /api/v1/capabilities/*, /mcp, /openapi.json, /healthz
+  | REST / MCP / OpenAPI / healthz
   v
-[reverse proxy or LB] --------------------------------> [onprest-gateway]
+[onprest-gateway]
   ^
-  | outbound WSS/HTTPS: /ws/agent, /ws/agent/challenge, /ws/agent/verify
+  | outbound connection from Agent
 [onprest-agent + capability.yaml]
   |
   v
@@ -82,8 +82,6 @@ The OSS core is two independent binaries.
 | gateway | `onprest-gateway` | REST / MCP / OpenAPI / healthz / WebSocket / API key auth / capability auth |
 | agent | `onprest-agent` | YAML lint / DB ping / EXPLAIN / params validation / SQL execution / local detail logs |
 
-Nextra docs, the managed dashboard, Caddy, and any specific reverse proxy are not OSS core implementation dependencies.
-
 ## Gateway Responsibilities
 
 The gateway is a Go single binary and does not persist application state. It reads authentication configuration at startup and keeps runtime state, such as the public capability cache and active connections, in memory. Runtime state is rebuilt after restart.
@@ -152,11 +150,9 @@ Onprest assumes a dedicated gateway process per customer.
 
 In this model, API keys, the agent public key, OpenAPI cache, and stdout logs are not shared across customers. Because the gateway has no persistent DB and is separated by process and environment variables, the operational unit matches the trust boundary.
 
-## Reverse Proxy and TLS
+## TLS and Network Edge
 
-TLS termination and reverse proxy / load balancer choice are owned by the operating environment.
-
-The gateway works when directly exposed or when placed behind any compatible reverse proxy / LB. Forwarded headers are trusted only when they arrive from a source included in `GATEWAY_TRUSTED_PROXY_CIDRS`. A trusted proxy must overwrite, rather than append to, caller-provided forwarding headers.
+Network-edge infrastructure and TLS termination are environment-owned. The gateway can be exposed directly or placed behind an optional compatible reverse proxy or load balancer. See [Reverse Proxy](/gateway/reverse-proxy) when using one.
 
 Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. The default is `disable`. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
 

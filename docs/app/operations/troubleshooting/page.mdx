@@ -5,7 +5,7 @@
 Check:
 
 - `gateway.url` points to `/ws/agent`.
-- reverse proxy supports WebSocket upgrade.
+- If a reverse proxy or load balancer is used, it supports WebSocket upgrade.
 - `GATEWAY_AGENT_PUBLIC_KEY` matches `gateway.agent_private_key`.
 - agent host can make outbound connections to gateway.
 - timestamp skew is not outside the allowed signing window.
