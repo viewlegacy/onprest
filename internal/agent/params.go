@@ -14,7 +14,7 @@ func validateParams(cap CapabilityDef, input map[string]any) (map[string]any, er
 	out := map[string]any{}
 	for name := range input {
 		if _, ok := cap.Params[name]; !ok {
-			return nil, fmt.Errorf("unknown param: %s", name)
+			return nil, fmt.Errorf("unknown param: %s", publicFieldName(name))
 		}
 	}
 	for name, def := range cap.Params {
@@ -27,16 +27,16 @@ func validateParams(cap CapabilityDef, input map[string]any) (map[string]any, er
 		}
 		if !ok {
 			if def.Required {
-				return nil, fmt.Errorf("required param missing: %s", name)
+				return nil, fmt.Errorf("required param missing: %s", publicFieldName(name))
 			}
 			continue
 		}
 		coerced, err := coerce(def, v)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+			return nil, fmt.Errorf("%s: %w", publicFieldName(name), err)
 		}
 		if err := validateEnum(def, coerced); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
+			return nil, fmt.Errorf("%s: %w", publicFieldName(name), err)
 		}
 		out[name] = coerced
 	}

@@ -35,21 +35,21 @@ The agent classifies each capability as SELECT or mutation at startup. Mutations
 5. REST and MCP clients call only capabilities their API key can access.
 6. The agent validates input, applies policy, executes prepared SQL, filters SELECT output or produces a mutation count, and returns the result.
 
-The gateway does not know the schema, SQL, DSN, DB credentials, or business meaning. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations.
+The gateway does not receive private schema knowledge, SQL, DSNs, DB credentials, or execution rules. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations. The gateway receives only the agent-generated public capability contract needed for OpenAPI and MCP discovery.
 
 ## Design Principle
 
-The gateway handles only "who can call what." The agent owns "what each capability means."
+The gateway handles "who can call what." The Agent owns "what each capability means" and the execution boundary.
 
 This separation is the core of Onprest.
 
 - The gateway does not store SQL text.
 - The gateway does not store DB host, user, or password.
-- The gateway forwards only the capability name and params.
+- Runtime gateway requests forward only the capability name and params.
 - The agent validates params and policy, then enforces the SELECT result allow-list or DML count-only contract from `capability.yaml`.
 - OpenAPI / MCP tools are generated from the agent definition.
 
-Even if the gateway is compromised, the attacker can learn only the public schema and capability names. The gateway has no place to create unknown SQL and holds no DB credentials.
+Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL and holds no DB credentials.
 
 ## Responsibility Split
 
@@ -62,10 +62,11 @@ Even if the gateway is compromised, the attacker can learn only the public schem
 | Rate limiting | Yes | No |
 | Request observability | Yes | No |
 | OpenAPI/MCP filtering by API key | Yes | No |
+| Public capability metadata | Cache and API-key-filtered serving | Source |
 | SQL text | No | Yes |
 | Database credentials | No | Yes |
-| Database schema knowledge | No | Yes |
-| Business meaning | No | Yes |
+| Raw database schema knowledge | No | Yes |
+| Business logic and execution meaning | No | Yes |
 | Parameter validation | No | Yes |
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
@@ -93,7 +94,7 @@ Nextra docs, the managed dashboard, Caddy, and any specific reverse proxy are no
 
 ## Gateway Responsibilities
 
-The gateway is a Go single binary. It has no persistent state and holds only the in-memory cache needed for OpenAPI / MCP.
+The gateway is a Go single binary. It has no persistent state and holds only an in-memory cache of the agent-generated public capability contract.
 
 - API key authentication
 - Per-API-key capability-level authorization

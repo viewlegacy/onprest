@@ -1007,6 +1007,273 @@ func TestBuildOpenAPIReflectsServiceParamsResultAndExposePolicy(t *testing.T) {
 	}
 }
 
+func TestCapabilityAnnotationsAndExamplesReachOpenAPIWithoutHiddenMetadata(t *testing.T) {
+	content := strings.Join([]string{
+		"service:",
+		"  title: AI contract fixture",
+		"gateway:",
+		"  url: ws://127.0.0.1:8080/ws/agent",
+		"  agent_private_key: test",
+		"database:",
+		"  driver: postgres",
+		"  host: 127.0.0.1",
+		"  port: 5432",
+		"  name: fixture",
+		"  user: fixture",
+		"  password: fixture",
+		"capabilities:",
+		"  visible:",
+		"    description: Public customer lookup.",
+		"    sql: select :customer_id as customer_id",
+		"    annotations:",
+		"      read_only: true",
+		"      destructive: false",
+		"      idempotent: true",
+		"      open_world: false",
+		"    examples:",
+		"      - params:",
+		"          customer_id: 123",
+		"    params:",
+		"      customer_id:",
+		"        type: integer",
+		"        required: true",
+		"        minimum: 1",
+		"        description: Customer ID.",
+		"    result:",
+		"      customer_id:",
+		"        type: integer",
+		"        description: Customer ID.",
+		"  hidden:",
+		"    description: PRIVATE_DESCRIPTION_SENTINEL",
+		"    sql: select :customer_id as customer_id",
+		"    annotations:",
+		"      read_only: false",
+		"    examples:",
+		"      - params:",
+		"          customer_id: 456",
+		"    params:",
+		"      customer_id:",
+		"        type: integer",
+		"        required: true",
+		"    policy:",
+		"      expose_in_openapi: false",
+	}, "\n")
+	cf, err := LoadCapabilityFile(writeCapabilityFixture(t, content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := cf.Capabilities["visible"]
+	if visible.Annotations == nil || visible.Annotations.ReadOnly == nil || !*visible.Annotations.ReadOnly || visible.Annotations.Destructive == nil || *visible.Annotations.Destructive || visible.Annotations.Idempotent == nil || !*visible.Annotations.Idempotent || visible.Annotations.OpenWorld == nil || *visible.Annotations.OpenWorld {
+		t.Fatalf("annotations=%#v", visible.Annotations)
+	}
+	if len(visible.Examples) != 1 || visible.Examples[0].Params["customer_id"] != 123 {
+		t.Fatalf("examples=%#v", visible.Examples)
+	}
+
+	doc := BuildOpenAPI(cf)
+	paths := doc["paths"].(map[string]any)
+	if _, ok := paths["/api/v1/capabilities/hidden"]; ok {
+		t.Fatalf("hidden capability exposed: %#v", paths)
+	}
+	post := paths["/api/v1/capabilities/visible"].(map[string]any)["post"].(map[string]any)
+	annotations, ok := post["x-onprest-annotations"].(map[string]any)
+	if !ok || annotations["read_only"] != true || annotations["destructive"] != false || annotations["idempotent"] != true || annotations["open_world"] != false {
+		t.Fatalf("OpenAPI annotations=%#v", post["x-onprest-annotations"])
+	}
+	examples, ok := post["x-onprest-examples"].([]any)
+	if !ok || len(examples) != 1 || examples[0].(map[string]any)["params"].(map[string]any)["customer_id"] != 123 {
+		t.Fatalf("OpenAPI examples=%#v", post["x-onprest-examples"])
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "PRIVATE_DESCRIPTION_SENTINEL") || strings.Contains(string(raw), "456") {
+		t.Fatalf("hidden metadata leaked into OpenAPI: %s", raw)
+	}
+}
+
+func TestCapabilityAnnotationsPreserveOmittedFieldsAndExplicitFalse(t *testing.T) {
+	cf := validCapabilityFile()
+	cap := cf.Capabilities["get_customer"]
+	cap.Annotations = &CapabilityAnnotations{Destructive: boolPtr(false)}
+	cf.Capabilities["get_customer"] = cap
+	if err := cf.Lint(); err != nil {
+		t.Fatal(err)
+	}
+	post := BuildOpenAPI(cf)["paths"].(map[string]any)["/api/v1/capabilities/get_customer"].(map[string]any)["post"].(map[string]any)
+	annotations, ok := post["x-onprest-annotations"].(map[string]any)
+	if !ok || len(annotations) != 1 || annotations["destructive"] != false {
+		t.Fatalf("annotations=%#v", post["x-onprest-annotations"])
+	}
+	if _, ok := annotations["read_only"]; ok {
+		t.Fatalf("omitted read_only was synthesized: %#v", annotations)
+	}
+	cap.Annotations = nil
+	cf.Capabilities["get_customer"] = cap
+	if err := cf.Lint(); err != nil {
+		t.Fatal(err)
+	}
+	post = BuildOpenAPI(cf)["paths"].(map[string]any)["/api/v1/capabilities/get_customer"].(map[string]any)["post"].(map[string]any)
+	if _, ok := post["x-onprest-annotations"]; ok {
+		t.Fatalf("nil annotations unexpectedly emitted: %#v", post["x-onprest-annotations"])
+	}
+}
+
+func TestLoadCapabilityFileRejectsInvalidCapabilityAnnotationsAndExamples(t *testing.T) {
+	base := strings.Join([]string{
+		"service:",
+		"  title: AI contract fixture",
+		"gateway:",
+		"  url: ws://127.0.0.1:8080/ws/agent",
+		"  agent_private_key: test",
+		"database:",
+		"  driver: postgres",
+		"  host: 127.0.0.1",
+		"  port: 5432",
+		"  name: fixture",
+		"  user: fixture",
+		"  password: fixture",
+		"capabilities:",
+		"  visible:",
+		"    sql: select :customer_id as customer_id",
+		"%s",
+		"    params:",
+		"      customer_id:",
+		"        type: integer",
+		"        required: true",
+		"        minimum: 1",
+		"    result:",
+		"      customer_id: {type: integer}",
+	}, "\n")
+	tests := []struct {
+		name    string
+		insert  string
+		wantErr string
+	}{
+		{name: "unknown capability field", insert: "    unsupported_metadata: true", wantErr: "field unsupported_metadata not found in capability definition"},
+		{name: "unknown annotation key", insert: "    annotations:\n      unknown: true", wantErr: "field unknown not found"},
+		{name: "wrong annotation type", insert: "    annotations:\n      read_only: 1", wantErr: "cannot unmarshal"},
+		{name: "null annotation type", insert: "    annotations:\n      read_only: null", wantErr: "cannot unmarshal"},
+		{name: "missing example params", insert: "    examples:\n      - {}", wantErr: "examples[0].params must be an object"},
+		{name: "unknown example field", insert: "    examples:\n      - extra: true\n        params:\n          customer_id: 1", wantErr: "field extra not found in capability example definition"},
+		{name: "null example params", insert: "    examples:\n      - params: null", wantErr: "cannot unmarshal capability example.params"},
+		{name: "tagged null example params", insert: "    examples:\n      - params: !!null {}", wantErr: "cannot unmarshal capability example.params"},
+		{name: "tagged null example params alias", insert: "    description: &null !!null {}\n    examples:\n      - params: *null", wantErr: "cannot unmarshal capability example.params"},
+		{name: "null example item", insert: "    examples:\n      - null", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "tilde example item", insert: "    examples:\n      - ~", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "tagged null scalar example item", insert: "    examples:\n      - !!null null", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "tagged null mapping example item", insert: "    examples:\n      - !!null {}", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "tagged null sequence example item", insert: "    examples:\n      - !!null []", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "null alias example item", insert: "    policy: &null null\n    examples:\n      - *null", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "tagged null collection alias example item", insert: "    policy: &null !!null {}\n    examples:\n      - *null", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "tagged null sequence alias example item", insert: "    policy: &null !!null []\n    examples:\n      - *null", wantErr: "cannot unmarshal capability.examples[0]"},
+		{name: "unknown example param", insert: "    examples:\n      - params:\n          unknown: 1\n          customer_id: 1", wantErr: "examples[0].params: unknown param: unknown"},
+		{name: "missing required example param", insert: "    examples:\n      - params: {}", wantErr: "examples[0].params: required param missing: customer_id"},
+		{name: "wrong example param type", insert: "    examples:\n      - params:\n          customer_id: wrong", wantErr: "examples[0].params: customer_id: must be integer"},
+		{name: "example below minimum", insert: "    examples:\n      - params:\n          customer_id: 0", wantErr: "examples[0].params: customer_id: below minimum"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := fmt.Sprintf(base, tc.insert)
+			if _, err := LoadCapabilityFile(writeCapabilityFixture(t, content)); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoadCapabilityFileRejectsExplicitNullCapabilityMetadata(t *testing.T) {
+	base := `service:
+  title: null metadata fixture
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  name: fixture
+  user: fixture
+  password: fixture
+capabilities:
+  get_value:
+    sql: select 1 as value
+    params: {}
+    result:
+      value: {type: integer}
+`
+	tests := []struct {
+		name   string
+		insert string
+	}{
+		{name: "annotations null", insert: "    annotations: null\n"},
+		{name: "examples null", insert: "    examples: null\n"},
+		{name: "annotations tagged null sequence", insert: "    annotations: !!null []\n"},
+		{name: "annotations tagged null mapping", insert: "    annotations: !!null {}\n"},
+		{name: "examples tagged null sequence", insert: "    examples: !!null []\n"},
+		{name: "examples tagged null mapping", insert: "    examples: !!null {}\n"},
+		{name: "annotations null alias", insert: "    description: &null null\n    annotations: *null\n"},
+		{name: "examples null alias", insert: "    description: &null null\n    examples: *null\n"},
+		{name: "annotations tagged null sequence alias", insert: "    description: &null !!null []\n    annotations: *null\n"},
+		{name: "examples tagged null mapping alias", insert: "    description: &null !!null {}\n    examples: *null\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			content := strings.Replace(base, "    params: {}\n", tc.insert+"    params: {}\n", 1)
+			if _, err := LoadCapabilityFile(writeCapabilityFixture(t, content)); err == nil || !strings.Contains(err.Error(), "cannot unmarshal capability") {
+				t.Fatalf("LoadCapabilityFile() error=%v, want explicit null metadata rejection", err)
+			}
+		})
+	}
+	if _, err := LoadCapabilityFile(writeCapabilityFixture(t, base)); err != nil {
+		t.Fatalf("omitted annotations/examples should remain valid: %v", err)
+	}
+}
+
+func TestLoadCapabilityFileAcceptsAliasedExampleObjects(t *testing.T) {
+	content := `service:
+  title: aliased examples fixture
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  name: fixture
+  user: fixture
+  password: fixture
+capabilities:
+  get_value:
+    sql: select :customer_id as customer_id
+    examples:
+      - &example
+        params: &params
+          customer_id: 1
+      - *example
+    params:
+      customer_id:
+        type: integer
+        required: true
+        minimum: 1
+    result:
+      customer_id: {type: integer}
+`
+	cf, err := LoadCapabilityFile(writeCapabilityFixture(t, content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cf.Capabilities["get_value"].Examples) != 2 {
+		t.Fatalf("aliased examples=%#v, want two decoded examples", cf.Capabilities["get_value"].Examples)
+	}
+	for i, example := range cf.Capabilities["get_value"].Examples {
+		if example.Params["customer_id"] != 1 {
+			t.Fatalf("example[%d]=%#v, want aliased customer_id=1", i, example.Params)
+		}
+	}
+}
+
 func TestBuildOpenAPISelectResultTypesAllowSQLNull(t *testing.T) {
 	cap := CapabilityDef{Result: ResultDef{
 		"text":    {Type: "string"},

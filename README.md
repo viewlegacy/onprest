@@ -117,8 +117,8 @@ The gateway can be useful without being trusted with meaning.
 | OpenAPI/MCP filtering by API key | Yes | No |
 | SQL text | No | Yes |
 | Database credentials | No | Yes |
-| Database schema knowledge | No | Yes |
-| Business meaning | No | Yes |
+| Raw database schema knowledge | No | Yes |
+| Business logic and execution meaning | No | Yes |
 | Parameter validation | No | Yes |
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
@@ -133,7 +133,7 @@ This split is the core of Onprest. The gateway is public and operationally usefu
 
 Onprest assumes the public gateway may be observed or compromised.
 
-That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or business meaning. It can authenticate callers, apply rate limits, check whether an API key may call a capability name, and forward the request to the connected agent.
+That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or capability execution rules. It can authenticate callers, apply rate limits, check whether an API key may call a capability name, serve the agent-defined public contract, and forward the request to the connected agent.
 
 The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes prepared SQL, filters SELECT output or returns DML affected count, and keeps detailed DB errors local.
 
@@ -215,8 +215,8 @@ For the full schema, policy options, logging settings, and examples, see the doc
 
 Onprest is designed as if components may be compromised.
 
-- No SQL, DB credentials, DSNs, raw schema knowledge, business meaning, or agent private key are stored in the gateway.
-- The gateway stores only the agent public key and bcrypt-hashed API keys.
+- No SQL, DB credentials, DSNs, raw schema knowledge, capability execution rules, or agent private key are stored in the gateway.
+- The gateway stores only the agent public key, bcrypt-hashed API keys, and agent-defined public capability metadata.
 - Agent authentication uses Ed25519 signatures during the WebSocket handshake.
 - The agent connects outbound to the gateway; no inbound firewall path into the customer network is required.
 - API keys are capability-scoped.

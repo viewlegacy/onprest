@@ -1,15 +1,15 @@
 # Security
 
-Onprest is designed to reduce the boundary under the assumption that every component can be compromised. The core idea is that the gateway must not hold secrets or business meaning.
+Onprest is designed to reduce the boundary under the assumption that every component can be compromised. The gateway carries the Agent-generated public contract, but the Agent alone owns capability meaning and execution.
 
 ## Trust Model
 
 | Boundary | Holds secrets | Holds SQL | External role |
 |---|---:|---:|---|
-| gateway | agent public key, API key hashes | No | routing, identity, observability |
+| gateway | agent public key, API key hashes | No | routing, identity, observability, filtered public metadata |
 | agent | agent private key, DB credentials | Yes | capability execution |
 
-The gateway forwards capability names and params. DB connection information, SQL text, and raw agent detail are never written to gateway HTTP responses or stdout logs. HTTP errors return a stable `code` and public `message`.
+The gateway routes capability names and params and serves the Agent-generated public contract. DB connection information, SQL text, and raw agent detail are never written to gateway HTTP responses or stdout logs. HTTP errors return a stable `code` and public `message`.
 
 ## Gateway Compromise
 
@@ -19,12 +19,12 @@ For mutations, grant the agent DB user only the required table-level INSERT, UPD
 
 - SQL text does not exist in the gateway.
 - DB credentials do not exist in the gateway.
-- The OpenAPI cache does not include SQL or DB connection information.
+- The OpenAPI cache contains only Agent-generated public metadata, not SQL or DB connection information.
 - The agent rejects unknown capabilities.
 - The agent rejects inputs outside the params contract with `AGENT_VALIDATION_FAILED`.
 - SELECT columns not included in the `result` allow-list are not returned externally. DML forbids `result` and returns affected count only.
 
-The gateway only knows which API key can call which capability. The attack surface is reduced to the explicit capability contract.
+The gateway knows which API key can call which capability and can serve its public contract. Capability meaning and execution remain on the Agent.
 
 ## API Key Authorization
 

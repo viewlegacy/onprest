@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -12,11 +13,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/viewlegacy/onprest/internal/agent"
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 )
@@ -229,6 +232,390 @@ func TestMetaFetchRetriesCurrentConnectionUntilSuccess(t *testing.T) {
 		t.Fatalf("response kind cache=%v", kinds)
 	}
 }
+
+func TestOpenAPIAIMetadataRefreshesAcrossCacheAndSnapshot(t *testing.T) {
+	version := 0
+	metadata := func() []byte {
+		readOnly, destructive := true, false
+		customerID := 1
+		if version == 1 {
+			readOnly, destructive = false, true
+			customerID = 2
+		}
+		op := map[string]any{
+			"x-onprest-capability": "get_customer",
+			"description":          "Public customer lookup",
+			"x-onprest-annotations": map[string]any{
+				"read_only":   readOnly,
+				"destructive": destructive,
+			},
+			"x-onprest-examples": []any{map[string]any{"params": map[string]any{"customer_id": customerID}}},
+		}
+		doc := map[string]any{
+			"openapi": "3.1.0",
+			"paths": map[string]any{
+				"/api/v1/capabilities/get_customer": map[string]any{"post": op},
+			},
+		}
+		body, err := json.Marshal(map[string]any{"data": doc})
+		if err != nil {
+			t.Fatalf("marshal metadata fixture: %v", err)
+		}
+		return body
+	}
+	s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		return agentResponse{ID: req.ID, Result: json.RawMessage(metadata())}
+	})
+	defer cleanup()
+	s.cfg.EmitOpenAPISnapshot = true
+
+	for _, want := range []struct {
+		version     int
+		readOnly    bool
+		destructive bool
+		customerID  int
+	}{
+		{version: 0, readOnly: true, destructive: false, customerID: 1},
+		{version: 1, readOnly: false, destructive: true, customerID: 2},
+	} {
+		version = want.version
+		s.fetchMeta()
+		s.agentMu.RLock()
+		cached := cloneMap(s.openapi)
+		s.agentMu.RUnlock()
+		post := cached["paths"].(map[string]any)["/api/v1/capabilities/get_customer"].(map[string]any)["post"].(map[string]any)
+		annotations := post["x-onprest-annotations"].(map[string]any)
+		if annotations["read_only"] != want.readOnly || annotations["destructive"] != want.destructive {
+			t.Fatalf("cached annotations=%#v, want read_only=%t destructive=%t", annotations, want.readOnly, want.destructive)
+		}
+		example := post["x-onprest-examples"].([]any)[0].(map[string]any)["params"].(map[string]any)
+		if example["customer_id"] != json.Number(strconv.Itoa(want.customerID)) {
+			t.Fatalf("cached example=%#v, want customer_id=%d", example, want.customerID)
+		}
+	}
+
+	req := newMCPCompatibilityRequest(http.MethodPost, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
+	rec := serveMCPCompatibility(s, apiKey, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tools/list status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	result := decodeMCPCompatibilityResponse(t, rec)["result"].(map[string]any)
+	tool := mcpCompatibilityTool(t, result, "get_customer")
+	hints := tool["annotations"].(map[string]any)
+	if hints["readOnlyHint"] != false || hints["destructiveHint"] != true {
+		t.Fatalf("latest MCP hints=%#v", hints)
+	}
+	if !strings.Contains(logs.String(), "\"customer_id\":2") || !strings.Contains(logs.String(), "\"x-onprest-annotations\"") {
+		t.Fatalf("snapshot log does not contain refreshed public metadata: %s", logs.String())
+	}
+}
+
+func TestOpenAPIMetadataIgnoresStaleAgentGenerationAndFiltersSameFixture(t *testing.T) {
+	const (
+		oldPublicDescription = "OLD_PUBLIC_METADATA_SENTINEL"
+		newPublicDescription = "NEW_PUBLIC_METADATA_SENTINEL"
+		hiddenName           = "hidden_customer"
+		hiddenDescription    = "HIDDEN_DESCRIPTION_SENTINEL"
+		hiddenExample        = "HIDDEN_EXAMPLE_SENTINEL"
+	)
+	metadata := func(description string, customerID int) []byte {
+		readOnly, destructive, idempotent, openWorld := true, false, true, false
+		public := agent.CapabilityDef{
+			Description: description,
+			Policy:      agent.PolicyDef{ExposeInOpenAPI: boolPtr(true)},
+			Annotations: &agent.CapabilityAnnotations{
+				ReadOnly: &readOnly, Destructive: &destructive,
+				Idempotent: &idempotent, OpenWorld: &openWorld,
+			},
+			Examples: []agent.CapabilityExample{{Params: map[string]any{"customer_id": customerID}}},
+		}
+		hidden := agent.CapabilityDef{
+			Description: hiddenDescription,
+			Policy:      agent.PolicyDef{ExposeInOpenAPI: boolPtr(false)},
+			Examples:    []agent.CapabilityExample{{Params: map[string]any{"note": hiddenExample}}},
+		}
+		doc := agent.BuildOpenAPI(&agent.CapabilityFile{
+			Service:      agent.ServiceDef{Title: "Generation fixture"},
+			Capabilities: map[string]agent.CapabilityDef{"get_customer": public, hiddenName: hidden},
+		})
+		body, err := json.Marshal(map[string]any{"data": doc})
+		if err != nil {
+			t.Fatalf("marshal generation metadata fixture: %v", err)
+		}
+		return body
+	}
+
+	s, logs, apiKey := testServer(t)
+	s.cfg.EmitOpenAPISnapshot = true
+	oldRelease := make(chan struct{})
+	var releaseOldOnce sync.Once
+	releaseOld := func() { releaseOldOnce.Do(func() { close(oldRelease) }) }
+	oldConn := &generationMetadataAgentConn{response: metadata(oldPublicDescription, 1), started: make(chan struct{}), release: oldRelease}
+	oldAC := newAgentConn(oldConn)
+	oldConn.ac = oldAC
+	var newAC *agentConn
+	t.Cleanup(func() {
+		releaseOld()
+		oldAC.disconnectPending()
+		if newAC != nil {
+			newAC.disconnectPending()
+		}
+	})
+	s.agentMu.Lock()
+	s.agent = oldAC
+	s.agentMu.Unlock()
+	go s.writeAgent(oldAC)
+	oldDone := make(chan struct{})
+	go func() {
+		s.fetchMetaFor(oldAC)
+		close(oldDone)
+	}()
+	select {
+	case <-oldConn.started:
+	case <-time.After(time.Second):
+		t.Fatal("old agent generation did not start metadata request")
+	}
+
+	newConn := &generationMetadataAgentConn{response: metadata(newPublicDescription, 2), started: make(chan struct{})}
+	newAC = newAgentConn(newConn)
+	newConn.ac = newAC
+	s.agentMu.Lock()
+	s.agent = newAC
+	s.agentMu.Unlock()
+	go s.writeAgent(newAC)
+	s.fetchMetaFor(newAC)
+	releaseOld()
+	select {
+	case <-oldDone:
+	case <-time.After(time.Second):
+		t.Fatal("stale agent generation did not finish")
+	}
+
+	s.agentMu.RLock()
+	cached := cloneMap(s.openapi)
+	s.agentMu.RUnlock()
+	if cached == nil {
+		t.Fatal("new agent metadata was not cached")
+	}
+	openAPIJSON, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertGenerationMetadataVisibility(t, string(openAPIJSON), newPublicDescription, oldPublicDescription, hiddenName, hiddenDescription, hiddenExample)
+
+	openAPIRequest := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	openAPIRequest.Header.Set("Authorization", "Bearer "+apiKey)
+	openAPIResponse := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(openAPIResponse, openAPIRequest)
+	if openAPIResponse.Code != http.StatusOK {
+		t.Fatalf("filtered OpenAPI status=%d body=%s", openAPIResponse.Code, openAPIResponse.Body.String())
+	}
+	assertGenerationMetadataVisibility(t, openAPIResponse.Body.String(), newPublicDescription, oldPublicDescription, hiddenName, hiddenDescription, hiddenExample)
+
+	mcpRequest := newMCPCompatibilityRequest(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	mcpRequest.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
+	mcpResponse := serveMCPCompatibility(s, apiKey, mcpRequest)
+	if mcpResponse.Code != http.StatusOK {
+		t.Fatalf("filtered tools/list status=%d body=%s", mcpResponse.Code, mcpResponse.Body.String())
+	}
+	mcpBody := decodeMCPCompatibilityResponse(t, mcpResponse)
+	tool := mcpCompatibilityTool(t, mcpBody["result"].(map[string]any), "get_customer")
+	if tool["description"] != newPublicDescription {
+		t.Fatalf("tools/list description=%#v, want new generation", tool["description"])
+	}
+	assertGenerationMetadataVisibility(t, mcpResponse.Body.String(), newPublicDescription, oldPublicDescription, hiddenName, hiddenDescription, hiddenExample)
+	if _, ok := tool["examples"]; ok {
+		t.Fatalf("MCP tool copied OpenAPI examples: %#v", tool)
+	}
+
+	logText := logs.String()
+	assertGenerationMetadataVisibility(t, logText, newPublicDescription, oldPublicDescription, hiddenName, hiddenDescription, hiddenExample)
+	if !strings.Contains(logText, `"customer_id":2`) || strings.Contains(logText, `"customer_id":1`) {
+		t.Fatalf("snapshot log contains stale/current example mismatch: %s", logText)
+	}
+
+	oldAC.disconnectPending()
+	newAC.disconnectPending()
+}
+
+func TestOpenAPIMetadataPreservesInt64ExamplesAndConstraintsAcrossRoutes(t *testing.T) {
+	const (
+		boundaryValue = int64(9007199254740993)
+		maximumValue  = int64(9223372036854775807)
+	)
+	capability := agent.CapabilityDef{
+		Name:        "precision_lookup",
+		Description: "Lossless integer metadata fixture",
+		SQL:         "select :boundary as boundary, :maximum as maximum",
+		Params: map[string]agent.ParamDef{
+			"boundary": {Type: "integer", Required: true, Minimum: int64Ptr(boundaryValue), Maximum: int64Ptr(maximumValue)},
+			"maximum":  {Type: "integer", Required: true, Minimum: int64Ptr(boundaryValue), Maximum: int64Ptr(maximumValue)},
+		},
+		Result: agent.ResultDef{
+			"boundary": {Type: "integer"},
+			"maximum":  {Type: "integer"},
+		},
+		Examples: []agent.CapabilityExample{{Params: map[string]any{
+			"boundary": boundaryValue,
+			"maximum":  maximumValue,
+		}}},
+		Policy: agent.PolicyDef{ExposeInOpenAPI: boolPtr(true)},
+	}
+	cf := &agent.CapabilityFile{
+		Service: agent.ServiceDef{Title: "Lossless metadata fixture", Version: "1.2.5"},
+		Gateway: agent.GatewayDef{URL: "ws://127.0.0.1:8080/ws/agent", AgentPrivateKey: testAgentPrivateKey},
+		Database: agent.DatabaseDef{
+			Driver: "postgres", Host: "localhost", Port: 5432, Name: "fixture", User: "fixture", Password: "fixture",
+		},
+		Capabilities: map[string]agent.CapabilityDef{"precision_lookup": capability},
+	}
+	if err := cf.Lint(); err != nil {
+		t.Fatalf("lint precision metadata fixture: %v", err)
+	}
+	doc := agent.BuildOpenAPI(cf)
+	agentJSON, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLosslessPrecisionJSON(t, string(agentJSON), "Agent OpenAPI")
+	metadata, err := json.Marshal(map[string]any{
+		"data":           doc,
+		"response_kinds": map[string]string{"precision_lookup": "select"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		if req.Capability != "meta" {
+			t.Fatalf("metadata request=%#v", req)
+		}
+		return agentResponse{ID: req.ID, Result: json.RawMessage(metadata)}
+	})
+	defer cleanup()
+	s.cfg.APIKeys[0].Capabilities = capabilities{"precision_lookup"}
+	s.cfg.EmitOpenAPISnapshot = true
+	s.fetchMeta()
+
+	s.agentMu.RLock()
+	cached := cloneMap(s.openapi)
+	s.agentMu.RUnlock()
+	if cached == nil {
+		t.Fatal("metadata was not cached")
+	}
+	assertLosslessPrecisionDocument(t, cached, "Gateway cache")
+
+	request := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	response := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("OpenAPI status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertLosslessPrecisionJSON(t, response.Body.String(), "Gateway /openapi.json")
+
+	logText := logs.String()
+	if !strings.Contains(logText, "openapi_snapshot") {
+		t.Fatalf("metadata snapshot log missing: %s", logText)
+	}
+	assertLosslessPrecisionJSON(t, logText, "Gateway snapshot")
+}
+
+func assertLosslessPrecisionDocument(t *testing.T, doc map[string]any, source string) {
+	t.Helper()
+	paths, ok := doc["paths"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s paths=%#v", source, doc["paths"])
+	}
+	post := paths["/api/v1/capabilities/precision_lookup"].(map[string]any)["post"].(map[string]any)
+	requestBody := post["requestBody"].(map[string]any)
+	requestSchema := requestBody["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+	params := requestSchema["properties"].(map[string]any)
+	for _, name := range []string{"boundary", "maximum"} {
+		param := params[name].(map[string]any)
+		if got := param["minimum"]; got != json.Number("9007199254740993") {
+			t.Fatalf("%s %s.minimum=%#v (%T), want lossless json.Number", source, name, got, got)
+		}
+		if got := param["maximum"]; got != json.Number("9223372036854775807") {
+			t.Fatalf("%s %s.maximum=%#v (%T), want lossless json.Number", source, name, got, got)
+		}
+	}
+	examples := post["x-onprest-examples"].([]any)
+	exampleParams := examples[0].(map[string]any)["params"].(map[string]any)
+	if got := exampleParams["boundary"]; got != json.Number("9007199254740993") {
+		t.Fatalf("%s boundary example=%#v (%T), want lossless json.Number", source, got, got)
+	}
+	if got := exampleParams["maximum"]; got != json.Number("9223372036854775807") {
+		t.Fatalf("%s maximum example=%#v (%T), want lossless json.Number", source, got, got)
+	}
+}
+
+func assertLosslessPrecisionJSON(t *testing.T, body, source string) {
+	t.Helper()
+	for _, want := range []string{
+		`"minimum":9007199254740993`,
+		`"maximum":9223372036854775807`,
+		`"boundary":9007199254740993`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("%s missing exact decimal %s: %s", source, want, body)
+		}
+	}
+	if strings.Contains(body, "9007199254740992") {
+		t.Fatalf("%s rounded 2^53+1 through float64: %s", source, body)
+	}
+}
+
+func boolPtr(value bool) *bool { return &value }
+
+func assertGenerationMetadataVisibility(t *testing.T, body, want, old, hiddenName, hiddenDescription, hiddenExample string) {
+	t.Helper()
+	if !strings.Contains(body, want) {
+		t.Fatalf("metadata missing current generation %q: %s", want, body)
+	}
+	for _, forbidden := range []string{old, hiddenName, hiddenDescription, hiddenExample} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("metadata leaked %q: %s", forbidden, body)
+		}
+	}
+}
+
+type generationMetadataAgentConn struct {
+	ac       *agentConn
+	response []byte
+	started  chan struct{}
+	release  <-chan struct{}
+	once     sync.Once
+}
+
+func (c *generationMetadataAgentConn) ReadText() ([]byte, error) { return nil, io.EOF }
+
+func (c *generationMetadataAgentConn) WriteText(payload []byte) error {
+	var req agentRequest
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&req); err != nil {
+		return err
+	}
+	c.once.Do(func() { close(c.started) })
+	if c.release != nil {
+		<-c.release
+	}
+	resp := agentResponse{ID: req.ID, Result: json.RawMessage(c.response)}
+	c.ac.mu.Lock()
+	ch := c.ac.pending[resp.ID]
+	delete(c.ac.pending, resp.ID)
+	c.ac.mu.Unlock()
+	if ch != nil {
+		ch <- resp
+	}
+	return nil
+}
+
+func (c *generationMetadataAgentConn) WriteTextWithDeadline(payload []byte, _ time.Duration) error {
+	return c.WriteText(payload)
+}
+
+func (c *generationMetadataAgentConn) Close() error { return nil }
 
 func TestAPIKeySuccessCacheIsBoundedAndStoresOnlyDigests(t *testing.T) {
 	s, _, apiKey := testServer(t)

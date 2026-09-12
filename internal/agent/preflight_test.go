@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -555,5 +556,185 @@ func TestBusyValidationDoesNotLoadConfigOrTouchDetailFiles(t *testing.T) {
 	}
 	if matches, _ := filepath.Glob(filepath.Join(dir, ".onprest-agent.validate.*.tmp")); len(matches) != 0 {
 		t.Fatalf("busy validation touched temporary files: %v", matches)
+	}
+}
+
+func TestNormalStartupAndValidateUseSameCapabilityAnnotationExampleValidation(t *testing.T) {
+	oldOpen, oldExecutable := openDatabaseForPreparation, executablePath
+	openDatabaseForPreparation = func(DatabaseDef) (*sql.DB, error) {
+		return sql.Open(preflightTestDriverName, "")
+	}
+	executableDir := t.TempDir()
+	executablePath = func() (string, error) { return filepath.Join(executableDir, "onprest-agent"), nil }
+	t.Cleanup(func() {
+		openDatabaseForPreparation, executablePath = oldOpen, oldExecutable
+	})
+
+	base := strings.Join([]string{
+		"service:",
+		"  title: Static AI contract fixture",
+		"gateway:",
+		"  url: ws://127.0.0.1:8080/ws/agent",
+		"  agent_private_key: test",
+		"database:",
+		"  driver: postgres",
+		"  host: 127.0.0.1",
+		"  port: 5432",
+		"  name: fixture",
+		"  user: fixture",
+		"  password: fixture",
+		"capabilities:",
+		"  get_value:",
+		"    sql: select :id as id",
+		"%s",
+		"    params:",
+		"      id:",
+		"        type: integer",
+		"        required: true",
+		"        minimum: 1",
+		"    result:",
+		"      id: {type: integer}",
+	}, "\n")
+	tests := []struct {
+		name   string
+		insert string
+	}{
+		{name: "unknown annotation", insert: "    annotations:\n      unknown: true"},
+		{name: "wrong annotation type", insert: "    annotations:\n      read_only: 1"},
+		{name: "null annotations", insert: "    annotations: null"},
+		{name: "null examples", insert: "    examples: null"},
+		{name: "null annotation alias", insert: "    description: &null null\n    annotations: *null"},
+		{name: "null examples alias", insert: "    description: &null null\n    examples: *null"},
+		{name: "tagged null annotations sequence", insert: "    annotations: !!null []"},
+		{name: "tagged null examples mapping", insert: "    examples: !!null {}"},
+		{name: "tagged null annotations sequence alias", insert: "    policy: &null !!null []\n    annotations: *null"},
+		{name: "tagged null examples mapping alias", insert: "    policy: &null !!null {}\n    examples: *null"},
+		{name: "missing example params", insert: "    examples:\n      - {}"},
+		{name: "tagged null example params mapping", insert: "    examples:\n      - params: !!null {}"},
+		{name: "tagged null example params mapping alias", insert: "    policy: &null !!null {}\n    examples:\n      - params: *null"},
+		{name: "null example item", insert: "    examples:\n      - null"},
+		{name: "tilde example item", insert: "    examples:\n      - ~"},
+		{name: "tagged null scalar example item", insert: "    examples:\n      - !!null null"},
+		{name: "tagged null mapping example item", insert: "    examples:\n      - !!null {}"},
+		{name: "tagged null sequence example item", insert: "    examples:\n      - !!null []"},
+		{name: "null alias example item", insert: "    policy: &null null\n    examples:\n      - *null"},
+		{name: "tagged null collection alias example item", insert: "    policy: &null !!null {}\n    examples:\n      - *null"},
+		{name: "tagged null sequence alias example item", insert: "    policy: &null !!null []\n    examples:\n      - *null"},
+		{name: "example unknown param", insert: "    examples:\n      - params:\n          unknown: 1\n          id: 1"},
+		{name: "example required mismatch", insert: "    examples:\n      - params: {}"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			preflightDriver.reset()
+			path := writeCapabilityFixture(t, fmt.Sprintf(base, tc.insert))
+			runner, startupErr := NewRunner(context.Background(), Config{CapabilityFile: path}, io.Discard)
+			if runner != nil {
+				t.Fatalf("invalid static fixture returned runner=%#v", runner)
+			}
+			startup, ok := startupErr.(*preparationError)
+			if !ok || startup.stage != validationStageConfig {
+				t.Fatalf("normal startup error=%#v, want config preparation error", startupErr)
+			}
+
+			outcome := validateConfiguration(context.Background(), Config{CapabilityFile: path})
+			if outcome.err == nil || outcome.err.stage != validationStageConfig {
+				t.Fatalf("validate error=%#v, want config preparation error", outcome.err)
+			}
+			if outcome.err.stage != startup.stage {
+				t.Fatalf("normal stage=%q validate stage=%q", startup.stage, outcome.err.stage)
+			}
+			if events := preflightDriver.snapshot(); len(events) != 0 {
+				t.Fatalf("invalid static fixture reached database preflight: %v", events)
+			}
+			if err := outcome.release(); err != nil {
+				t.Fatalf("release validation lock: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnsafeExampleParamDiagnosticsStaySanitizedAcrossStartupAndValidate(t *testing.T) {
+	const sentinel = "RAW_EXAMPLE_KEY_SENTINEL"
+	unsafeKey := `"bad\n` + sentinel + `\x1b[31m"`
+	content := strings.Join([]string{
+		"service:",
+		"  title: Unsafe example diagnostic fixture",
+		"gateway:",
+		"  url: ws://127.0.0.1:8080/ws/agent",
+		"  agent_private_key: test",
+		"database:",
+		"  driver: postgres",
+		"  host: 127.0.0.1",
+		"  port: 5432",
+		"  name: fixture",
+		"  user: fixture",
+		"  password: fixture",
+		"capabilities:",
+		"  get_value:",
+		"    sql: select :id as id",
+		"    examples:",
+		"      - params:",
+		"          " + unsafeKey + ": 1",
+		"          id: 1",
+		"    params:",
+		"      id:",
+		"        type: integer",
+		"        required: true",
+		"        minimum: 1",
+		"    result:",
+		"      id: {type: integer}",
+	}, "\n")
+	path := writeCapabilityFixture(t, content)
+	oldOpen, oldExecutable := openDatabaseForPreparation, executablePath
+	preflightDriver.reset()
+	openCalls := 0
+	openDatabaseForPreparation = func(DatabaseDef) (*sql.DB, error) {
+		openCalls++
+		return sql.Open(preflightTestDriverName, "")
+	}
+	executableDir := t.TempDir()
+	executablePath = func() (string, error) { return filepath.Join(executableDir, "onprest-agent"), nil }
+	t.Cleanup(func() { openDatabaseForPreparation, executablePath = oldOpen, oldExecutable })
+
+	runner, startupErr := NewRunner(context.Background(), Config{CapabilityFile: path}, io.Discard)
+	if runner != nil || startupErr == nil {
+		t.Fatalf("startup result runner=%#v err=%v", runner, startupErr)
+	}
+	assertSanitizedExampleDiagnostic(t, startupErr.Error(), sentinel)
+
+	for _, format := range []string{"text", "json"} {
+		t.Run("validate-"+format, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			args := []string{"--config", path, "--format", format}
+			code := handleValidateCLIWithValidator(context.Background(), args, &stdout, &stderr, func(string) string { return "" }, validateConfiguration)
+			if code != 1 {
+				t.Fatalf("validate exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if format == "text" && !strings.Contains(stderr.String(), "validate: ") {
+				t.Fatalf("text validation did not use public diagnostic: %q", stderr.String())
+			}
+			if format == "text" {
+				assertSanitizedExampleDiagnostic(t, strings.TrimSuffix(stderr.String(), "\n"), sentinel)
+			} else {
+				var output validationJSONOutput
+				if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+					t.Fatalf("decode JSON validation output: %v; output=%q", err, stdout.String())
+				}
+				if output.Stage != validationStageConfig {
+					t.Fatalf("JSON validation stage=%q, want config", output.Stage)
+				}
+				assertSanitizedExampleDiagnostic(t, output.Message, sentinel)
+			}
+		})
+	}
+	if openCalls != 0 || len(preflightDriver.snapshot()) != 0 {
+		t.Fatalf("unsafe example reached database preflight: openCalls=%d events=%v", openCalls, preflightDriver.snapshot())
+	}
+}
+
+func assertSanitizedExampleDiagnostic(t *testing.T, message, sentinel string) {
+	t.Helper()
+	if strings.Contains(message, sentinel) || strings.ContainsAny(message, "\r\n\x1b") || !strings.Contains(message, "<invalid-key>") {
+		t.Fatalf("unsafe example key reached public diagnostic: %q", message)
 	}
 }

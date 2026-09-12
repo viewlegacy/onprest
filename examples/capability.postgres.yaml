@@ -32,6 +32,13 @@ capabilities:
   get_customer:
     description: Fetch one customer by id.
     sql: select id, name, email from customers where id = :customer_id
+    annotations:
+      read_only: true
+      destructive: false
+      idempotent: true
+      open_world: false
+    examples:
+      - params: {customer_id: 1}
     params:
       customer_id:
         type: integer
@@ -56,6 +63,15 @@ capabilities:
   update_customer:
     description: Update one customer's name.
     sql: update customers set name = :name where id = :customer_id
+    annotations:
+      read_only: false
+      destructive: true
+      idempotent: true
+      open_world: false
+    examples:
+      - params:
+          customer_id: 1
+          name: Ada Lovelace
     params:
       customer_id:
         type: integer

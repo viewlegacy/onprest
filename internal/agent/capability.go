@@ -70,13 +70,313 @@ type LoggingDef struct {
 }
 
 type CapabilityDef struct {
-	Name        string              `json:"name" yaml:"-"`
-	Description string              `json:"description" yaml:"description"`
-	SQL         string              `json:"sql" yaml:"sql"`
-	Params      map[string]ParamDef `json:"params" yaml:"params"`
-	Policy      PolicyDef           `json:"policy" yaml:"policy"`
-	Result      ResultDef           `json:"result,omitempty" yaml:"result,omitempty"`
-	Operation   sqlOperation        `json:"-" yaml:"-"`
+	Name        string                 `json:"name" yaml:"-"`
+	Description string                 `json:"description" yaml:"description"`
+	SQL         string                 `json:"sql" yaml:"sql"`
+	Params      map[string]ParamDef    `json:"params" yaml:"params"`
+	Policy      PolicyDef              `json:"policy" yaml:"policy"`
+	Result      ResultDef              `json:"result,omitempty" yaml:"result,omitempty"`
+	Annotations *CapabilityAnnotations `json:"annotations,omitempty" yaml:"annotations,omitempty"`
+	Examples    []CapabilityExample    `json:"examples,omitempty" yaml:"examples,omitempty"`
+	Operation   sqlOperation           `json:"-" yaml:"-"`
+}
+
+// UnmarshalYAML rejects a present null annotations/examples value before the
+// yaml package can turn it into a nil pointer/slice. Those fields are
+// optional, but omission is the only way to leave the metadata absent, while
+// an explicit false remains an explicit hint. The same check follows aliases,
+// including aliases whose target is null.
+func (c *CapabilityDef) UnmarshalYAML(node *yaml.Node) error {
+	actual, err := dereferenceYAMLNode(node, map[*yaml.Node]bool{})
+	if err != nil {
+		return err
+	}
+	if actual.Kind != yaml.MappingNode {
+		return errors.New("cannot unmarshal capability: must be an object")
+	}
+	if err := validateCapabilityMetadataYAML(actual, map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	type plainCapabilityDef CapabilityDef
+	var decoded plainCapabilityDef
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*c = CapabilityDef(decoded)
+	return nil
+}
+
+func validateCapabilityMetadataYAML(node *yaml.Node, stack map[*yaml.Node]bool) error {
+	if node == nil {
+		return errors.New("cannot unmarshal capability: empty YAML node")
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return errors.New("cannot unmarshal capability: empty YAML alias")
+		}
+		if stack[node] {
+			return errors.New("cannot unmarshal capability: cyclic YAML merge")
+		}
+		stack[node] = true
+		defer delete(stack, node)
+		return validateCapabilityMetadataYAML(node.Alias, stack)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	if stack[node] {
+		return errors.New("cannot unmarshal capability: cyclic YAML merge")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			if value.Kind == yaml.SequenceNode {
+				for _, source := range value.Content {
+					if err := validateCapabilityMetadataYAML(source, stack); err != nil {
+						return err
+					}
+				}
+			} else if err := validateCapabilityMetadataYAML(value, stack); err != nil {
+				return err
+			}
+			continue
+		}
+		if key.Kind != yaml.ScalarNode || (key.Value != "annotations" && key.Value != "examples") {
+			if key.Kind != yaml.ScalarNode {
+				return errors.New("cannot unmarshal capability: field name must be a string")
+			}
+			if _, ok := capabilityYAMLFields[key.Value]; !ok {
+				return fmt.Errorf("field %s not found in capability definition", publicFieldName(key.Value))
+			}
+			continue
+		}
+		if yamlNodeIsNull(value, map[*yaml.Node]bool{}) {
+			return fmt.Errorf("cannot unmarshal capability.%s: value must be omitted or an object/list", key.Value)
+		}
+		if key.Value == "examples" {
+			if err := validateCapabilityExamplesYAML(value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+var capabilityYAMLFields = map[string]struct{}{
+	"description": {}, "sql": {}, "params": {}, "policy": {}, "result": {}, "annotations": {}, "examples": {},
+}
+
+func validateCapabilityExamplesYAML(node *yaml.Node) error {
+	actual, err := dereferenceYAMLNode(node, map[*yaml.Node]bool{})
+	if err != nil {
+		return err
+	}
+	if actual.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for i, item := range actual.Content {
+		resolved, err := dereferenceYAMLNode(item, map[*yaml.Node]bool{})
+		if err != nil {
+			return fmt.Errorf("cannot unmarshal capability.examples[%d]: %w", i, err)
+		}
+		if yamlNodeIsNull(resolved, map[*yaml.Node]bool{}) {
+			return fmt.Errorf("cannot unmarshal capability.examples[%d]: item must be an object", i)
+		}
+	}
+	return nil
+}
+
+func validateKnownYAMLMapping(node *yaml.Node, allowed map[string]struct{}, label string, stack map[*yaml.Node]bool) error {
+	if node == nil || node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return fmt.Errorf("%s contains an empty YAML alias", label)
+		}
+		if stack[node] {
+			return fmt.Errorf("%s contains a cyclic YAML merge", label)
+		}
+		stack[node] = true
+		defer delete(stack, node)
+		return validateKnownYAMLMapping(node.Alias, allowed, label, stack)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	if stack[node] {
+		return fmt.Errorf("%s contains a cyclic YAML merge", label)
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			if value.Kind == yaml.SequenceNode {
+				for _, source := range value.Content {
+					if err := validateKnownYAMLMapping(source, allowed, label, stack); err != nil {
+						return err
+					}
+				}
+			} else if err := validateKnownYAMLMapping(value, allowed, label, stack); err != nil {
+				return err
+			}
+			continue
+		}
+		if key.Kind != yaml.ScalarNode {
+			return fmt.Errorf("%s field name must be a string", label)
+		}
+		if _, ok := allowed[key.Value]; !ok {
+			return fmt.Errorf("field %s not found in %s", publicFieldName(key.Value), label)
+		}
+	}
+	return nil
+}
+
+func dereferenceYAMLNode(node *yaml.Node, stack map[*yaml.Node]bool) (*yaml.Node, error) {
+	if node == nil {
+		return nil, errors.New("cannot unmarshal capability: empty YAML node")
+	}
+	if node.Kind != yaml.AliasNode {
+		return node, nil
+	}
+	if node.Alias == nil {
+		return nil, errors.New("cannot unmarshal capability: empty YAML alias")
+	}
+	if stack[node] {
+		return nil, errors.New("cannot unmarshal capability: cyclic YAML alias")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	return dereferenceYAMLNode(node.Alias, stack)
+}
+
+func yamlNodeIsNull(node *yaml.Node, stack map[*yaml.Node]bool) bool {
+	if node == nil {
+		return true
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil || stack[node] {
+			return true
+		}
+		stack[node] = true
+		defer delete(stack, node)
+		return yamlNodeIsNull(node.Alias, stack)
+	}
+	// An explicit null tag is authoritative even when YAML attaches it to a
+	// sequence or mapping node (for example, `!!null []` or `!!null {}`).
+	// Checking ShortTag rather than Kind prevents those values from being
+	// decoded as an empty collection and accidentally treated as present data.
+	return node.ShortTag() == "!!null"
+}
+
+// CapabilityAnnotations describes the operation hints that can be propagated
+// to public API metadata. Pointer fields preserve the distinction between an
+// omitted hint and an explicitly supplied false value.
+type CapabilityAnnotations struct {
+	ReadOnly    *bool `json:"read_only,omitempty" yaml:"read_only,omitempty"`
+	Destructive *bool `json:"destructive,omitempty" yaml:"destructive,omitempty"`
+	Idempotent  *bool `json:"idempotent,omitempty" yaml:"idempotent,omitempty"`
+	OpenWorld   *bool `json:"open_world,omitempty" yaml:"open_world,omitempty"`
+}
+
+// UnmarshalYAML keeps annotations strictly boolean. A pointer bool normally
+// accepts an explicit YAML null as nil, but null is not an annotation value:
+// only an omitted field is absent, while false is an explicit hint.
+func (a *CapabilityAnnotations) UnmarshalYAML(node *yaml.Node) error {
+	if err := validateCapabilityAnnotationsYAML(node, map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	type plainCapabilityAnnotations CapabilityAnnotations
+	var decoded plainCapabilityAnnotations
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*a = CapabilityAnnotations(decoded)
+	return nil
+}
+
+func validateCapabilityAnnotationsYAML(node *yaml.Node, stack map[*yaml.Node]bool) error {
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return errors.New("cannot unmarshal annotations: empty YAML alias")
+		}
+		return validateCapabilityAnnotationsYAML(node.Alias, stack)
+	}
+	if node.Kind != yaml.MappingNode {
+		return errors.New("cannot unmarshal annotations: must be an object")
+	}
+	if stack[node] {
+		return errors.New("cannot unmarshal annotations: cyclic YAML merge")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			if value.Kind == yaml.SequenceNode {
+				for _, source := range value.Content {
+					if err := validateCapabilityAnnotationsYAML(source, stack); err != nil {
+						return err
+					}
+				}
+			} else if err := validateCapabilityAnnotationsYAML(value, stack); err != nil {
+				return err
+			}
+			continue
+		}
+		if key.Kind != yaml.ScalarNode {
+			return errors.New("cannot unmarshal annotations: field name must be a string")
+		}
+		switch key.Value {
+		case "read_only", "destructive", "idempotent", "open_world":
+			if value.Kind == yaml.AliasNode {
+				if value.Alias == nil {
+					return fmt.Errorf("cannot unmarshal annotations.%s: empty YAML alias", key.Value)
+				}
+				value = value.Alias
+			}
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+				return fmt.Errorf("cannot unmarshal annotations.%s: value must be boolean", key.Value)
+			}
+		default:
+			return fmt.Errorf("field %s not found in capability annotations", publicFieldName(key.Value))
+		}
+	}
+	return nil
+}
+
+// CapabilityExample is validated against the capability's parameter contract
+// at load time and is never executed against the database.
+type CapabilityExample struct {
+	Params map[string]any `json:"params" yaml:"params"`
+}
+
+func (e *CapabilityExample) UnmarshalYAML(node *yaml.Node) error {
+	if err := validateKnownYAMLMapping(node, map[string]struct{}{"params": {}}, "capability example definition", map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	actual, err := dereferenceYAMLNode(node, map[*yaml.Node]bool{})
+	if err != nil {
+		return err
+	}
+	if actual.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(actual.Content); i += 2 {
+			key, value := actual.Content[i], actual.Content[i+1]
+			if key.Kind == yaml.ScalarNode && key.Value == "params" && yamlNodeIsNull(value, map[*yaml.Node]bool{}) {
+				return errors.New("cannot unmarshal capability example.params: value must be an object")
+			}
+		}
+	}
+	type plainCapabilityExample CapabilityExample
+	var decoded plainCapabilityExample
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*e = CapabilityExample(decoded)
+	return nil
 }
 
 type sqlOperation string
@@ -198,11 +498,39 @@ type PolicyDef struct {
 	ExposeInOpenAPI *bool  `json:"expose_in_openapi,omitempty" yaml:"expose_in_openapi,omitempty"`
 }
 
+func (p *PolicyDef) UnmarshalYAML(node *yaml.Node) error {
+	if err := validateKnownYAMLMapping(node, map[string]struct{}{
+		"readonly": {}, "timeout": {}, "max_rows": {}, "max_bytes": {}, "expose_in_openapi": {},
+	}, "policy definition", map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	type plainPolicyDef PolicyDef
+	var decoded plainPolicyDef
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*p = PolicyDef(decoded)
+	return nil
+}
+
 type ResultDef map[string]ResultColumnDef
 
 type ResultColumnDef struct {
 	Type        string `json:"type" yaml:"type"`
 	Description string `json:"description" yaml:"description"`
+}
+
+func (r *ResultColumnDef) UnmarshalYAML(node *yaml.Node) error {
+	if err := validateKnownYAMLMapping(node, map[string]struct{}{"type": {}, "description": {}}, "result column definition", map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	type plainResultColumnDef ResultColumnDef
+	var decoded plainResultColumnDef
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*r = ResultColumnDef(decoded)
+	return nil
 }
 
 func LoadCapabilityFile(path string) (*CapabilityFile, error) {
@@ -305,6 +633,14 @@ func (cf *CapabilityFile) Lint() error {
 		for cname, col := range cap.Result {
 			if !validType(col.Type) {
 				return fmt.Errorf("%s.result.%s.type is invalid", capabilityPath, publicFieldName(cname))
+			}
+		}
+		for i, example := range cap.Examples {
+			if example.Params == nil {
+				return fmt.Errorf("%s.examples[%d].params must be an object", capabilityPath, i)
+			}
+			if _, err := validateParams(cap, example.Params); err != nil {
+				return fmt.Errorf("%s.examples[%d].params: %w", capabilityPath, i, err)
 			}
 		}
 		cf.Capabilities[name] = cap

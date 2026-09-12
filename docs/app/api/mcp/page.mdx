@@ -87,7 +87,9 @@ Method parameters follow the open extension shape of the supported schemas. `pin
 }
 ```
 
-The gateway builds the tool list from cached agent-owned OpenAPI metadata and filters it by the caller's API key capabilities. For `2025-03-26` behavior (including a request without the version header), each tool exposes its input schema but not `outputSchema`. For `2025-06-18` and `2025-11-25`, `outputSchema` is copied from the capability's OpenAPI JSON response schema.
+The Gateway builds the tool list from cached Agent-owned OpenAPI metadata and filters it by the caller's API key capabilities. For `2025-03-26` behavior (including a request without the version header), each tool exposes its input schema but not `outputSchema`. For `2025-06-18` and `2025-11-25`, `outputSchema` is copied from the capability's OpenAPI JSON response schema.
+
+The Gateway maps explicitly supplied `x-onprest-annotations` values to MCP's `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; omitted values remain omitted. These hints do not change authorization or execution. OpenAPI `x-onprest-examples` are not copied into MCP tools.
 
 ## `tools/call`
 
