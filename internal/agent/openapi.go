@@ -18,15 +18,24 @@ func BuildOpenAPI(cf *CapabilityFile) map[string]any {
 		if len(required) > 0 {
 			requestSchema["required"] = required
 		}
-		paths["/api/v1/capabilities/"+cap.Name] = map[string]any{
-			"post": map[string]any{
-				"summary":              cap.Name,
-				"description":          cap.Description,
-				"x-onprest-capability": cap.Name,
-				"requestBody":          map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": requestSchema}}},
-				"responses":            map[string]any{"200": map[string]any{"description": "Capability result", "content": map[string]any{"application/json": map[string]any{"schema": responseSchema(cap)}}}},
-			},
+		op := map[string]any{
+			"summary":              cap.Name,
+			"description":          cap.Description,
+			"x-onprest-capability": cap.Name,
+			"requestBody":          map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": requestSchema}}},
+			"responses":            map[string]any{"200": map[string]any{"description": "Capability result", "content": map[string]any{"application/json": map[string]any{"schema": responseSchema(cap)}}}},
 		}
+		if annotations := openAPIAnnotations(cap.Annotations); annotations != nil {
+			op["x-onprest-annotations"] = annotations
+		}
+		if len(cap.Examples) > 0 {
+			examples := make([]any, len(cap.Examples))
+			for i, example := range cap.Examples {
+				examples[i] = map[string]any{"params": example.Params}
+			}
+			op["x-onprest-examples"] = examples
+		}
+		paths["/api/v1/capabilities/"+cap.Name] = map[string]any{"post": op}
 	}
 	return map[string]any{
 		"openapi": "3.1.0",
@@ -37,6 +46,26 @@ func BuildOpenAPI(cf *CapabilityFile) map[string]any {
 		},
 		"paths": paths,
 	}
+}
+
+func openAPIAnnotations(annotations *CapabilityAnnotations) map[string]any {
+	if annotations == nil {
+		return nil
+	}
+	ext := map[string]any{}
+	if annotations.ReadOnly != nil {
+		ext["read_only"] = *annotations.ReadOnly
+	}
+	if annotations.Destructive != nil {
+		ext["destructive"] = *annotations.Destructive
+	}
+	if annotations.Idempotent != nil {
+		ext["idempotent"] = *annotations.Idempotent
+	}
+	if annotations.OpenWorld != nil {
+		ext["open_world"] = *annotations.OpenWorld
+	}
+	return ext
 }
 
 func schemaForParam(p ParamDef) map[string]any {

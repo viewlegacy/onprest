@@ -14,8 +14,15 @@ func cloneMap(in map[string]any) map[string]any {
 		return nil
 	}
 	var out map[string]any
-	b, _ := json.Marshal(in)
-	_ = json.Unmarshal(b, &out)
+	b, err := json.Marshal(in)
+	if err != nil {
+		return nil
+	}
+	// Keep metadata numbers as json.Number so cloning cannot round an
+	// int64-valued example or schema constraint through float64.
+	if err := decodeJSONNumber(b, &out); err != nil {
+		return nil
+	}
 	return out
 }
 
@@ -163,6 +170,9 @@ func toolsFromOpenAPI(doc map[string]any, protocolVersion string) []map[string]a
 					}
 				}
 			}
+			if annotations, ok := mcpToolAnnotations(op["x-onprest-annotations"]); ok {
+				tool["annotations"] = annotations
+			}
 			if mcpUsesStructuredContent(protocolVersion) {
 				if responses, _ := op["responses"].(map[string]any); responses != nil {
 					if response, _ := responses["200"].(map[string]any); response != nil {
@@ -182,6 +192,30 @@ func toolsFromOpenAPI(doc map[string]any, protocolVersion string) []map[string]a
 		}
 	}
 	return tools
+}
+
+func mcpToolAnnotations(value any) (map[string]any, bool) {
+	annotations, ok := value.(map[string]any)
+	if !ok || annotations == nil {
+		return nil, false
+	}
+	hints := map[string]any{}
+	for source, target := range map[string]string{
+		"read_only":   "readOnlyHint",
+		"destructive": "destructiveHint",
+		"idempotent":  "idempotentHint",
+		"open_world":  "openWorldHint",
+	} {
+		if value, exists := annotations[source]; exists {
+			if hint, isBool := value.(bool); isBool {
+				hints[target] = hint
+			}
+		}
+	}
+	if len(hints) == 0 {
+		return nil, false
+	}
+	return hints, true
 }
 
 func mcpInputSchema(schema any) any {
@@ -209,7 +243,10 @@ func metaData(raw []byte) (map[string]any, map[string]responseKind, error) {
 		Data          map[string]any    `json:"data"`
 		ResponseKinds map[string]string `json:"response_kinds"`
 	}
-	if err := json.Unmarshal(raw, &meta); err != nil {
+	// Agent metadata is JSON and may contain int64 examples/constraints beyond
+	// JavaScript's safe integer range. Decode without converting numbers to
+	// float64 so the cached and filtered documents remain lossless.
+	if err := decodeJSONNumber(raw, &meta); err != nil {
 		return nil, nil, err
 	}
 	if meta.Data == nil {

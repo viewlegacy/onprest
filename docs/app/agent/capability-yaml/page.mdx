@@ -66,6 +66,13 @@ capabilities:
   get_customer:
     description: "Fetch one customer by id"
     sql: select id, name, email from customers where id = :customer_id
+    annotations:
+      read_only: true
+      destructive: false
+      idempotent: true
+      open_world: false
+    examples:
+      - params: {customer_id: 123}
     params:
       customer_id:
         type: integer
@@ -213,6 +220,23 @@ Each entry under `capabilities` defines one externally callable operation. At le
 | `params` | No | Input contract; unknown provided params are rejected |
 | `policy` | No | Execution limits; missing values use `defaults` or implementation defaults |
 | `result` | No | SELECT-only output allow-list; forbidden for DML; omitted on SELECT means row object fields are not returned |
+| `annotations` | No | Explicit operation hints for OpenAPI/MCP metadata; omitted hints remain omitted |
+| `examples` | No | Example parameter objects validated against `params` at startup and by `validate`; never executed |
+
+## AI-facing annotations and examples
+
+`annotations` may contain only `read_only`, `destructive`, `idempotent`, and `open_world`. Each field is an optional boolean, so an explicit `false` is different from omitting it. Unknown keys, non-boolean values, and `null` are rejected. The Agent publishes only explicitly supplied fields.
+
+| Field | OpenAPI extension key | MCP tool hint | Meaning |
+|---|---|---|---|
+| `read_only` | `read_only` | `readOnlyHint` | The operation is intended to read without mutation |
+| `destructive` | `destructive` | `destructiveHint` | The operation may have destructive effects |
+| `idempotent` | `idempotent` | `idempotentHint` | Repeating the operation has the same intended effect |
+| `open_world` | `open_world` | `openWorldHint` | The operation may interact with open-world data or side effects |
+
+These hints describe the operation for clients; they do not change authorization or execution. Keep them consistent with the actual capability.
+
+`examples` is a list of objects with a non-null `params` object. Each example is validated against the capability's parameter contract during startup and `validate`, but is never executed. Examples are public OpenAPI metadata and must not contain secrets.
 
 ## Params
 

@@ -1387,6 +1387,169 @@ func TestMCPIDTypesRejectInvalidIDsWithoutCallingAgent(t *testing.T) {
 	}
 }
 
+func TestMCPToolsExposeOnlyExplicitCapabilityAnnotationHints(t *testing.T) {
+	doc := testOpenAPIDoc()
+	paths := doc["paths"].(map[string]any)
+	post := paths["/api/v1/capabilities/get_customer"].(map[string]any)["post"].(map[string]any)
+	post["x-onprest-annotations"] = map[string]any{
+		"read_only":   true,
+		"destructive": false,
+		"idempotent":  true,
+		"open_world":  false,
+	}
+	post["x-onprest-examples"] = []any{map[string]any{"params": map[string]any{"customer_id": 123}}}
+	paths["/api/v1/capabilities/partial_hints"] = map[string]any{
+		"post": map[string]any{
+			"x-onprest-capability": "partial_hints",
+			"description":          "Partial hints",
+			"x-onprest-annotations": map[string]any{
+				"read_only":  false,
+				"open_world": "not-a-bool",
+				"unknown":    true,
+			},
+		},
+	}
+	paths["/api/v1/capabilities/invalid_hints"] = map[string]any{
+		"post": map[string]any{
+			"x-onprest-capability": "invalid_hints",
+			"description":          "Invalid hints",
+			"x-onprest-annotations": map[string]any{
+				"open_world": "not-a-bool",
+				"unknown":    true,
+			},
+		},
+	}
+	s, _, apiKey := testServer(t)
+	s.cfg.APIKeys[0].Capabilities = capabilities{"*"}
+	s.openapi = doc
+	for _, version := range []string{mcpProtocolVersion20250326, mcpProtocolVersion20250618, mcpProtocolVersion20251125} {
+		t.Run(version, func(t *testing.T) {
+			req := newMCPCompatibilityRequest(http.MethodPost, fmt.Sprintf(`{"jsonrpc":"2.0","id":%q,"method":"tools/list","params":{}}`, version))
+			req.Header.Set(mcpProtocolHeader, version)
+			rec := serveMCPCompatibility(s, apiKey, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("tools/list status=%d body=%s", rec.Code, rec.Body.String())
+			}
+			body := decodeMCPCompatibilityResponse(t, rec)
+			result, ok := body["result"].(map[string]any)
+			if !ok {
+				t.Fatalf("tools/list result=%#v", body)
+			}
+			tool := mcpCompatibilityTool(t, result, "get_customer")
+			hints, ok := tool["annotations"].(map[string]any)
+			if !ok {
+				t.Fatalf("tool annotations=%#v", tool["annotations"])
+			}
+			if hints["readOnlyHint"] != true || hints["destructiveHint"] != false || hints["idempotentHint"] != true || hints["openWorldHint"] != false {
+				t.Fatalf("mapped hints=%#v", hints)
+			}
+			if _, ok := tool["examples"]; ok {
+				t.Fatalf("OpenAPI examples were copied into MCP tool: %#v", tool)
+			}
+			if _, ok := tool["x-onprest-examples"]; ok {
+				t.Fatalf("OpenAPI extension examples were copied into MCP tool: %#v", tool)
+			}
+
+			partial := mcpCompatibilityTool(t, result, "partial_hints")
+			partialHints, ok := partial["annotations"].(map[string]any)
+			if !ok || partialHints["readOnlyHint"] != false {
+				t.Fatalf("partial explicit-false hint=%#v", partial["annotations"])
+			}
+			for _, omitted := range []string{"destructiveHint", "idempotentHint", "openWorldHint", "unknown"} {
+				if _, ok := partialHints[omitted]; ok {
+					t.Fatalf("partial hint %q was inferred or accepted: %#v", omitted, partialHints)
+				}
+			}
+			invalid := mcpCompatibilityTool(t, result, "invalid_hints")
+			if _, ok := invalid["annotations"]; ok {
+				t.Fatalf("all-invalid annotation extension was emitted: %#v", invalid)
+			}
+
+			search := mcpCompatibilityTool(t, result, "search_orders")
+			if _, ok := search["annotations"]; ok {
+				t.Fatalf("unannotated tool received inferred annotations: %#v", search)
+			}
+		})
+	}
+}
+
+func TestMCPAnnotationsDoNotChangeAuthorizationOrExecution(t *testing.T) {
+	var calls atomic.Int32
+	s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+		calls.Add(1)
+		if req.Capability != "get_customer" || req.Params["id"] != nil {
+			t.Fatalf("agent request=%#v, want authorized capability with empty params", req)
+		}
+		return agentResponse{ID: req.ID, Result: json.RawMessage("{\"rows\":[],\"count\":0}")}
+	})
+	defer cleanup()
+	doc := mcpCompatibilityOpenAPIDoc()
+	post := doc["paths"].(map[string]any)["/api/v1/capabilities/get_customer"].(map[string]any)["post"].(map[string]any)
+	post["x-onprest-annotations"] = map[string]any{"destructive": false, "read_only": true}
+	s.openapi = doc
+	req := newMCPCompatibilityRequest(http.MethodPost, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_customer\",\"arguments\":{}}}")
+	rec := serveMCPCompatibility(s, apiKey, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	response := decodeMCPToolCallEnvelope(t, rec.Body.Bytes())
+	if response.Result.IsError || calls.Load() != 1 {
+		t.Fatalf("response=%#v calls=%d, want successful authorized execution", response, calls.Load())
+	}
+}
+
+func TestMCPToolAnnotationAndExampleMetadataStayWithinAPIKeyFilter(t *testing.T) {
+	s, _, apiKey := testServer(t)
+	doc := testOpenAPIDoc()
+	paths := doc["paths"].(map[string]any)
+	paths["/api/v1/capabilities/hidden"] = map[string]any{"post": map[string]any{
+		"x-onprest-capability":  "hidden",
+		"description":           "PRIVATE_DESCRIPTION_SENTINEL",
+		"x-onprest-annotations": map[string]any{"read_only": false},
+		"x-onprest-examples":    []any{map[string]any{"params": map[string]any{"secret": "PRIVATE_EXAMPLE_SENTINEL"}}},
+	}}
+	s.openapi = s.finalizeOpenAPI(doc)
+
+	openAPIRequest := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	openAPIRequest.Header.Set("Authorization", "Bearer "+apiKey)
+	openAPIResponse := httptest.NewRecorder()
+	s.httpSrv.Handler.ServeHTTP(openAPIResponse, openAPIRequest)
+	if openAPIResponse.Code != http.StatusOK {
+		t.Fatalf("filtered OpenAPI status=%d body=%s", openAPIResponse.Code, openAPIResponse.Body.String())
+	}
+	var filtered map[string]any
+	if err := json.Unmarshal(openAPIResponse.Body.Bytes(), &filtered); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := filtered["paths"].(map[string]any)["/api/v1/capabilities/hidden"]; ok {
+		t.Fatalf("hidden path survived OpenAPI API-key filter: %#v", filtered["paths"])
+	}
+	raw, err := json.Marshal(filtered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "PRIVATE_DESCRIPTION_SENTINEL") || strings.Contains(string(raw), "PRIVATE_EXAMPLE_SENTINEL") {
+		t.Fatalf("hidden metadata leaked after OpenAPI API-key filter: %s", raw)
+	}
+
+	mcpRequest := newMCPCompatibilityRequest(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	mcpRequest.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
+	mcpResponse := serveMCPCompatibility(s, apiKey, mcpRequest)
+	if mcpResponse.Code != http.StatusOK {
+		t.Fatalf("filtered tools/list status=%d body=%s", mcpResponse.Code, mcpResponse.Body.String())
+	}
+	mcpBody := decodeMCPCompatibilityResponse(t, mcpResponse)
+	tools := mcpBody["result"].(map[string]any)["tools"].([]any)
+	for _, value := range tools {
+		if tool, ok := value.(map[string]any); ok && tool["name"] == "hidden" {
+			t.Fatalf("hidden tool survived MCP API-key filter: %#v", tools)
+		}
+	}
+	if strings.Contains(mcpResponse.Body.String(), "PRIVATE_DESCRIPTION_SENTINEL") || strings.Contains(mcpResponse.Body.String(), "PRIVATE_EXAMPLE_SENTINEL") {
+		t.Fatalf("hidden metadata leaked after MCP API-key filter: %s", mcpResponse.Body.String())
+	}
+}
+
 func mcpCompatibilityOpenAPIDoc() map[string]any {
 	doc := testOpenAPIDoc()
 	paths := doc["paths"].(map[string]any)

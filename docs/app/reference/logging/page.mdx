@@ -28,11 +28,11 @@ Control events:
 
 | Event | Fields | Description |
 |---|---|---|
-| `openapi_cached` | `paths` | Emitted after gateway caches agent metadata. This is always summary-only. |
-| `openapi_snapshot` | `paths`, `openapi` | Emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`. `openapi` contains the full cached OpenAPI document, including gateway-added `servers`, `securitySchemes`, and `security`. |
+| `openapi_cached` | `paths` | Emitted after Gateway caches the completed public OpenAPI document. This is always summary-only. |
+| `openapi_snapshot` | `paths`, `openapi` | Emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`. `openapi` contains the public document for all exposed capabilities, including Gateway-added `servers`, `securitySchemes`, and `security`. |
 | `mcp_http_rejected` | `http_status`, `error_code`, `error_message` | Safe MCP HTTP-boundary diagnostic. It is a control event, not a request event. |
 
-`openapi_snapshot` contains unfiltered OpenAPI metadata for the connected agent. It still must not contain SQL or DB credentials, but it may contain public descriptions, parameter names, and result schema names from `capability.yaml`.
+`openapi_snapshot` is not filtered per API key. The Agent excludes capabilities hidden by `expose_in_openapi: false`, but the event may contain public descriptions, parameter/result schemas, annotations, and examples for every exposed capability. It must not contain SQL, secrets, or DB connection information.
 
 ## Agent
 
