@@ -207,7 +207,7 @@ capabilities:
         type: string
 ```
 
-The agent loads this file at startup, validates it, runs SQL checks, and then connects to the gateway. `onprest-agent validate --config PATH` runs the same startup preflight without connecting to the gateway. Changes require an agent restart.
+The agent loads and validates this file at startup, including checks for each SQL statement, before connecting to the gateway. Changes require an agent restart.
 
 For the full schema, policy options, logging settings, and examples, see the documentation.
 
@@ -216,7 +216,7 @@ For the full schema, policy options, logging settings, and examples, see the doc
 Onprest is designed as if components may be compromised.
 
 - No SQL, DB credentials, DSNs, raw schema knowledge, capability execution rules, or agent private key are stored in the gateway.
-- The gateway stores only the agent public key, bcrypt-hashed API keys, and agent-defined public capability metadata.
+- The gateway does not persist application data. It is configured with the agent public key and bcrypt-hashed API keys, and caches only agent-defined public capability metadata.
 - Agent authentication uses Ed25519 signatures during the WebSocket handshake.
 - The agent connects outbound to the gateway; no inbound firewall path into the customer network is required.
 - API keys are capability-scoped.
@@ -413,7 +413,6 @@ Onprest exposes the same approved capabilities through REST and MCP.
 - `POST /mcp` supports MCP `initialize`, `ping`, `tools/list`, and `tools/call`
 - `GET /openapi.json` returns API-key-filtered OpenAPI
 - `GET /healthz` returns gateway health and agent connection state
-- `GET /ws/agent` is reserved for the outbound agent WebSocket
 
 `/openapi.json` and MCP `tools/list` are generated from agent-owned capability metadata and filtered per API key.
 

@@ -114,6 +114,7 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/ws/agent", s.handleAgentWS)
 	mux.HandleFunc("/ws/agent/challenge", s.handleAgentChallenge)
+	mux.HandleFunc("/ws/agent/verify", s.handleAgentVerify)
 	mux.HandleFunc("/api/v1/capabilities/", s.handleCapability)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/mcp", s.handleMCP)

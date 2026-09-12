@@ -88,6 +88,14 @@ Use `wss://` for every non-loopback agent connection so challenges and authentic
 
 Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `GATEWAY_AGENT_ALREADY_CONNECTED`.
 
+`onprest-agent doctor` uses the same one-time challenge store but a separate signature domain:
+
+```text
+onprest-agent-verify-v1\n{path}\n{RFC3339 timestamp}\n{base64url nonce}\n{gateway challenge}
+```
+
+The challenge endpoint itself requires no API key or Agent signature; it is bounded by the Gateway's IP/rate controls and the one-minute challenge lifetime. `/ws/agent/verify` requires a valid signature over the dedicated domain above, then consumes the challenge and nonce atomically. It does not open or replace a WebSocket connection. See [CLI Reference](/reference/cli#diagnose-agent-and-gateway) for the command contract.
+
 ## Product Boundary
 
 Managed products and dashboards are outside the OSS core security boundary. Their UI, storage, administration, and operating policies are not OSS gateway or agent guarantees.
@@ -105,4 +113,4 @@ External HTTP responses and gateway stdout never include raw detail. The HTTP re
 }
 ```
 
-DB-specific errors and SQL execution detail stay in an agent-local log; DB credentials, Agent keys, API keys, authorization values, and submitted param values are not emitted as public diagnostics. Normal runtime uses `onprest-agent.log` next to the binary. Standalone validation never opens that runtime log and returns its separately locked validation-log path only for a successfully recorded diagnostic. See [Agent Local Logs](/agent/local-logs) for the failure-stage and file-lifecycle boundary.
+DB-specific errors and SQL execution detail stay in agent-local logs; DB credentials, Agent keys, API keys, authorization values, and submitted param values are not emitted as public diagnostics. Standalone diagnostics use protected files separate from the rotating runtime log. See [Agent Local Logs](/agent/local-logs).

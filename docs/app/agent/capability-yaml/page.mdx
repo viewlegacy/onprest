@@ -193,7 +193,7 @@ Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`.
 
 `max_size` accepts a non-negative integer followed by an optional `B`, `KB`, `MB`, or `GB` suffix, such as `10MB`. A bare integer is treated as bytes. Fractions, unknown suffixes, trailing text, and values that overflow `int64` are rejected.
 
-Normal Agent runtime detail uses the executable path plus `.log`, for example `onprest-agent.log`. Standalone validation never opens that rotating file; a successfully recorded validation diagnostic returns its separate path beside the binary. See [Agent Local Logs](/agent/local-logs) for the authoritative lifecycle.
+Normal Agent runtime detail uses the executable path plus `.log`, for example `onprest-agent.log`. Standalone diagnostics use separate, non-rotating files; see [Agent Local Logs](/agent/local-logs).
 
 ## Defaults
 

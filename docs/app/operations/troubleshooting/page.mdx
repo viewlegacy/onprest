@@ -12,6 +12,23 @@ Check:
 
 The gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when signature validation fails.
 
+## Run the doctor probe
+
+After the Gateway is running, use `doctor` to separate local preparation failures from Gateway transport and authentication failures:
+
+```bash
+onprest-agent doctor --config /absolute/path/capability.yaml --format json
+```
+
+Use the first failed check to choose the next action:
+
+- `config` or `database_*`: correct `capability.yaml` or restore database access.
+- `gateway_dns` or `gateway_connect`: check the configured hostname, port, DNS, firewall, and proxy path.
+- `gateway_tls`: check the hostname, SNI certificate, and the Agent host's OS trust store. There is no separate Gateway CA setting.
+- `gateway_challenge` or `gateway_verify`: check proxy routing, clock synchronization, and that `GATEWAY_AGENT_PUBLIC_KEY` matches `gateway.agent_private_key`.
+
+Later dependent checks are shown as `skipped`. Doctor does not establish or replace the normal WebSocket connection and does not execute a capability. See the [CLI Reference](/reference/cli#diagnose-agent-and-gateway) for output and exit codes, and [Agent Local Logs](/agent/local-logs) for the latest-failure log.
+
 ## OpenAPI Returns 503
 
 `GATEWAY_AGENT_OFFLINE` means gateway has no connected agent or no usable OpenAPI cache.

@@ -180,7 +180,7 @@ If you created your own file in step 5, run this instead:
 ./dist/onprest-agent validate --config ./capability.yaml
 ```
 
-Validation performs YAML lint, DB Ping, and SQL EXPLAIN preparation without connecting to the Gateway or executing a capability. If validation fails, do not start the Agent. Read a validation log only when the command reports a detail-log path; configuration and concurrent-validation errors are CLI-only, and a diagnostic-finalization failure deliberately reports no diagnostic path. See [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure) and [Agent Local Logs](/agent/local-logs).
+Validation performs YAML lint, DB Ping, and SQL EXPLAIN preparation without connecting to the Gateway or executing a capability. If it fails, do not start the Agent; follow [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure).
 
 ## 7. Start Gateway and Agent
 

@@ -11,12 +11,14 @@ Route these paths to the gateway process.
 | Path | Protocol | Purpose |
 |---|---|---|
 | `/ws/agent` | WebSocket | outbound agent connection |
+| `/ws/agent/challenge` | HTTP POST | one-time challenge shared by normal Agent authentication and `doctor` |
+| `/ws/agent/verify` | HTTP POST | `doctor` signature verification |
 | `/api/v1/capabilities/*` | HTTP | REST capability calls |
 | `/mcp` | HTTP | MCP JSON-RPC endpoint |
 | `/openapi.json` | HTTP | OpenAPI spec filtered by API key |
 | `/healthz` | HTTP | gateway health and agent connection status |
 
-The `/ws/agent` route must support WebSocket upgrade.
+The `/ws/agent` route must support WebSocket upgrade. The challenge and verify routes are ordinary POST requests and do not use API-key authentication or WebSocket upgrade. Challenge issuance requires no Agent signature; verify requires the Agent's Ed25519 signature.
 
 `/healthz` returns HTTP 200 while gateway is healthy and includes `agent_connected`. See [Healthz](/api/healthz).
 
@@ -35,7 +37,7 @@ The trusted proxy must remove caller-supplied values and overwrite both headers 
 
 ## IP Allow List
 
-`GATEWAY_IP_ALLOW_LIST` applies after source IP detection to REST, MCP, OpenAPI, `/healthz`, and the agent WebSocket route. Per-source rate limiting applies to the same routes. `/healthz` is API-key-free, not exempt from these network controls.
+`GATEWAY_IP_ALLOW_LIST` applies after source IP detection to REST, MCP, OpenAPI, `/healthz`, the agent WebSocket route, and the Agent diagnostic routes. Per-source rate limiting applies to the same routes. `/healthz` and Agent diagnostics are API-key-free, not exempt from these network controls.
 
 ```env
 GATEWAY_IP_ALLOW_LIST=203.0.113.0/24,198.51.100.10

@@ -68,8 +68,10 @@ cleanup() {
     "$artifact_dir/rollout-before-restart.json" "$artifact_dir/service-test-gateway.jsonl" \
     "$artifact_dir/.validate-lock-held" "$artifact_dir/.validate-lock-held.out" \
     "$artifact_dir/onprest-agent.validate.log" "$artifact_dir/.onprest-agent.validate.lock" \
+    "$artifact_dir/onprest-agent.doctor.log" "$artifact_dir/.onprest-agent.doctor.lock" \
     "$agent_bin.log" "$agent_bin.log.1" "$agent_bin.log.2" >/dev/null 2>&1 || true
   "${elevate[@]}" find "$artifact_dir" -maxdepth 1 -type f -name '.onprest-agent.validate.*.tmp' -delete >/dev/null 2>&1 || true
+  "${elevate[@]}" find "$artifact_dir" -maxdepth 1 -type f -name '.onprest-agent.doctor.*.tmp' -delete >/dev/null 2>&1 || true
 }
 
 # Remove a stale native test service before creating this run's secrets and
@@ -276,10 +278,31 @@ runtime_request() {
 runtime_request runtime_marker_a
 runtime_request runtime_marker_b
 
+# doctor must inspect the real Gateway and database while the production Agent
+# remains connected. Repeating it must not rotate the runtime log or change the
+# live service generation.
+runtime_log="$agent_bin.log"
+runtime_before_doctor=$("${elevate[@]}" cksum "$runtime_log" "$runtime_log.1")
+agent_connections_before=$(grep -c '"event":"agent_connected"' "$gateway_output" || true)
+test "$agent_connections_before" -ge 1
+doctor_output=$("${elevate[@]}" "$agent_bin" doctor --config "$default_config" --format json)
+jq -e '.ok == true and ([.checks[] | select(.stage == "gateway_verify" and .status == "passed")] | length == 1)' <<<"$doctor_output" >/dev/null
+test ! -e "$(dirname "$agent_bin")/onprest-agent.doctor.log"
+doctor_output_repeat=$("${elevate[@]}" "$agent_bin" doctor --config "$default_config" --format json)
+jq -e '.ok == true and ([.checks[] | select(.stage == "gateway_verify" and .status == "passed")] | length == 1)' <<<"$doctor_output_repeat" >/dev/null
+test ! -e "$(dirname "$agent_bin")/onprest-agent.doctor.log"
+assert_old_public_contract
+runtime_after_doctor=$("${elevate[@]}" cksum "$runtime_log" "$runtime_log.1")
+test "$runtime_before_doctor" = "$runtime_after_doctor"
+agent_connections_after=$(grep -c '"event":"agent_connected"' "$gateway_output" || true)
+test "$agent_connections_before" = "$agent_connections_after"
+curl -fsS http://127.0.0.1:18080/healthz | grep -q '"agent_connected":true'
+doctor_status=$("${elevate[@]}" "$agent_bin" service status)
+grep -Eq '^state: (active|running)$' <<<"$doctor_status"
+
 # validate uses the production startup preflight while the installed Agent is
 # still running. Its latest-failure files must never touch runtime rotation.
 "${elevate[@]}" "$agent_bin" validate --config "$default_config" --format json | grep -q '"valid":true'
-runtime_log="$agent_bin.log"
 test -f "$runtime_log"
 test -f "$runtime_log.1"
 "${elevate[@]}" grep -q 'runtime_marker_b' "$runtime_log"

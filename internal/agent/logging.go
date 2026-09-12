@@ -135,14 +135,22 @@ func (w *rotatingFileWriter) open() error {
 }
 
 func newValidationLogSession() (*validationLogSession, error) {
+	return newDiagnosticLogSession("validate")
+}
+
+func newDoctorLogSession() (*validationLogSession, error) {
+	return newDiagnosticLogSession("doctor")
+}
+
+func newDiagnosticLogSession(kind string) (*validationLogSession, error) {
 	exe, err := executablePath()
 	if err != nil {
 		return nil, err
 	}
 	dir := filepath.Dir(exe)
 	base := strings.TrimSuffix(filepath.Base(exe), filepath.Ext(exe))
-	fixedPath := filepath.Join(dir, base+".validate.log")
-	lockPath := filepath.Join(dir, "."+base+".validate.lock")
+	fixedPath := filepath.Join(dir, base+"."+kind+".log")
+	lockPath := filepath.Join(dir, "."+base+"."+kind+".lock")
 	lock, busy, err := validationAcquireNativeLock(lockPath)
 	if err != nil {
 		return nil, err
@@ -156,7 +164,7 @@ func newValidationLogSession() (*validationLogSession, error) {
 		_ = closeLock()
 		return nil, err
 	}
-	if err := recoverValidationTemporaryFiles(dir, base); err != nil {
+	if err := recoverDiagnosticTemporaryFiles(dir, base, kind); err != nil {
 		return fail(err)
 	}
 	if err := validationCheckPrivateFile(fixedPath); err != nil {
@@ -170,7 +178,7 @@ func newValidationLogSession() (*validationLogSession, error) {
 			if err != nil {
 				return nil, err
 			}
-			temporaryPath := filepath.Join(dir, "."+base+".validate."+runID+".tmp")
+			temporaryPath := filepath.Join(dir, "."+base+"."+kind+"."+runID+".tmp")
 			file, err := validationCreatePrivateFile(temporaryPath)
 			if err != nil {
 				return nil, err
@@ -230,11 +238,15 @@ func validationRunID() (string, error) {
 }
 
 func recoverValidationTemporaryFiles(dir, base string) error {
+	return recoverDiagnosticTemporaryFiles(dir, base, "validate")
+}
+
+func recoverDiagnosticTemporaryFiles(dir, base, kind string) error {
 	entries, err := validationReadDirectory(dir)
 	if err != nil {
 		return err
 	}
-	re := regexp.MustCompile(`^\.` + regexp.QuoteMeta(base) + `\.validate\.[0-9a-f]{32}\.tmp$`)
+	re := regexp.MustCompile(`^\.` + regexp.QuoteMeta(base) + `\.` + regexp.QuoteMeta(kind) + `\.[0-9a-f]{32}\.tmp$`)
 	for _, entry := range entries {
 		if !re.MatchString(entry.Name()) || entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
 			continue

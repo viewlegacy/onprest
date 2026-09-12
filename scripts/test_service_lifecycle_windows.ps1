@@ -238,12 +238,40 @@ function Assert-NewCapabilityAbsent {
   Invoke-RuntimeMarker runtime_marker_a
   Invoke-RuntimeMarker runtime_marker_b
 
+  # doctor must inspect the real Gateway and database while the production
+  # Agent remains connected. Repeating it must not rotate the runtime log or
+  # change the live service generation.
+  $runtimeLog = "$AgentBin.log"
+  $rotatedLog = "$runtimeLog.1"
+  $runtimeBeforeDoctor = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))
+  $agentConnectionsBefore = @(Select-String -Path $gatewayOutput -Pattern '"event":"agent_connected"').Count
+  if ($agentConnectionsBefore -lt 1) { throw 'Gateway did not record the connected Agent before doctor' }
+  $doctor = & $AgentBin doctor --config $DefaultConfig --format json
+  $doctorResult = ($doctor -join "`n") | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0 -or -not $doctorResult.ok -or @($doctorResult.checks | Where-Object { $_.stage -eq 'gateway_verify' -and $_.status -eq 'passed' }).Count -ne 1) {
+    throw "doctor failed while service was running: $doctor"
+  }
+  if (Test-Path (Join-Path $artifactDir 'onprest-agent.doctor.log')) { throw 'doctor left a success detail log' }
+  $doctorRepeat = & $AgentBin doctor --config $DefaultConfig --format json
+  $doctorRepeatResult = ($doctorRepeat -join "`n") | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0 -or -not $doctorRepeatResult.ok -or @($doctorRepeatResult.checks | Where-Object { $_.stage -eq 'gateway_verify' -and $_.status -eq 'passed' }).Count -ne 1) {
+    throw "repeated doctor failed while service was running: $doctorRepeat"
+  }
+  if (Test-Path (Join-Path $artifactDir 'onprest-agent.doctor.log')) { throw 'repeated doctor left a success detail log' }
+  Assert-OldPublicContract
+  $runtimeAfterDoctor = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))
+  if (($runtimeBeforeDoctor -join ',') -ne ($runtimeAfterDoctor -join ',')) { throw 'doctor changed runtime logs' }
+  $agentConnectionsAfter = @(Select-String -Path $gatewayOutput -Pattern '"event":"agent_connected"').Count
+  if ($agentConnectionsBefore -ne $agentConnectionsAfter) { throw 'doctor changed the Gateway Agent connection generation' }
+  $doctorHealth = Invoke-RestMethod -Uri http://127.0.0.1:18080/healthz
+  if (-not $doctorHealth.agent_connected) { throw 'Agent disconnected during doctor' }
+  $doctorStatus = Invoke-AgentService @('status')
+  if ($doctorStatus -notmatch '(?m)^state: running$') { throw "service stopped during doctor: $doctorStatus" }
+
   $validation = & $AgentBin validate --config $DefaultConfig --format json
   if ($LASTEXITCODE -ne 0 -or ($validation -join "`n") -notmatch '"valid":true') {
     throw "validate failed while service was running: $validation"
   }
-  $runtimeLog = "$AgentBin.log"
-  $rotatedLog = "$runtimeLog.1"
   if (-not (Test-Path $runtimeLog) -or -not (Test-Path $rotatedLog)) {
     throw 'runtime log rotation did not occur'
   }
@@ -448,9 +476,11 @@ finally {
     (Join-Path $artifactDir 'capability.validate-blocking.yaml'),
     (Join-Path $artifactDir 'capability.validate-blocking.yaml.out'), (Join-Path $artifactDir 'capability.validate-blocking.yaml.err'),
     (Join-Path $artifactDir 'onprest-agent.validate.log'), (Join-Path $artifactDir '.onprest-agent.validate.lock'),
+    (Join-Path $artifactDir 'onprest-agent.doctor.log'), (Join-Path $artifactDir '.onprest-agent.doctor.lock'),
     "$AgentBin.log", "$AgentBin.log.1", "$AgentBin.log.2"
   )
   Get-ChildItem $artifactDir -Filter '.onprest-agent.validate.*.tmp' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  Get-ChildItem $artifactDir -Filter '.onprest-agent.doctor.*.tmp' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
   [Environment]::SetEnvironmentVariable('GATEWAY_ADDR', $previousGatewayAddr, 'Process')
   [Environment]::SetEnvironmentVariable('GATEWAY_AGENT_PUBLIC_KEY', $previousAgentPublicKey, 'Process')
   [Environment]::SetEnvironmentVariable('GATEWAY_API_KEYS_JSON', $previousAPIKeys, 'Process')

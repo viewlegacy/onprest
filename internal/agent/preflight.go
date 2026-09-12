@@ -21,12 +21,19 @@ const (
 	validationStageDatabaseOpen      validationStage = "database_open"
 	validationStageDatabasePing      validationStage = "database_ping"
 	validationStageCapabilityExplain validationStage = "capability_explain"
+	validationStageGatewayDNS        validationStage = "gateway_dns"
+	validationStageGatewayConnect    validationStage = "gateway_connect"
+	validationStageGatewayTLS        validationStage = "gateway_tls"
+	validationStageGatewayChallenge  validationStage = "gateway_challenge"
+	validationStageGatewayVerify     validationStage = "gateway_verify"
 	validationStageCanceled          validationStage = "canceled"
 	validationStageInternal          validationStage = "internal"
 )
 
 const validationDiagnosticFailureMessage = "validation failed, but diagnostic log could not be recorded"
 const validationCleanupFailureMessage = "validation succeeded, but validation detail log cleanup failed"
+const doctorDiagnosticFailureMessage = "doctor failed, but diagnostic log could not be recorded"
+const doctorCleanupFailureMessage = "doctor succeeded, but doctor detail log cleanup failed"
 
 type preparationError struct {
 	stage         validationStage
@@ -59,6 +66,8 @@ type agentPreparation struct {
 	detailLog *preparationDetailLog
 }
 
+type preparationObserver func(validationStage)
+
 type ValidationReport struct {
 	DatabaseDriver string
 	Capabilities   int
@@ -89,20 +98,35 @@ func newRuntimeDetailLogFactory() detailLogFactory {
 }
 
 func prepareAgent(ctx context.Context, cfg Config, newDetailLog detailLogFactory) (*agentPreparation, error) {
+	return prepareAgentWithObserverAndMessage(ctx, cfg, newDetailLog, nil, validationDiagnosticFailureMessage)
+}
+
+func prepareAgentWithObserver(ctx context.Context, cfg Config, newDetailLog detailLogFactory, observe preparationObserver) (*agentPreparation, error) {
+	return prepareAgentWithObserverAndMessage(ctx, cfg, newDetailLog, observe, validationDiagnosticFailureMessage)
+}
+
+func prepareAgentForDoctor(ctx context.Context, cfg Config, newDetailLog detailLogFactory, observe preparationObserver) (*agentPreparation, error) {
+	return prepareAgentWithObserverAndMessage(ctx, cfg, newDetailLog, observe, doctorDiagnosticFailureMessage)
+}
+
+func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDetailLog detailLogFactory, observe preparationObserver, diagnosticFailureMessage string) (*agentPreparation, error) {
 	cf, err := loadCapabilityForPreparation(cfg.CapabilityFile)
 	if err != nil {
 		return nil, &preparationError{
 			stage: validationStageConfig, publicMessage: safeConfigMessage(err), detailErr: err,
 		}
 	}
+	if observe != nil {
+		observe(validationStageConfig)
+	}
 	detailLog, err := newDetailLog(cf.Logging)
 	if err != nil {
-		return nil, detailLogError(validationDiagnosticFailureMessage, err, "")
+		return nil, detailLogError(diagnosticFailureMessage, err, "")
 	}
 	p := &agentPreparation{cf: cf, caps: cf.ByName(), detailLog: detailLog}
 
 	fail := func(pe *preparationError) (*agentPreparation, error) {
-		if err := p.recordFailure(pe); err != nil {
+		if err := p.recordFailureWithMessage(pe, diagnosticFailureMessage); err != nil {
 			return nil, err
 		}
 		return nil, pe
@@ -114,6 +138,9 @@ func prepareAgent(ctx context.Context, cfg Config, newDetailLog detailLogFactory
 		return fail(pe)
 	}
 	p.db = db
+	if observe != nil {
+		observe(validationStageDatabaseOpen)
+	}
 
 	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	err = db.PingContext(pingCtx)
@@ -126,6 +153,9 @@ func prepareAgent(ctx context.Context, cfg Config, newDetailLog detailLogFactory
 		pe := &preparationError{stage: stage, publicMessage: message, detailErr: err}
 		return fail(pe)
 	}
+	if observe != nil {
+		observe(validationStageDatabasePing)
+	}
 
 	capability, err := p.explainAll(ctx)
 	if err != nil {
@@ -136,6 +166,9 @@ func prepareAgent(ctx context.Context, cfg Config, newDetailLog detailLogFactory
 		}
 		pe := &preparationError{stage: stage, capability: capability, publicMessage: message, detailErr: err}
 		return fail(pe)
+	}
+	if observe != nil {
+		observe(validationStageCapabilityExplain)
 	}
 	return p, nil
 }
@@ -165,6 +198,10 @@ func (p *agentPreparation) explainAll(parent context.Context) (string, error) {
 }
 
 func (p *agentPreparation) recordFailure(pe *preparationError) error {
+	return p.recordFailureWithMessage(pe, validationDiagnosticFailureMessage)
+}
+
+func (p *agentPreparation) recordFailureWithMessage(pe *preparationError, diagnosticFailureMessage string) error {
 	if closeErr := p.closeDatabase(); closeErr != nil {
 		if pe.detailErr == nil {
 			pe.detailErr = closeErr
@@ -212,17 +249,25 @@ func (p *agentPreparation) recordFailure(pe *preparationError) error {
 		if removeErr == nil {
 			cleanupPath = ""
 		}
-		return detailLogError(validationDiagnosticFailureMessage, err, cleanupPath)
+		return detailLogError(diagnosticFailureMessage, err, cleanupPath)
 	}
 	pe.detailLogPath = p.detailLog.PublicPath
 	return nil
 }
 
 func (p *agentPreparation) finishValidationSuccess() error {
+	return p.finishSuccess(validationCleanupFailureMessage, validationDiagnosticFailureMessage, "validation could not complete")
+}
+
+func (p *agentPreparation) finishDoctorSuccess() error {
+	return p.finishSuccess(doctorCleanupFailureMessage, doctorDiagnosticFailureMessage, "doctor could not complete")
+}
+
+func (p *agentPreparation) finishSuccess(cleanupFailureMessage, diagnosticFailureMessage, closeFailureMessage string) error {
 	if p.db != nil {
 		if err := p.closeDatabase(); err != nil {
-			pe := &preparationError{stage: validationStageInternal, publicMessage: "validation could not complete", detailErr: err}
-			if recordErr := p.recordFailure(pe); recordErr != nil {
+			pe := &preparationError{stage: validationStageInternal, publicMessage: closeFailureMessage, detailErr: err}
+			if recordErr := p.recordFailureWithMessage(pe, diagnosticFailureMessage); recordErr != nil {
 				return recordErr
 			}
 			return pe
@@ -233,7 +278,7 @@ func (p *agentPreparation) finishValidationSuccess() error {
 		if removeErr == nil {
 			cleanupPath = ""
 		}
-		return detailLogError(validationCleanupFailureMessage, err, cleanupPath)
+		return detailLogError(cleanupFailureMessage, err, cleanupPath)
 	}
 	return nil
 }

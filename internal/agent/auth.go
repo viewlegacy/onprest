@@ -22,6 +22,10 @@ import (
 const maxAgentChallengeResponseBytes = 4 << 10
 
 func fetchAgentChallenge(ctx context.Context, gatewayURL string) (string, error) {
+	return fetchAgentChallengeWithClient(ctx, gatewayURL, http.DefaultClient)
+}
+
+func fetchAgentChallengeWithClient(ctx context.Context, gatewayURL string, client *http.Client) (string, error) {
 	u, err := url.Parse(gatewayURL)
 	if err != nil {
 		return "", err
@@ -41,7 +45,10 @@ func fetchAgentChallenge(ctx context.Context, gatewayURL string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -107,6 +114,32 @@ func setAgentAuthHeaders(headers http.Header, privateKeyRaw, path, challenge str
 	message := protocol.AgentAuthMessage(path, timestamp, nonce, challenge, handshakeKey)
 	signature := ed25519.Sign(ed25519.PrivateKey(privateKeyBytes), message)
 	headers.Set("Sec-WebSocket-Key", handshakeKey)
+	headers.Set("X-Agent-Timestamp", timestamp)
+	headers.Set("X-Agent-Nonce", nonce)
+	headers.Set("X-Agent-Challenge", challenge)
+	headers.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(signature))
+	return nil
+}
+
+func setAgentVerifyAuthHeaders(headers http.Header, privateKeyRaw, path, challenge string) error {
+	privateKeyBytes, err := base64.RawURLEncoding.DecodeString(privateKeyRaw)
+	if err != nil {
+		return fmt.Errorf("decode agent private key: %w", err)
+	}
+	if len(privateKeyBytes) != ed25519.PrivateKeySize {
+		return fmt.Errorf("agent private key must be %d bytes", ed25519.PrivateKeySize)
+	}
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return err
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
+	timestamp := time.Now().UTC().Format(time.RFC3339)
+	if challenge == "" {
+		return fmt.Errorf("agent challenge is empty")
+	}
+	message := protocol.AgentVerifyAuthMessage(path, timestamp, nonce, challenge)
+	signature := ed25519.Sign(ed25519.PrivateKey(privateKeyBytes), message)
 	headers.Set("X-Agent-Timestamp", timestamp)
 	headers.Set("X-Agent-Nonce", nonce)
 	headers.Set("X-Agent-Challenge", challenge)

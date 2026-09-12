@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -27,6 +28,9 @@ func (s *Server) handleAgentChallenge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
 		return
 	}
+	if !emptyAgentAuthBody(w, r) {
+		return
+	}
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiError(errGatewayInternal, "unexpected gateway error"))
@@ -43,6 +47,48 @@ func (s *Server) handleAgentChallenge(w http.ResponseWriter, r *http.Request) {
 	s.authMu.Unlock()
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, map[string]string{"challenge": challenge})
+}
+
+func (s *Server) handleAgentVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
+		return
+	}
+	if !emptyAgentAuthBody(w, r) {
+		return
+	}
+	if !s.authenticateAgentVerify(r) {
+		writeJSON(w, http.StatusUnauthorized, apiError(errGatewayAuthFailed, "invalid agent signature"))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func emptyAgentAuthBody(w http.ResponseWriter, r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody {
+		if r.ContentLength > 0 {
+			writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+			return false
+		}
+		return true
+	}
+	if r.ContentLength > 0 {
+		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+		return false
+	}
+	body := http.MaxBytesReader(w, r.Body, 1)
+	var one [1]byte
+	n, err := body.Read(one[:])
+	if n != 0 || (err != nil && err != io.EOF) {
+		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+		return false
+	}
+	if err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+		return false
+	}
+	return true
 }
 
 func (s *Server) authenticateAgent(r *http.Request) bool {
@@ -75,6 +121,35 @@ func (s *Server) authenticateAgent(r *http.Request) bool {
 	return s.takeAgentCredentials(challenge, nonce, ts)
 }
 
+func (s *Server) authenticateAgentVerify(r *http.Request) bool {
+	publicKey, err := base64.RawURLEncoding.DecodeString(s.cfg.AgentPublicKey)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize {
+		return false
+	}
+	timestamp := r.Header.Get("X-Agent-Timestamp")
+	nonce := r.Header.Get("X-Agent-Nonce")
+	signatureRaw := r.Header.Get("X-Agent-Signature")
+	challenge := r.Header.Get("X-Agent-Challenge")
+	if timestamp == "" || nonce == "" || challenge == "" || signatureRaw == "" || r.Header.Get("Sec-WebSocket-Key") != "" {
+		return false
+	}
+	ts, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return false
+	}
+	if d := time.Since(ts); d < -time.Minute || d > 5*time.Minute {
+		return false
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(signatureRaw)
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return false
+	}
+	if r.URL.Path != "/ws/agent/verify" || !ed25519.Verify(ed25519.PublicKey(publicKey), protocol.AgentVerifyAuthMessage(r.URL.Path, timestamp, nonce, challenge), signature) {
+		return false
+	}
+	return s.takeAgentCredentials(challenge, nonce, ts)
+}
+
 func (s *Server) takeAgentCredentials(challenge, nonce string, ts time.Time) bool {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
@@ -84,10 +159,10 @@ func (s *Server) takeAgentCredentials(challenge, nonce string, ts time.Time) boo
 	if !ok || now.Sub(issued) > agentChallengeTTL {
 		return false
 	}
-	delete(s.agentChallenges, challenge)
 	if _, ok := s.nonces[nonce]; ok {
 		return false
 	}
+	delete(s.agentChallenges, challenge)
 	s.nonces[nonce] = ts
 	return true
 }
