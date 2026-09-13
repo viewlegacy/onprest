@@ -1,33 +1,27 @@
-# Check an order after a lost INSERT response
+# Confirm an INSERT after losing its response
 
-This example inserts an order and checks its contents through a separate read
-capability. Use it for hands-on evaluation with PostgreSQL, MySQL, SQL Server,
-or Oracle.
+Define a read capability alongside a mutation so callers can check the database
+when a response is lost. This example creates an order, deliberately discards a
+successful INSERT response, and reads the order through a separate capability.
+You can use PostgreSQL, MySQL, SQL Server, or Oracle.
 
-Onprest callers can execute only defined capabilities. Providing a
-`reconcile_order` SELECT alongside `create_order` gives the caller a way to
-check the order when the INSERT response is lost. Choose a UNIQUE
-`external_request_id` before sending the INSERT, then compare all four fields:
-
-| Field | Example value |
-|---|---|
-| `external_request_id` | `req-20260906-001` |
-| `product_code` | `SKU-001` |
-| `quantity` | `2` |
-| `customer_code` | `CUST-001` |
-
-This example covers INSERT reconciliation. UPDATE and DELETE need checks
-appropriate to their business operation; this example does not supply them.
+The caller chooses a UNIQUE `external_request_id` before inserting and compares
+all four fields when reading: request ID, product, quantity, and customer.
+Finding the ID alone is insufficient. This example uses INSERT; see
+[Mutation Reconciliation](https://docs.onprest.viewlegacy.com/operations/mutation-reconciliation)
+for operational decisions and UPDATE/DELETE considerations.
 
 ## Before you start
 
-Have Docker running and the two Onprest binaries available. To build them from
-the OSS repository, run `make build`; they are placed in `dist/`.
-The commands below use a Unix shell and local Linux database containers. SQL
-Server uses an amd64 image, so an ARM Docker host needs amd64 emulation enabled.
+Have Docker running, Go (the version in the repository's `go.mod`), curl, a
+Unix shell, and the `onprest-gateway` and `onprest-agent` binaries. You can use
+prebuilt binaries or run `make build` from the OSS repository root to build them
+in `dist/`. Go runs the local example helper; it is not required to deploy the
+Gateway or Agent. SQL Server's amd64 container requires amd64 emulation on an
+ARM Docker host.
 
-Run the commands from this directory. Choose `postgres`, `mysql`, `sqlserver`,
-or `oracle`, and set the absolute path to your binaries:
+Run these commands from `examples/mutation-reconciliation`. Choose one database
+and the absolute path to your binaries:
 
 ```bash
 RECONCILIATION_DB=sqlserver
@@ -35,254 +29,162 @@ ONPREST_BIN_DIR=/absolute/path/to/onprest-binaries
 EXAMPLE_WORK_DIR=$(mktemp -d)
 ```
 
-The local passwords below are example credentials. The containers are
-disposable and expose ports only on loopback. Use a fresh example container;
-if its name or port is occupied, choose another and update the commands and
-configuration accordingly.
+`RECONCILIATION_DB` selects `postgres`, `mysql`, `sqlserver`, or `oracle`.
+`ONPREST_BIN_DIR` is the directory containing the two executables.
+`EXAMPLE_WORK_DIR` holds generated configuration and credentials for this run.
+Keep it out of source control.
 
-## 1. Prepare one database
-
-Run only the subsection for your chosen database. Apply its schema with the
-native client; Onprest does not apply it during startup. Each `seed.*.sql` file
-is empty because the first INSERT creates the sample order.
-
-### PostgreSQL
+## 1. Start the database and prepare Onprest
 
 ```bash
-docker run -d --name onprest-recon-postgres \
-  -p 127.0.0.1:55433:5432 \
-  -e POSTGRES_DB=reconcile -e POSTGRES_USER=onprest_admin \
-  -e POSTGRES_PASSWORD=Onprest-admin-1 postgres:16-alpine
+./db.sh up "$RECONCILIATION_DB"
+go run ./local.go configure "$RECONCILIATION_DB" "$EXAMPLE_WORK_DIR" "$ONPREST_BIN_DIR"
 ```
 
-Wait until this check succeeds before continuing:
+The first command starts only the selected disposable container, waits for it
+to be ready, applies `schema.<database>.sql`, and creates `capability_user` with
+INSERT and SELECT permissions (plus startup validation permissions where
+needed). The table starts empty. Image download and database startup can take
+several minutes.
+
+The second command fills the selected capability template, generates a fresh
+Agent key pair and an API key scoped to `create_order` and `reconcile_order`,
+and validates the configuration against the database. No keys need copying.
+It writes these private files to the working directory:
+
+- `capability.yaml`: the Agent configuration with the two capabilities.
+- `gateway.env`: Gateway settings and the binary/working-directory paths.
+- `request.env`: Gateway URL and the plaintext API key used by curl.
+
+The fixed local connections are:
+
+| Database | Container | Loopback port | Database/service |
+|---|---|---|---|
+| PostgreSQL | `onprest-recon-postgres` | `55433` | `reconcile` |
+| MySQL | `onprest-recon-mysql` | `53306` | `reconcile` |
+| SQL Server | `onprest-recon-sqlserver` | `51433` | `reconcile` |
+| Oracle | `onprest-recon-oracle` | `51521` | `FREEPDB1` |
+
+The templates already contain these connections and the local sample user and
+password. The helper targets these containers; it does not initialize an
+existing database. If a container name or port is occupied, stop your previous
+example before starting another. The local credentials and loopback-only
+`ws://` connection are for this disposable example. For deployment, use your
+own database settings and follow [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment).
+
+Start the Gateway in another terminal. Substitute the actual working-directory
+path printed by `configure`:
 
 ```bash
-docker exec -e PGPASSWORD=Onprest-admin-1 onprest-recon-postgres \
-  psql -h 127.0.0.1 -U onprest_admin -d reconcile -Atc 'SELECT 1'
-```
-
-Apply the schema and create the Agent's user:
-
-```bash
-docker exec -i onprest-recon-postgres \
-  psql -v ON_ERROR_STOP=1 -U onprest_admin -d reconcile < schema.postgres.sql
-
-docker exec -i onprest-recon-postgres \
-  psql -v ON_ERROR_STOP=1 -U onprest_admin -d reconcile <<'SQL'
-CREATE ROLE capability_user LOGIN PASSWORD 'Onprest-example-1';
-GRANT USAGE ON SCHEMA public TO capability_user;
-GRANT SELECT, INSERT ON mutation_reconciliation_orders TO capability_user;
-SQL
-```
-
-### MySQL
-
-```bash
-docker run -d --name onprest-recon-mysql \
-  -p 127.0.0.1:53306:3306 \
-  -e MYSQL_DATABASE=reconcile -e MYSQL_ROOT_PASSWORD=Onprest-admin-1 \
-  mysql:8.0.36
-```
-
-Wait until this check succeeds:
-
-```bash
-docker exec -e MYSQL_PWD=Onprest-admin-1 onprest-recon-mysql \
-  mysql -h 127.0.0.1 -u root reconcile -Nse 'SELECT 1'
-```
-
-Apply the schema and create the Agent's user:
-
-```bash
-docker exec -i -e MYSQL_PWD=Onprest-admin-1 onprest-recon-mysql \
-  mysql -u root reconcile < schema.mysql.sql
-
-docker exec -i -e MYSQL_PWD=Onprest-admin-1 onprest-recon-mysql \
-  mysql -u root reconcile <<'SQL'
-CREATE USER 'capability_user'@'%' IDENTIFIED BY 'Onprest-example-1';
-GRANT SELECT, INSERT ON reconcile.mutation_reconciliation_orders TO 'capability_user'@'%';
-SQL
-```
-
-### SQL Server
-
-```bash
-docker run -d --name onprest-recon-sqlserver --platform linux/amd64 \
-  -p 127.0.0.1:51433:1433 \
-  -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=Onprest-admin-1 \
-  mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
-```
-
-Wait until this check succeeds. `-C` trusts this local container's certificate:
-
-```bash
-docker exec -e SQLCMDPASSWORD=Onprest-admin-1 onprest-recon-sqlserver \
-  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -Q 'SELECT 1'
-```
-
-Create the database, apply the schema, and create the Agent's user. `SHOWPLAN`
-is needed for startup validation, in addition to INSERT and SELECT permissions
-for execution.
-
-```bash
-docker exec -e SQLCMDPASSWORD=Onprest-admin-1 onprest-recon-sqlserver \
-  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b \
-  -Q 'CREATE DATABASE reconcile'
-
-docker exec -i -e SQLCMDPASSWORD=Onprest-admin-1 onprest-recon-sqlserver \
-  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -d reconcile \
-  < schema.sqlserver.sql
-
-docker exec -i -e SQLCMDPASSWORD=Onprest-admin-1 onprest-recon-sqlserver \
-  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -d reconcile <<'SQL'
-CREATE LOGIN capability_user WITH PASSWORD = 'Onprest-example-1';
-CREATE USER capability_user FOR LOGIN capability_user;
-GRANT SHOWPLAN TO capability_user;
-GRANT SELECT, INSERT ON OBJECT::dbo.mutation_reconciliation_orders TO capability_user;
-GO
-SQL
-```
-
-### Oracle
-
-```bash
-docker run -d --name onprest-recon-oracle \
-  -p 127.0.0.1:51521:1521 -e ORACLE_PASSWORD=Onprest-admin-1 \
-  gvenzl/oracle-free:23-slim-faststart
-```
-
-Use `docker logs onprest-recon-oracle` to wait for the database-ready message.
-Then apply the schema as SYSTEM and create a separate Agent user. Its private
-synonym lets the template refer to the table without a schema qualifier.
-
-```bash
-docker cp schema.oracle.sql onprest-recon-oracle:/tmp/schema.oracle.sql
-
-docker exec -i onprest-recon-oracle \
-  sqlplus -s -L system/Onprest-admin-1@localhost:1521/FREEPDB1 <<'SQL'
-WHENEVER SQLERROR EXIT FAILURE
-@/tmp/schema.oracle.sql
-CREATE USER capability_user IDENTIFIED BY "Onprest-example-1";
-GRANT CREATE SESSION TO capability_user;
-GRANT SELECT, INSERT ON system.mutation_reconciliation_orders TO capability_user;
-CREATE SYNONYM capability_user.mutation_reconciliation_orders FOR system.mutation_reconciliation_orders;
-EXIT
-SQL
-```
-
-## 2. Configure and start Onprest
-
-Copy the selected template into your temporary working directory:
-
-```bash
-cp "capability.$RECONCILIATION_DB.yaml.tmpl" "$EXAMPLE_WORK_DIR/capability.yaml"
-```
-
-Edit its `database` section using these values:
-
-| Setting | PostgreSQL | MySQL | SQL Server | Oracle |
-|---|---|---|---|---|
-| `host` | `127.0.0.1` | `127.0.0.1` | `127.0.0.1` | `127.0.0.1` |
-| `port` | `55433` | `53306` | `51433` | `51521` |
-| `name` | `reconcile` | `reconcile` | `reconcile` | `FREEPDB1` |
-| `user` | `capability_user` | `capability_user` | `capability_user` | `capability_user` |
-| `password` | `Onprest-example-1` | `Onprest-example-1` | `Onprest-example-1` | `Onprest-example-1` |
-
-Generate an Agent key pair and an API key scoped to both capabilities:
-
-```bash
-"$ONPREST_BIN_DIR/onprest-gateway" create-agent-secret
-"$ONPREST_BIN_DIR/onprest-gateway" create-key \
-  --name reconciliation --capabilities create_order,reconcile_order
-```
-
-Set `gateway.agent_private_key` in `capability.yaml` to the generated private
-key. For this local example, set `gateway.url` to
-`ws://127.0.0.1:58080/ws/agent`. Use `wss://` for non-loopback deployments as
-described in [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment).
-
-Create `$EXAMPLE_WORK_DIR/gateway.env` with the generated public key and API key
-hash substituted below. Keep the single quotes around the JSON to preserve
-the `$` characters in the bcrypt hash when loading it through the shell.
-
-```env
-GATEWAY_ADDR=127.0.0.1:58080
-GATEWAY_AGENT_PUBLIC_KEY=replace-with-generated-agent-public-key
-GATEWAY_API_KEYS_JSON='[{"name":"reconciliation","key_hash":"replace-with-generated-key-hash","capabilities":["create_order","reconcile_order"]}]'
-```
-
-Validate the completed configuration:
-
-```bash
-"$ONPREST_BIN_DIR/onprest-agent" validate --config "$EXAMPLE_WORK_DIR/capability.yaml"
-```
-
-Start the Gateway in one terminal and the Agent in another. Set the same
-`ONPREST_BIN_DIR` and `EXAMPLE_WORK_DIR` paths in both terminals:
-
-```bash
+EXAMPLE_WORK_DIR=/actual/path/printed/by/configure
 set -a
 . "$EXAMPLE_WORK_DIR/gateway.env"
 set +a
 "$ONPREST_BIN_DIR/onprest-gateway"
 ```
 
+Start the Agent in a third terminal with the same working-directory path:
+
 ```bash
+EXAMPLE_WORK_DIR=/actual/path/printed/by/configure
+. "$EXAMPLE_WORK_DIR/gateway.env"
 "$ONPREST_BIN_DIR/onprest-agent" --config "$EXAMPLE_WORK_DIR/capability.yaml"
 ```
 
-In the request terminal, set the generated plaintext API key and check that
-`/healthz` reports `agent_connected: true`:
+In your original terminal, load the request settings and wait until health
+reports `agent_connected: true`:
 
 ```bash
-GATEWAY_URL=http://127.0.0.1:58080
-ONPREST_API_KEY=replace-with-generated-api-key
+. "$EXAMPLE_WORK_DIR/request.env"
 curl --fail-with-body -sS "$GATEWAY_URL/healthz"
 ```
 
-## 3. Insert and check the order
+## 2. Insert and read normally
 
-Choose REST or MCP for the initial INSERT. Both files use the same request ID,
-so use the other protocol only for reading if you already inserted it. For
-another business operation, choose a new ID in the form `req-YYYYMMDD-NNN` and
-update the create and reconcile JSON files together.
-
-### REST
-
-Insert once:
+Insert once using REST:
 
 ```bash
 curl --fail-with-body -sS \
   -X POST "$GATEWAY_URL/api/v1/capabilities/create_order" \
   -H "Authorization: Bearer $ONPREST_API_KEY" \
   -H "Content-Type: application/json" \
-  -d @rest-create.json
+  -d '{"external_request_id":"req-20260906-001","product_code":"SKU-001","quantity":2,"customer_code":"CUST-001"}'
 ```
 
-Success returns `{"count":1}`. Check the stored order with the read capability;
-this is also the request to use if the INSERT response is lost:
+Success returns `{"count":1}`. Read through the separate capability:
 
 ```bash
 curl --fail-with-body -sS \
   -X POST "$GATEWAY_URL/api/v1/capabilities/reconcile_order" \
   -H "Authorization: Bearer $ONPREST_API_KEY" \
   -H "Content-Type: application/json" \
-  -d @rest-reconcile.json
+  -d '{"external_request_id":"req-20260906-001"}'
 ```
 
-A matching result is:
+Expected result:
 
 ```json
 {"rows":[{"external_request_id":"req-20260906-001","product_code":"SKU-001","quantity":2,"customer_code":"CUST-001"}],"count":1}
 ```
 
-Compare all four fields with the request. Finding the ID alone does not confirm
-that the order has the intended contents.
+## 3. Lose a response, then confirm the order
 
-### MCP
+In another terminal, run this from the example directory:
 
-If you have not sent the REST INSERT, insert once with MCP:
+```bash
+go run ./local.go lose-response
+```
+
+Wait for `Ready on http://127.0.0.1:58081`. This local helper forwards one INSERT
+to the Gateway on port `58080`. After receiving a successful one-row INSERT
+response, it closes the caller's connection without delivering that response
+and exits. It does not retry. This reproduces response loss **after completion**;
+Agent disconnection and unfinished transactions are covered by the integration
+suite, not this manual step.
+
+In the original terminal, insert a different order through the helper:
+
+```bash
+curl --fail-with-body -sS \
+  -X POST "http://127.0.0.1:58081/api/v1/capabilities/create_order" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"external_request_id":"req-20260906-002","product_code":"SKU-001","quantity":2,"customer_code":"CUST-001"}'
+```
+
+curl reports an empty response (normally exit code 52). **Do not repeat this
+INSERT.** Keep its request ID and read directly through the Gateway:
+
+```bash
+curl --fail-with-body -sS \
+  -X POST "$GATEWAY_URL/api/v1/capabilities/reconcile_order" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"external_request_id":"req-20260906-002"}'
+```
+
+The result should contain the `002` order with all four fields matching your
+request. You have confirmed that the intended order is present despite losing
+the INSERT response. For no row, differing contents, or a failed read, use the
+[operational decision table](https://docs.onprest.viewlegacy.com/operations/mutation-reconciliation#order-insert-example).
+Do not interpret every missing response as a successful commit.
+
+### Use MCP instead
+
+For an MCP response-loss exercise, restart `go run ./local.go lose-response`,
+wait for its ready message, and send a new request ID:
+
+```bash
+curl --fail-with-body -sS \
+  -X POST "http://127.0.0.1:58081/mcp" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_order","arguments":{"external_request_id":"req-20260906-003","product_code":"SKU-001","quantity":2,"customer_code":"CUST-001"}}}'
+```
+
+Read directly through the Gateway:
 
 ```bash
 curl --fail-with-body -sS \
@@ -291,55 +193,37 @@ curl --fail-with-body -sS \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "MCP-Protocol-Version: 2025-11-25" \
-  -d @mcp-create.json
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"reconcile_order","arguments":{"external_request_id":"req-20260906-003"}}}'
 ```
 
-Read the order, regardless of which protocol performed the INSERT:
-
-```bash
-curl --fail-with-body -sS \
-  -X POST "$GATEWAY_URL/mcp" \
-  -H "Authorization: Bearer $ONPREST_API_KEY" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -d @mcp-reconcile.json
-```
-
-The INSERT returns a count-only tool result. The read returns the same order
-data shown above in `structuredContent` and the text content. Check the body:
-a tool execution error has `isError: true` even with HTTP 200.
-
-If a response is lost, keep the original request ID and read first rather than
-automatically sending the INSERT again. Use the
-[Mutation Reconciliation decision table](https://docs.onprest.viewlegacy.com/operations/mutation-reconciliation#order-insert-example)
-to distinguish a full match, no row, differing contents, and an unavailable
-read. A UNIQUE constraint error confirms rollback of that attempt; read the
-existing order to determine whether its contents match your request.
+The read returns the `003` order in `structuredContent` and text content.
+MCP tool errors can use HTTP 200 with `isError: true`; inspect the body. The
+helper discards only a successful one-row INSERT response, so an upstream
+execution error is returned instead of being presented as simulated success.
+Use a fresh request ID or reset the example database to repeat an exercise.
 
 ## 4. Clean up
 
-Stop the Gateway and Agent with Ctrl-C. Remove only the container created for
-this example; removing it also discards the example database:
+Stop the Gateway and Agent with Ctrl-C (also stop the helper if it is still
+waiting for a request). Then remove the selected example container and its
+volumes, including the database:
 
 ```bash
-docker rm -f "onprest-recon-$RECONCILIATION_DB"
+./db.sh down "$RECONCILIATION_DB"
 ```
 
-Remove the temporary `capability.yaml` and `gateway.env` when finished. Keep
-them out of source control. If using an existing sample database instead,
-drop `mutation_reconciliation_orders` manually after checking the target schema
-(`dbo.mutation_reconciliation_orders` on SQL Server, and
-`system.mutation_reconciliation_orders` for the Oracle setup above).
+Delete the three generated files in `EXAMPLE_WORK_DIR` when finished. A fresh
+working directory is required for the next `configure` run.
 
 ## Automated verification
 
-The integration suite reads these same schema, template, and JSON files and
-uses temporary databases to exercise response cuts, competing writes, and read
-unavailability. The manual calls above do not inject a connection failure.
+`it/mutation_reconciliation_test.go` uses the same schemas and capability
+templates, with REST/MCP requests defined in the test. It exercises response
+cuts before and after commit, competing writes, UNIQUE conflicts, and read
+unavailability on real databases. The local helper is only for the manual
+post-completion exercise; it does not replace those tests.
 
-To run only the SQL Server reconciliation scenarios, run this from the OSS
-repository root:
+To select just the SQL Server reconciliation scenarios, run from the OSS root:
 
 ```bash
 ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it \
@@ -347,7 +231,7 @@ ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it \
   -count=1 -timeout 30m -v -args -onprest-it-db=sqlserver
 ```
 
-Change `sqlserver` to another supported database or `all`. This command starts
-and cleans up its own containers; it does not use the manually started database.
-See [Test Commands](https://docs.onprest.viewlegacy.com/reference/test-commands)
-for the wider integration and release gates.
+Change `sqlserver` to `postgres`, `mysql`, `oracle`, or `all`. The test starts and
+cleans up its own containers independently of the manual example. See
+[Test Commands](https://docs.onprest.viewlegacy.com/reference/test-commands)
+for integration and release gates.

@@ -88,7 +88,7 @@ func TestContainerDBDriverMutationReconciliation(t *testing.T) {
 			waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
 
 			proxy := newMutationReconciliationHTTPProxy(t, baseURL)
-			runReconciliationScenarios(t, repo, driver, dbCfg, baseURL, proxy, secrets.APIKey)
+			runReconciliationScenarios(t, driver, dbCfg, baseURL, proxy, secrets.APIKey)
 
 			t.Run("read-capability-unavailable", func(t *testing.T) {
 				// Read unavailability is tested after all writes have completed. The
@@ -109,25 +109,25 @@ func TestContainerDBDriverMutationReconciliation(t *testing.T) {
 	}
 }
 
-func runReconciliationScenarios(t *testing.T, repo, driver string, cfg postgresConfig, baseURL string, proxy *mutationReconciliationHTTPProxy, apiKey string) {
+func runReconciliationScenarios(t *testing.T, driver string, cfg postgresConfig, baseURL string, proxy *mutationReconciliationHTTPProxy, apiKey string) {
 	t.Helper()
 
-	fixtures := loadMutationReconciliationFixtures(t, repo)
+	fixtures := mutationReconciliationRequests()
 	want := decodeReconciliationRESTPayload(t, fixtures.restCreate)
 	assertMutationReconciliationFixtures(t, fixtures, want)
 
-	t.Run("published-json-fixtures", func(t *testing.T) {
+	t.Run("rest-mcp-requests", func(t *testing.T) {
 		status, body, err := postMutationRequest(proxy.client(), proxy.URL(), apiKey, "create_order", fixtures.restCreate, "normal")
 		if err != nil {
-			t.Fatalf("published REST create request: %v", err)
+			t.Fatalf("REST create request: %v", err)
 		}
 		assertMutationCount(t, status, body, 1)
 		status, body, err = postMutationRequest(proxy.client(), proxy.URL(), apiKey, "reconcile_order", fixtures.restReconcile, "normal")
 		if err != nil {
-			t.Fatalf("published REST reconcile request: %v", err)
+			t.Fatalf("REST reconcile request: %v", err)
 		}
 		if status != http.StatusOK {
-			t.Fatalf("published REST reconcile status=%d body=%s", status, body)
+			t.Fatalf("REST reconcile status=%d body=%s", status, body)
 		}
 		assertReconciliationRows(t, body, &want)
 		deleteReconciliationOrder(t, driver, cfg, want.ExternalRequestID)
@@ -197,7 +197,7 @@ func runReconciliationScenarios(t *testing.T, repo, driver string, cfg postgresC
 		assertReconciliationAttemptDelta(t, driver, cfg, attemptsBefore, 1)
 		status, body, err := postMCPMutationRequest(proxy.client(), proxy.URL(), apiKey, fixtures.mcpReconcile, "normal")
 		if err != nil {
-			t.Fatalf("published MCP reconcile request: %v", err)
+			t.Fatalf("MCP reconcile request: %v", err)
 		}
 		if status != http.StatusOK {
 			t.Fatalf("post-commit MCP reconciliation status=%d body=%s", status, body)
@@ -323,24 +323,42 @@ func waitForConcurrentReconciliationRead(t *testing.T, driver string, cfg postgr
 	t.Log("observed the real reconciliation response after its DB read completed before releasing the update gate")
 }
 
-func loadMutationReconciliationFixtures(t *testing.T, repo string) mutationReconciliationFixtures {
-	t.Helper()
-	read := func(name string) []byte {
-		path := filepath.Join(repo, "examples", "mutation-reconciliation", name)
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read published mutation reconciliation fixture %s: %v", name, err)
-		}
-		if len(body) == 0 {
-			t.Fatalf("published mutation reconciliation fixture %s is empty", name)
-		}
-		return body
-	}
+func mutationReconciliationRequests() mutationReconciliationFixtures {
 	return mutationReconciliationFixtures{
-		restCreate:    read("rest-create.json"),
-		restReconcile: read("rest-reconcile.json"),
-		mcpCreate:     read("mcp-create.json"),
-		mcpReconcile:  read("mcp-reconcile.json"),
+		restCreate: []byte(`{
+  "external_request_id": "req-20260906-001",
+  "product_code": "SKU-001",
+  "quantity": 2,
+  "customer_code": "CUST-001"
+}`),
+		restReconcile: []byte(`{
+  "external_request_id": "req-20260906-001"
+}`),
+		mcpCreate: []byte(`{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "create_order",
+    "arguments": {
+      "external_request_id": "req-20260906-001",
+      "product_code": "SKU-001",
+      "quantity": 2,
+      "customer_code": "CUST-001"
+    }
+  }
+}`),
+		mcpReconcile: []byte(`{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "reconcile_order",
+    "arguments": {
+      "external_request_id": "req-20260906-001"
+    }
+  }
+}`),
 	}
 }
 
@@ -348,10 +366,10 @@ func decodeReconciliationRESTPayload(t *testing.T, body []byte) reconciliationPa
 	t.Helper()
 	var payload reconciliationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		t.Fatalf("decode published REST create fixture: %v", err)
+		t.Fatalf("decode REST create request: %v", err)
 	}
 	if payload.ExternalRequestID == "" || payload.ProductCode == "" || payload.Quantity <= 0 || payload.CustomerCode == "" {
-		t.Fatalf("published REST create fixture omitted business fields: %#v", payload)
+		t.Fatalf("REST create request omitted business fields: %#v", payload)
 	}
 	return payload
 }
@@ -362,10 +380,10 @@ func assertMutationReconciliationFixtures(t *testing.T, fixtures mutationReconci
 		ExternalRequestID string `json:"external_request_id"`
 	}
 	if err := json.Unmarshal(fixtures.restReconcile, &restReconcile); err != nil {
-		t.Fatalf("decode published REST reconcile fixture: %v", err)
+		t.Fatalf("decode REST reconcile request: %v", err)
 	}
 	if restReconcile.ExternalRequestID != want.ExternalRequestID {
-		t.Fatalf("published REST reconcile ID=%q want %q", restReconcile.ExternalRequestID, want.ExternalRequestID)
+		t.Fatalf("REST reconcile ID=%q want %q", restReconcile.ExternalRequestID, want.ExternalRequestID)
 	}
 	var mcpCreate struct {
 		Params struct {
@@ -374,10 +392,10 @@ func assertMutationReconciliationFixtures(t *testing.T, fixtures mutationReconci
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(fixtures.mcpCreate, &mcpCreate); err != nil {
-		t.Fatalf("decode published MCP create fixture: %v", err)
+		t.Fatalf("decode MCP create fixture: %v", err)
 	}
 	if mcpCreate.Params.Name != "create_order" || mcpCreate.Params.Arguments != want {
-		t.Fatalf("published MCP create fixture=%#v want create_order payload=%#v", mcpCreate, want)
+		t.Fatalf("MCP create fixture=%#v want create_order payload=%#v", mcpCreate, want)
 	}
 	var mcpReconcile struct {
 		Params struct {
@@ -388,10 +406,10 @@ func assertMutationReconciliationFixtures(t *testing.T, fixtures mutationReconci
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(fixtures.mcpReconcile, &mcpReconcile); err != nil {
-		t.Fatalf("decode published MCP reconcile fixture: %v", err)
+		t.Fatalf("decode MCP reconcile fixture: %v", err)
 	}
 	if mcpReconcile.Params.Name != "reconcile_order" || mcpReconcile.Params.Arguments.ExternalRequestID != want.ExternalRequestID {
-		t.Fatalf("published MCP reconcile fixture=%#v want ID=%q", mcpReconcile, want.ExternalRequestID)
+		t.Fatalf("MCP reconcile fixture=%#v want ID=%q", mcpReconcile, want.ExternalRequestID)
 	}
 }
 
@@ -535,14 +553,16 @@ func renderMutationReconciliationCapability(t *testing.T, repo, dir, driver stri
 		t.Fatalf("read mutation reconciliation capability template: %v", err)
 	}
 	rendered := string(content)
-	rendered = strings.ReplaceAll(rendered, "host: replace-me", "host: "+yamlString(db.Host))
-	rendered = strings.ReplaceAll(rendered, "name: replace-me", "name: "+yamlString(db.Name))
-	rendered = strings.ReplaceAll(rendered, "user: replace-me", "user: "+yamlString(db.User))
-	rendered = strings.ReplaceAll(rendered, "password: replace-me", "password: "+yamlString(db.Password))
-	rendered = strings.ReplaceAll(rendered, "port: 5432", "port: "+db.Port)
-	rendered = strings.ReplaceAll(rendered, "port: 3306", "port: "+db.Port)
-	rendered = strings.ReplaceAll(rendered, "port: 1433", "port: "+db.Port)
-	rendered = strings.ReplaceAll(rendered, "port: 1521", "port: "+db.Port)
+	start := strings.Index(rendered, "database:\n")
+	if start < 0 {
+		t.Fatal("template missing database section")
+	}
+	end := strings.Index(rendered[start:], "\ngateway:") + start
+	if end <= start {
+		t.Fatal("template missing database section")
+	}
+	database := "database:\n  driver: " + driver + "\n  host: " + yamlString(db.Host) + "\n  port: " + db.Port + "\n  name: " + yamlString(db.Name) + "\n  user: " + yamlString(db.User) + "\n  password: " + yamlString(db.Password) + "\n"
+	rendered = rendered[:start] + database + rendered[end:]
 	rendered = strings.ReplaceAll(rendered, "url: wss://replace-me:443/ws/agent", "url: "+yamlString(gatewayURL))
 	rendered = strings.ReplaceAll(rendered, "agent_private_key: replace-me", "agent_private_key: "+yamlString(agentPrivateKey))
 	if strings.Contains(rendered, "replace-me") {
@@ -569,16 +589,14 @@ func setupMutationReconciliationFixture(t *testing.T, repo, driver string, cfg p
 			t.Fatalf("%s drop reconciliation fixture: %v\n%s", driver, err, statement)
 		}
 	}
-	for _, name := range []string{"schema", "seed"} {
-		path := reconciliationFixturePath(repo, driver, name)
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s reconciliation fixture: %v", driver, err)
-		}
-		for _, statement := range splitReconciliationSQL(string(content)) {
-			if _, err := db.ExecContext(ctx, statement); err != nil {
-				t.Fatalf("%s apply %s reconciliation fixture: %v\n%s", driver, name, err, statement)
-			}
+	path := reconciliationFixturePath(repo, driver, "schema")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s reconciliation schema: %v", driver, err)
+	}
+	for _, statement := range splitReconciliationSQL(string(content)) {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("%s apply reconciliation schema: %v\n%s", driver, err, statement)
 		}
 	}
 	for _, statement := range reconciliationAttemptStatements(driver) {
