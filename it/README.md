@@ -4,7 +4,7 @@ Integration tests are build-tagged and do not run with the default unit test com
 
 DB-backed integration tests always start temporary DB containers with testcontainers, render the container connection details into the test capability YAML, and then run the agent against that YAML. Self-hosted DB overrides through `ONPREST_IT_POSTGRES_*`, `ONPREST_IT_MYSQL_*`, `ONPREST_IT_SQLSERVER_*`, `ONPREST_IT_ORACLE_*`, or `ONPREST_IT_POSTGRES_READONLY_*` are intentionally not supported.
 
-The four-database matrix includes SELECT compatibility plus INSERT/UPDATE/DELETE native affected counts, zero-row success, MCP mutation, constraint normalization, startup EXPLAIN behavior, and persisted DB state. Container-required gates must use `ONPREST_IT_REQUIRE_CONTAINERS=1`; a skipped DB is not a release pass.
+The four-database matrix includes SELECT compatibility plus INSERT/UPDATE/DELETE native affected counts, zero-row success, MCP mutation, constraint normalization, startup EXPLAIN behavior, persisted DB state, and the `TestContainerDBDriverMutationReconciliation` lost-response/reconciliation scenarios using the published REST/MCP fixtures. Container-required gates must use `ONPREST_IT_REQUIRE_CONTAINERS=1`; a skipped DB is not a release pass.
 
 ## Main Commands
 

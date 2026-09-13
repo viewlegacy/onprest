@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "create_order",
+    "arguments": {
+      "external_request_id": "req-20260906-001",
+      "product_code": "SKU-001",
+      "quantity": 2,
+      "customer_code": "CUST-001"
+    }
+  }
+}

@@ -1,0 +1,94 @@
+service:
+  title: Mutation reconciliation example (SQL Server)
+  version: 0.1.0
+  description: Insert an order and verify its complete business payload by external request ID.
+
+database:
+  driver: sqlserver
+  host: replace-me
+  port: 1433
+  name: replace-me
+  user: replace-me
+  password: replace-me
+
+gateway:
+  url: wss://replace-me:443/ws/agent
+  agent_private_key: replace-me
+
+defaults:
+  timeout: 5s
+  max_bytes: 128KB
+
+capabilities:
+  create_order:
+    description: Insert one order using a caller-chosen unique external request ID.
+    sql: /* onprest_reconciliation_insert */ insert into dbo.mutation_reconciliation_orders (external_request_id, product_code, quantity, customer_code) values (:external_request_id, :product_code, :quantity, :customer_code)
+    annotations:
+      read_only: false
+      destructive: false
+      idempotent: false
+      open_world: false
+    params:
+      external_request_id:
+        type: string
+        required: true
+        minLength: 16
+        maxLength: 16
+        pattern: "^req-[0-9]{8}-[0-9]{3}$"
+        description: Preallocated ASCII business request ID.
+      product_code:
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 64
+        pattern: "^[A-Z0-9-]+$"
+        description: Product code to compare during reconciliation.
+      quantity:
+        type: integer
+        required: true
+        minimum: 1
+        maximum: 100000
+        description: Ordered quantity to compare during reconciliation.
+      customer_code:
+        type: string
+        required: true
+        minLength: 1
+        maxLength: 64
+        pattern: "^[A-Z0-9-]+$"
+        description: Customer code to compare during reconciliation.
+    policy:
+      readonly: false
+      timeout: 10s
+      max_bytes: 128KB
+      expose_in_openapi: true
+  reconcile_order:
+    description: Read the complete order payload for reconciliation by external request ID.
+    sql: select external_request_id, product_code, quantity, customer_code from dbo.mutation_reconciliation_orders where external_request_id = :external_request_id
+    annotations:
+      read_only: true
+      destructive: false
+      idempotent: true
+      open_world: false
+    params:
+      external_request_id:
+        type: string
+        required: true
+        minLength: 16
+        maxLength: 16
+        pattern: "^req-[0-9]{8}-[0-9]{3}$"
+        description: Preallocated ASCII business request ID.
+    policy:
+      readonly: true
+      timeout: 5s
+      max_rows: 1
+      max_bytes: 128KB
+      expose_in_openapi: true
+    result:
+      external_request_id:
+        type: string
+      product_code:
+        type: string
+      quantity:
+        type: integer
+      customer_code:
+        type: string
