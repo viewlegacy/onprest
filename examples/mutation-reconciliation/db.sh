@@ -1,28 +1,60 @@
 #!/usr/bin/env bash
-# Disposable, loopback-only databases for this example. No existing DB is modified.
+# Operate only this example's disposable, loopback-only database containers.
 set -euo pipefail
 cd "$(dirname "$0")"
 if [[ $# != 2 ]]; then
-  echo "Usage: $0 up|down postgres|mysql|sqlserver|oracle" >&2
+  echo "Usage: $0 up|down|change-order postgres|mysql|sqlserver|oracle" >&2
   exit 2
 fi
 action=$1
 db=$2
 case "$db" in postgres|mysql|sqlserver|oracle) ;; *) echo "Unknown database: $db" >&2; exit 2 ;; esac
-    docker info >/dev/null
+docker info >/dev/null
 name="onprest-recon-$db"
 label="com.onprest.example=mutation-reconciliation"
-if [[ "$action" == down ]]; then
+case "$action" in up|down|change-order) ;; *) echo "Unknown action: $action" >&2; exit 2 ;; esac
+if [[ "$action" == down || "$action" == change-order ]]; then
   if ! docker container inspect "$name" >/dev/null 2>&1; then
     echo "No example container: $name"
-    exit 0
+    [[ "$action" == down ]] && exit 0
+    exit 1
   fi
   owner=$(docker inspect --format '{{ index .Config.Labels "com.onprest.example" }}' "$name")
-  [[ "$owner" == mutation-reconciliation ]] || { echo "Refusing to remove an unrelated container: $name" >&2; exit 1; }
-  docker rm -f -v "$name"
+  [[ "$owner" == mutation-reconciliation ]] || { echo "Refusing to $action an unrelated container: $name" >&2; exit 1; }
+  if [[ "$action" == down ]]; then
+    docker rm -f -v "$name"
+    exit 0
+  fi
+  # Simulate a competing writer only in this example's own database.
+  case "$db" in
+    postgres)
+      docker exec onprest-recon-postgres \
+        psql -v ON_ERROR_STOP=1 -U onprest_admin -d reconcile \
+        -c "UPDATE mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
+      ;;
+    mysql)
+      docker exec -e MYSQL_PWD=Onprest-admin-1 onprest-recon-mysql \
+        mysql -u root reconcile \
+        -e "UPDATE mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
+      ;;
+    sqlserver)
+      docker exec -e SQLCMDPASSWORD=Onprest-admin-1 onprest-recon-sqlserver \
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -d reconcile \
+        -Q "UPDATE dbo.mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
+      ;;
+    oracle)
+      docker exec -i onprest-recon-oracle \
+        sqlplus -s -L system/Onprest-admin-1@localhost:1521/FREEPDB1 <<'SQL'
+WHENEVER SQLERROR EXIT FAILURE
+UPDATE system.mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002';
+COMMIT;
+EXIT
+SQL
+      ;;
+  esac
+  echo "Read req-20260906-002 through reconcile_order to compare it with the original request."
   exit 0
 fi
-[[ "$action" == up ]] || { echo "Unknown action: $action" >&2; exit 2; }
 if docker container inspect "$name" >/dev/null 2>&1; then
   echo "$name already exists; use '$0 down $db' before starting a fresh example." >&2
   exit 1

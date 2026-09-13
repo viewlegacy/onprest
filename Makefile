@@ -1,4 +1,4 @@
-.PHONY: build build-cross quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
+.PHONY: build build-cross quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down reconciliation-change-order test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
 
 DIST_DIR ?= dist
 RECONCILIATION_DB ?= postgres
@@ -24,6 +24,9 @@ reconciliation-db:
 
 reconciliation-db-down:
 	bash examples/mutation-reconciliation/db.sh down "$(RECONCILIATION_DB)"
+
+reconciliation-change-order:
+	bash examples/mutation-reconciliation/db.sh change-order "$(RECONCILIATION_DB)"
 
 test:
 	go test ./...

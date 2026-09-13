@@ -228,47 +228,15 @@ whether to resend.
 
 ### Changed contents
 
-Simulate another writer changing the `002` order after the INSERT. Run only the
-command for your selected database, using its container's administrative client.
-The Agent user intentionally has no UPDATE permission in this INSERT example.
-
-**PostgreSQL**
+Simulate another writer changing the `002` order after the INSERT:
 
 ```bash
-docker exec onprest-recon-postgres \
-  psql -v ON_ERROR_STOP=1 -U onprest_admin -d reconcile \
-  -c "UPDATE mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
+make reconciliation-change-order
 ```
 
-**MySQL**
-
-```bash
-docker exec -e MYSQL_PWD=Onprest-admin-1 onprest-recon-mysql \
-  mysql -u root reconcile \
-  -e "UPDATE mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
-```
-
-**SQL Server**
-
-```bash
-docker exec -e SQLCMDPASSWORD=Onprest-admin-1 onprest-recon-sqlserver \
-  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -d reconcile \
-  -Q "UPDATE dbo.mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
-```
-
-**Oracle**
-
-```bash
-docker exec -i onprest-recon-oracle \
-  sqlplus -s -L system/Onprest-admin-1@localhost:1521/FREEPDB1 <<'SQL'
-WHENEVER SQLERROR EXIT FAILURE
-UPDATE system.mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002';
-COMMIT;
-EXIT
-SQL
-```
-
-After running your database's command, read through the Gateway again:
+This uses the selected `RECONCILIATION_DB` container's administrative client to
+set that order's quantity to `5`. The Agent user's permissions remain INSERT and
+SELECT. Read through the Gateway again:
 
 ```bash
 curl --fail-with-body -sS \
