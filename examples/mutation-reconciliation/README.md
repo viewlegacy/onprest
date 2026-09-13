@@ -13,50 +13,41 @@ for operational decisions and UPDATE/DELETE considerations.
 
 ## Before you start
 
-Have Docker running, Go (the version in the repository's `go.mod`), curl, a
-Unix shell, and the `onprest-gateway` and `onprest-agent` binaries. You can use
-prebuilt binaries or run `make build` from the OSS repository root to build them
-in `dist/`. Go runs the local example helper; it is not required to deploy the
-Gateway or Agent. SQL Server's amd64 container requires amd64 emulation on an
-ARM Docker host.
+Have Docker running, make, curl, a Unix shell, and the `onprest-gateway` and
+`onprest-agent` binaries. You can use prebuilt binaries or run `make build`
+from the OSS repository root to build them in `dist/`. Go is needed only for
+the response-loss exercise in step 3 (use the version in `go.mod`). SQL Server's
+amd64 container requires amd64 emulation on an ARM Docker host.
 
-Run these commands from `examples/mutation-reconciliation`. Choose one database
-and the absolute path to your binaries:
+Run the commands from the OSS repository root, which contains `Makefile`.
+Choose one database and the absolute path to your binaries:
 
 ```bash
-RECONCILIATION_DB=sqlserver
+export RECONCILIATION_DB=sqlserver
 ONPREST_BIN_DIR=/absolute/path/to/onprest-binaries
-EXAMPLE_WORK_DIR=$(mktemp -d)
 ```
 
 `RECONCILIATION_DB` selects `postgres`, `mysql`, `sqlserver`, or `oracle`.
 `ONPREST_BIN_DIR` is the directory containing the two executables.
-`EXAMPLE_WORK_DIR` holds generated configuration and credentials for this run.
-Keep it out of source control.
 
-## 1. Start the database and prepare Onprest
+## 1. Start the database and Onprest
 
 ```bash
-./db.sh up "$RECONCILIATION_DB"
-go run ./local.go configure "$RECONCILIATION_DB" "$EXAMPLE_WORK_DIR" "$ONPREST_BIN_DIR"
+make reconciliation-db
+"$ONPREST_BIN_DIR/onprest-agent" validate \
+  --config "examples/mutation-reconciliation/capability.$RECONCILIATION_DB.yaml"
 ```
 
-The first command starts only the selected disposable container, waits for it
-to be ready, applies `schema.<database>.sql`, and creates `capability_user` with
-INSERT and SELECT permissions (plus startup validation permissions where
-needed). The table starts empty. Image download and database startup can take
-several minutes.
+The Makefile calls `db.sh` to start only the selected disposable container,
+wait for it to be ready, apply `schema.<database>.sql`, and create
+`capability_user` with INSERT and SELECT permissions (plus startup validation
+permissions where needed). The table starts empty. Image download and database
+startup can take several minutes. Without `RECONCILIATION_DB`, the Makefile
+defaults to PostgreSQL.
 
-The second command fills the selected capability template, generates a fresh
-Agent key pair and an API key scoped to `create_order` and `reconcile_order`,
-and validates the configuration against the database. No keys need copying.
-It writes these private files to the working directory:
-
-- `capability.yaml`: the Agent configuration with the two capabilities.
-- `gateway.env`: Gateway settings and the binary/working-directory paths.
-- `request.env`: Gateway URL and the plaintext API key used by curl.
-
-The fixed local connections are:
+Each `capability.<database>.yaml` is ready to use with the matching database.
+All four use the same local Agent key pair and `gateway.env`; no configuration
+generation or key copying is needed.
 
 | Database | Container | Loopback port | Database/service |
 |---|---|---|---|
@@ -65,37 +56,39 @@ The fixed local connections are:
 | SQL Server | `onprest-recon-sqlserver` | `51433` | `reconcile` |
 | Oracle | `onprest-recon-oracle` | `51521` | `FREEPDB1` |
 
-The templates already contain these connections and the local sample user and
-password. The helper targets these containers; it does not initialize an
-existing database. If a container name or port is occupied, stop your previous
-example before starting another. The local credentials and loopback-only
-`ws://` connection are for this disposable example. For deployment, use your
-own database settings and follow [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment).
+The YAML and env files contain fixed local example credentials. The database
+helper initializes only its disposable containers. If a container name or port
+is occupied, stop your previous example before starting another. For deployment,
+use your own credentials and database settings and follow
+[Deployment](https://docs.onprest.viewlegacy.com/operations/deployment).
 
-Start the Gateway in another terminal. Substitute the actual working-directory
-path printed by `configure`:
+Start the Gateway in another terminal, also from the OSS repository root.
+Set the same binary-directory path:
 
 ```bash
-EXAMPLE_WORK_DIR=/actual/path/printed/by/configure
+ONPREST_BIN_DIR=/absolute/path/to/onprest-binaries
 set -a
-. "$EXAMPLE_WORK_DIR/gateway.env"
+. examples/mutation-reconciliation/gateway.env
 set +a
 "$ONPREST_BIN_DIR/onprest-gateway"
 ```
 
-Start the Agent in a third terminal with the same working-directory path:
+Start the Agent in a third terminal, from the OSS repository root, using the
+same binary directory and selected database:
 
 ```bash
-EXAMPLE_WORK_DIR=/actual/path/printed/by/configure
-. "$EXAMPLE_WORK_DIR/gateway.env"
-"$ONPREST_BIN_DIR/onprest-agent" --config "$EXAMPLE_WORK_DIR/capability.yaml"
+ONPREST_BIN_DIR=/absolute/path/to/onprest-binaries
+RECONCILIATION_DB=sqlserver
+"$ONPREST_BIN_DIR/onprest-agent" \
+  --config "examples/mutation-reconciliation/capability.$RECONCILIATION_DB.yaml"
 ```
 
-In your original terminal, load the request settings and wait until health
-reports `agent_connected: true`:
+In your original terminal, set the local example API key. It matches the hash
+in `gateway.env`. Wait until health reports `agent_connected: true`:
 
 ```bash
-. "$EXAMPLE_WORK_DIR/request.env"
+GATEWAY_URL=http://127.0.0.1:58080
+ONPREST_API_KEY='klJbEVYkjNUMXVN8PwysRdv4U3pDf0wtuS7_DMlGZdA'
 curl --fail-with-body -sS "$GATEWAY_URL/healthz"
 ```
 
@@ -129,10 +122,10 @@ Expected result:
 
 ## 3. Lose a response, then confirm the order
 
-In another terminal, run this from the example directory:
+In another terminal, run this from the OSS repository root:
 
 ```bash
-go run ./local.go lose-response
+go run ./examples/mutation-reconciliation/response-loss.go
 ```
 
 Wait for `Ready on http://127.0.0.1:58081`. This local helper forwards one INSERT
@@ -171,7 +164,7 @@ Do not interpret every missing response as a successful commit.
 
 ### Use MCP instead
 
-For an MCP response-loss exercise, restart `go run ./local.go lose-response`,
+For an MCP response-loss exercise, restart `go run ./examples/mutation-reconciliation/response-loss.go`,
 wait for its ready message, and send a new request ID:
 
 ```bash
@@ -209,16 +202,13 @@ waiting for a request). Then remove the selected example container and its
 volumes, including the database:
 
 ```bash
-./db.sh down "$RECONCILIATION_DB"
+make reconciliation-db-down
 ```
-
-Delete the three generated files in `EXAMPLE_WORK_DIR` when finished. A fresh
-working directory is required for the next `configure` run.
 
 ## Automated verification
 
 `it/mutation_reconciliation_test.go` uses the same schemas and capability
-templates, with REST/MCP requests defined in the test. It exercises response
+YAML files, with REST/MCP requests defined in the test. It exercises response
 cuts before and after commit, competing writes, UNIQUE conflicts, and read
 unavailability on real databases. The local helper is only for the manual
 post-completion exercise; it does not replace those tests.

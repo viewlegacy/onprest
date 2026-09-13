@@ -547,27 +547,32 @@ func reconciliationPayloadFromRows(t *testing.T, body []byte) reconciliationPayl
 
 func renderMutationReconciliationCapability(t *testing.T, repo, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey string) string {
 	t.Helper()
-	templatePath := filepath.Join(repo, "examples", "mutation-reconciliation", "capability."+driver+".yaml.tmpl")
-	content, err := os.ReadFile(templatePath)
+	examplePath := filepath.Join(repo, "examples", "mutation-reconciliation", "capability."+driver+".yaml")
+	content, err := os.ReadFile(examplePath)
 	if err != nil {
-		t.Fatalf("read mutation reconciliation capability template: %v", err)
+		t.Fatalf("read mutation reconciliation capability example: %v", err)
 	}
 	rendered := string(content)
 	start := strings.Index(rendered, "database:\n")
 	if start < 0 {
-		t.Fatal("template missing database section")
+		t.Fatal("example missing database section")
 	}
 	end := strings.Index(rendered[start:], "\ngateway:") + start
 	if end <= start {
-		t.Fatal("template missing database section")
+		t.Fatal("example missing database section")
 	}
 	database := "database:\n  driver: " + driver + "\n  host: " + yamlString(db.Host) + "\n  port: " + db.Port + "\n  name: " + yamlString(db.Name) + "\n  user: " + yamlString(db.User) + "\n  password: " + yamlString(db.Password) + "\n"
 	rendered = rendered[:start] + database + rendered[end:]
-	rendered = strings.ReplaceAll(rendered, "url: wss://replace-me:443/ws/agent", "url: "+yamlString(gatewayURL))
-	rendered = strings.ReplaceAll(rendered, "agent_private_key: replace-me", "agent_private_key: "+yamlString(agentPrivateKey))
-	if strings.Contains(rendered, "replace-me") {
-		t.Fatalf("mutation reconciliation capability still has placeholders for %s", driver)
+	gatewayStart := strings.Index(rendered, "gateway:\n")
+	if gatewayStart < 0 {
+		t.Fatal("example missing gateway section")
 	}
+	gatewayEnd := strings.Index(rendered[gatewayStart:], "\ndefaults:") + gatewayStart
+	if gatewayEnd <= gatewayStart {
+		t.Fatal("example missing gateway section")
+	}
+	gateway := "gateway:\n  url: " + yamlString(gatewayURL) + "\n  agent_private_key: " + yamlString(agentPrivateKey) + "\n"
+	rendered = rendered[:gatewayStart] + gateway + rendered[gatewayEnd:]
 	return writeFile(t, filepath.Join(dir, "capability.reconciliation."+driver+".yaml"), rendered)
 }
 

@@ -1,3 +1,4 @@
+# Local example configuration. Use your own credentials for deployment.
 service:
   title: Mutation reconciliation example (Oracle)
   version: 0.1.0
@@ -12,8 +13,8 @@ database:
   password: Onprest-example-1
 
 gateway:
-  url: wss://replace-me:443/ws/agent
-  agent_private_key: replace-me
+  url: ws://127.0.0.1:58080/ws/agent
+  agent_private_key: MIwEsQAbbEG-97rXqZb-nkMUYZ2ukfqBp5eMSJCOKNPqa5dvaNFjH6nNhjqa2DMG6UzO0UAhz3cf6IAFcZQlVQ
 
 defaults:
   timeout: 5s

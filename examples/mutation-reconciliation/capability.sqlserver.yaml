@@ -1,19 +1,20 @@
+# Local example configuration. Use your own credentials for deployment.
 service:
-  title: Mutation reconciliation example (PostgreSQL)
+  title: Mutation reconciliation example (SQL Server)
   version: 0.1.0
   description: Insert an order and verify its complete business payload by external request ID.
 
 database:
-  driver: postgres
+  driver: sqlserver
   host: 127.0.0.1
-  port: 55433
+  port: 51433
   name: reconcile
   user: capability_user
   password: Onprest-example-1
 
 gateway:
-  url: wss://replace-me:443/ws/agent
-  agent_private_key: replace-me
+  url: ws://127.0.0.1:58080/ws/agent
+  agent_private_key: MIwEsQAbbEG-97rXqZb-nkMUYZ2ukfqBp5eMSJCOKNPqa5dvaNFjH6nNhjqa2DMG6UzO0UAhz3cf6IAFcZQlVQ
 
 defaults:
   timeout: 5s
@@ -22,7 +23,7 @@ defaults:
 capabilities:
   create_order:
     description: Insert one order using a caller-chosen unique external request ID.
-    sql: /* onprest_reconciliation_insert */ insert into mutation_reconciliation_orders (external_request_id, product_code, quantity, customer_code) values (:external_request_id, :product_code, :quantity, :customer_code)
+    sql: /* onprest_reconciliation_insert */ insert into dbo.mutation_reconciliation_orders (external_request_id, product_code, quantity, customer_code) values (:external_request_id, :product_code, :quantity, :customer_code)
     annotations:
       read_only: false
       destructive: false
@@ -63,7 +64,7 @@ capabilities:
       expose_in_openapi: true
   reconcile_order:
     description: Read the complete order payload for reconciliation by external request ID.
-    sql: select external_request_id, product_code, quantity, customer_code from mutation_reconciliation_orders where external_request_id = :external_request_id
+    sql: select external_request_id, product_code, quantity, customer_code from dbo.mutation_reconciliation_orders where external_request_id = :external_request_id
     annotations:
       read_only: true
       destructive: false

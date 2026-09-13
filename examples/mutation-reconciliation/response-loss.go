@@ -1,4 +1,4 @@
-// Local helpers for this example; use the separately distributed Gateway and Agent binaries.
+// Discard one successful INSERT response for the local reconciliation example.
 package main
 
 import (
@@ -10,127 +10,20 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
 func main() {
-	var err error
-	switch {
-	case len(os.Args) == 5 && os.Args[1] == "configure":
-		err = configure(os.Args[2], os.Args[3], os.Args[4])
-	case len(os.Args) == 2 && os.Args[1] == "lose-response":
-		err = loseResponse()
-	default:
-		err = errors.New("usage: go run ./local.go configure postgres|mysql|sqlserver|oracle WORK_DIR BIN_DIR\n       go run ./local.go lose-response")
+	if len(os.Args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: go run ./examples/mutation-reconciliation/response-loss.go")
+		os.Exit(2)
 	}
-	if err != nil {
+	if err := loseResponse(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-}
-
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-}
-
-func configure(db, workDir, binDir string) error {
-	switch db {
-	case "postgres", "mysql", "sqlserver", "oracle":
-	default:
-		return fmt.Errorf("unknown database: %s", db)
-	}
-	var err error
-	workDir, err = filepath.Abs(workDir)
-	if err != nil {
-		return err
-	}
-	binDir, err = filepath.Abs(binDir)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(workDir, 0700); err != nil {
-		return err
-	}
-	names := []string{"capability.yaml", "gateway.env", "request.env"}
-	for _, name := range names {
-		if _, err := os.Lstat(filepath.Join(workDir, name)); !os.IsNotExist(err) {
-			return fmt.Errorf("use a fresh working directory; %s already exists or cannot be checked", name)
-		}
-	}
-	template, err := os.ReadFile("capability." + db + ".yaml.tmpl")
-	if err != nil {
-		return err
-	}
-	var keys struct {
-		Private string `json:"agent_private_key"`
-		Public  string `json:"agent_public_key"`
-	}
-	var api struct {
-		Key  string `json:"api_key"`
-		Hash string `json:"key_hash"`
-	}
-	gateway := filepath.Join(binDir, "onprest-gateway")
-	if err := commandJSON(gateway, &keys, "create-agent-secret"); err != nil {
-		return err
-	}
-	if err := commandJSON(gateway, &api, "create-key", "--name", "reconciliation", "--capabilities", "create_order,reconcile_order"); err != nil {
-		return err
-	}
-	if keys.Private == "" || keys.Public == "" || api.Key == "" || api.Hash == "" {
-		return errors.New("key generation omitted required fields")
-	}
-	config := strings.ReplaceAll(string(template), "url: wss://replace-me:443/ws/agent", "url: ws://127.0.0.1:58080/ws/agent")
-	config = strings.ReplaceAll(config, "agent_private_key: replace-me", "agent_private_key: "+keys.Private)
-	if strings.Contains(config, "replace-me") {
-		return errors.New("unfilled configuration placeholder")
-	}
-	records, err := json.Marshal([]any{map[string]any{"name": "reconciliation", "key_hash": api.Hash, "capabilities": []string{"create_order", "reconcile_order"}}})
-	if err != nil {
-		return err
-	}
-	common := "ONPREST_BIN_DIR=" + shellQuote(binDir) + "\nEXAMPLE_WORK_DIR=" + shellQuote(workDir) + "\n"
-	files := []string{
-		config,
-		common + "GATEWAY_ADDR=127.0.0.1:58080\nGATEWAY_AGENT_PUBLIC_KEY=" + shellQuote(keys.Public) + "\nGATEWAY_API_KEYS_JSON=" + shellQuote(string(records)) + "\n",
-		"GATEWAY_URL=http://127.0.0.1:58080\nONPREST_API_KEY=" + shellQuote(api.Key) + "\n",
-	}
-	for i, name := range names {
-		f, err := os.OpenFile(filepath.Join(workDir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err != nil {
-			return err
-		}
-		_, writeErr := f.WriteString(files[i])
-		closeErr := f.Close()
-		if writeErr != nil {
-			return writeErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-	}
-	cmd := exec.Command(filepath.Join(binDir, "onprest-agent"), "validate", "--config", filepath.Join(workDir, "capability.yaml"))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("validate generated config: %w", err)
-	}
-	fmt.Printf("Configuration validated in %s\nGateway and Agent use gateway.env; curl requests use request.env.\n", workDir)
-	return nil
-}
-
-func commandJSON(binary string, result any, args ...string) error {
-	out, err := exec.Command(binary, args...).Output()
-	if err != nil {
-		return fmt.Errorf("%s %s failed: %w", filepath.Base(binary), args[0], err)
-	}
-	if err := json.Unmarshal(out, result); err != nil {
-		return fmt.Errorf("decode %s output: %w", args[0], err)
-	}
-	return nil
 }
 
 // Consume a successful upstream mutation response, then close the downstream
