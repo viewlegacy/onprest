@@ -19,6 +19,8 @@ import (
 
 const queryTimeoutDetail = "query exceeded policy.timeout"
 
+const affectedRowsExceededDetail = "affected rows exceed policy.max_affected_rows"
+
 func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.Response {
 	if req.Capability == "meta" {
 		return protocol.ResultResponse(req.ID, map[string]any{"data": BuildOpenAPI(r.cf), "response_kinds": responseKinds(r.cf)})
@@ -268,6 +270,9 @@ func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap Capabi
 	}
 	if count < 0 {
 		return failAfterRollback(errors.New("RowsAffected returned a negative count"), "AGENT_QUERY_FAILED", "database query failed")
+	}
+	if cap.Policy.MaxAffectedRows != nil && count > *cap.Policy.MaxAffectedRows {
+		return failAfterRollback(errors.New(affectedRowsExceededDetail), errorAffectedRowsExceeded, affectedRowsExceededDetail)
 	}
 	limit, err := maxBytes(cap.Policy)
 	if err != nil {

@@ -154,7 +154,7 @@ Instead of giving an AI agent a DSN, schema, or SQL executor, you give it narrow
 - `get_invoice_status`
 - `list_recent_shipments`
 
-Each tool is backed by a reviewed SQL statement, validated parameters, timeout and byte limits, plus SELECT-only row limits and result-field allow-list. DML ignores `max_rows`, forbids `result`, and returns only native affected count.
+Each tool is backed by a reviewed SQL statement, validated parameters, and execution limits. SELECT results use a field allow-list; mutations return affected count only.
 
 This makes MCP useful without turning the legacy database into an unrestricted AI-accessible surface.
 
@@ -218,7 +218,7 @@ Onprest is designed as if components may be compromised.
 - Unknown capability names are rejected by the agent.
 - Parameters are validated before SQL runs.
 - SQL parameters are bound through `database/sql`.
-- Policies can constrain readonly mode, timeout, max bytes, and OpenAPI/MCP exposure; `max_rows` applies only to SELECT.
+- Agent-owned policies restrict allowed operations, bound execution time, response size, and row counts, and control OpenAPI/MCP exposure.
 - SELECT output fields are constrained by the `result` allow-list. DML cannot define `result` and returns only `{"count": n}`.
 - Only one agent connection is accepted at a time.
 - Gateway stdout logs do not include request params or agent error details.

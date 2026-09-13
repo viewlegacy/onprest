@@ -2,7 +2,7 @@
 
 Onprest is designed to expose only agent-defined capabilities, not the database itself.
 
-The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions and return native affected count only after a successful commit. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions and return native affected count only after a successful commit. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
 
 ```text
 [API user / MCP client]

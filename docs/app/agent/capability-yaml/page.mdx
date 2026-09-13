@@ -8,7 +8,9 @@ Normal Agent startup and `onprest-agent validate --config PATH` use the same ful
 
 `policy.readonly` defaults to `true`. Omitted or `true` accepts one top-level `SELECT`; explicit `false` accepts one `SELECT`, `INSERT`, `UPDATE`, or `DELETE`. The agent rejects multiple statements, `WITH`, `MERGE`, procedure calls, DDL, transaction control, and DML `RETURNING`/`OUTPUT` during startup lint. Quotes and comments are scanned using the selected DB dialect, including nested block comments in PostgreSQL and SQL Server, so keywords or semicolons inside them do not become statements.
 
-`result` and `max_rows` apply only to SELECT. A DML capability must omit `result` (even `result: {}` is rejected). DML success is `{"count": n}`, where `n` is the driver's non-negative `RowsAffected()` value; zero is a successful result. `max_bytes` and `timeout` apply to both reads and mutations.
+SELECT uses `result` to allow-list output fields and `max_rows` to limit returned rows. DML must omit `result` and returns only `{"count": n}`, where `n` is the driver's non-negative `RowsAffected()` value; zero is a successful result. `max_affected_rows` can limit a mutation's affected count, while `max_bytes` and `timeout` apply to both reads and mutations. See [Policy](#policy) for these settings.
+
+This partial configuration shows a mutation capability to add to an existing file:
 
 ```yaml
 capabilities:
@@ -20,10 +22,13 @@ capabilities:
     policy:
       readonly: false
       timeout: 5s
+      max_affected_rows: 1
       max_bytes: 256KB
 ```
 
 ## Structure
+
+The following file-level example defines a SELECT capability:
 
 ```yaml
 service:
@@ -50,7 +55,6 @@ database:
     ca_file: /etc/onprest/db-ca.pem
     cert_file: /etc/onprest/db-client.pem
     key_file: /etc/onprest/db-client-key.pem
-    server_name: db.internal.example.com
 
 logging:
   max_size: 10MB
@@ -206,6 +210,7 @@ If neither `defaults` nor capability `policy` sets a value, the implementation d
 | `readonly` | `true` |
 | `timeout` | `5s` |
 | `max_rows` | `100` |
+| `max_affected_rows` | unlimited |
 | `max_bytes` | `1MB` |
 | `expose_in_openapi` | `true` |
 
@@ -271,12 +276,17 @@ Parameter definitions retain yaml.v3 anchor, alias, and `<<` merge behavior, inc
 | `readonly` | omitted/`true` accepts one `SELECT`; explicit `false` accepts one `SELECT`, `INSERT`, `UPDATE`, or `DELETE` |
 | `timeout` | execution timeout, such as `5s` |
 | `max_rows` | maximum rows returned by SELECT; ignored for DML |
+| `max_affected_rows` | maximum affected count for INSERT, UPDATE, and DELETE; DML only |
 | `max_bytes` | maximum response size, such as `256KB` |
 | `expose_in_openapi` | whether to include the capability in OpenAPI and MCP tools/list |
 
 Use read-only DB users for read capabilities. YAML policy is an application guard; DB privileges should still enforce least privilege.
 
-`timeout` accepts a positive Go duration string such as `5s` or `500ms`; zero and negative durations are startup errors. `max_rows` must be a positive integer when specified, so explicit `0` does not fall back to the default. `max_bytes` uses the same suffix syntax as `logging.max_size`, but requires a positive integer rather than allowing zero.
+`timeout` accepts a positive Go duration string such as `5s` or `500ms`. When specified, `max_rows` must be a positive integer and `max_affected_rows` a positive int64. Invalid configured values are rejected at startup. `max_bytes` uses the same suffix syntax as `logging.max_size`, but requires a positive integer rather than allowing zero.
+
+Policy values follow the precedence described in [Defaults](#defaults). SELECT rejects `max_affected_rows`, including an inherited value, so set this limit on individual mutation capabilities in a file containing both reads and mutations.
+
+The Agent checks the driver's native `RowsAffected()` count before commit. Exceeding `max_affected_rows` triggers rollback of the entire mutation transaction, not a partial update. See [Errors](/api/errors#rest-error-status-mappings) for the distinction between confirmed rollback and an unknown transaction outcome. Rollback cannot undo effects outside the DB transaction, such as trigger-driven external notifications or service calls.
 
 For every operation, startup lint rejects another statement after the first, such as `SELECT 1; UPDATE customers SET ...`. One trailing semicolon is allowed. Quote scanning follows the configured driver: ordinary SQL strings use doubled quotes and never treat backslash as a quote escape; PostgreSQL explicit `E'...'` strings support backslash escaping; PostgreSQL dollar quotes, PostgreSQL and SQL Server nested block comments, SQL Server bracket identifiers, MySQL backticks, and Oracle alternative `q'...'` quotes are recognized. This conservative rule also prevents `SELECT '\'; UPDATE ...` from bypassing lint when a server or SQL mode treats the backslash literally. Statements beginning with `WITH` are rejected, including read-only CTEs. `timeout` and `max_bytes` apply to SELECT and DML; `max_rows` applies only to SELECT.
 

@@ -161,10 +161,11 @@ capabilities:
     policy:
       readonly: false
       timeout: 3s
+      max_affected_rows: 1
       max_bytes: 256KB
 ```
 
-The example API key explicitly allows only `get_customer` and `update_customer`. Mutation success is `{"count": n}`. Zero affected rows is still success; decide whether that is a business error in the caller.
+The example API key explicitly allows only `get_customer` and `update_customer`. Mutation success is `{"count": n}`. Zero affected rows is still success; decide whether that is a business error in the caller. See [Capability YAML](/agent/capability-yaml#policy) for policy options.
 
 ## 6. Validate the Agent Configuration
 

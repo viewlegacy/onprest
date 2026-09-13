@@ -22,7 +22,7 @@ For mutations, grant the agent DB user only the required table-level INSERT, UPD
 - The OpenAPI cache contains only Agent-generated public metadata, not SQL or DB connection information.
 - The agent rejects unknown capabilities.
 - The agent rejects inputs outside the params contract with `AGENT_VALIDATION_FAILED`.
-- SELECT columns not included in the `result` allow-list are not returned externally. DML forbids `result` and returns affected count only.
+- SELECT columns not included in the `result` allow-list are not returned externally. DML forbids `result`, returns affected count only, and may use `max_affected_rows` to rollback mutations larger than the declared policy.
 
 The gateway knows which API key can call which capability and can serve its public contract. Capability meaning and execution remain on the Agent.
 

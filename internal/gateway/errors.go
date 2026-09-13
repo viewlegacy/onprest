@@ -21,6 +21,7 @@ const (
 	errAgentInternal                  = "AGENT_INTERNAL_ERROR"
 	errAgentBusy                      = "AGENT_BUSY"
 	errAgentConstraintViolation       = "AGENT_CONSTRAINT_VIOLATION"
+	errAgentAffectedRowsExceeded      = "AGENT_AFFECTED_ROWS_EXCEEDED"
 	errAgentTransactionOutcomeUnknown = "AGENT_TRANSACTION_OUTCOME_UNKNOWN"
 	errJSONRPCParseError              = "PARSE_ERROR"
 	errJSONRPCInvalidRequest          = "INVALID_REQUEST"
@@ -52,6 +53,8 @@ func agentErrorStatus(code string) (int, string) {
 		return http.StatusServiceUnavailable, errAgentBusy
 	case errAgentConstraintViolation:
 		return http.StatusConflict, errAgentConstraintViolation
+	case errAgentAffectedRowsExceeded:
+		return http.StatusConflict, errAgentAffectedRowsExceeded
 	case errAgentTransactionOutcomeUnknown:
 		return http.StatusBadGateway, errAgentTransactionOutcomeUnknown
 	default:

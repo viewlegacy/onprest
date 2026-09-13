@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	errorConstraintViolation = "AGENT_CONSTRAINT_VIOLATION"
-	errorOutcomeUnknown      = "AGENT_TRANSACTION_OUTCOME_UNKNOWN"
+	errorConstraintViolation  = "AGENT_CONSTRAINT_VIOLATION"
+	errorAffectedRowsExceeded = "AGENT_AFFECTED_ROWS_EXCEEDED"
+	errorOutcomeUnknown       = "AGENT_TRANSACTION_OUTCOME_UNKNOWN"
 )
 
 func classifyDBError(driver string, err error) string {

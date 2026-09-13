@@ -20,6 +20,8 @@ These errors reject a request at the HTTP layer instead of returning a REST resu
 
 REST capability execution returns these errors as HTTP statuses. OpenAPI also uses `GATEWAY_AGENT_OFFLINE` when agent metadata is unavailable.
 
+The same Agent error codes apply to MCP `tools/call` execution failures, but their HTTP status is 200 with `result.isError: true`, not the REST status below. See [MCP Errors](/api/mcp#errors) for the response shape.
+
 | HTTP | Code | Applies to | Meaning |
 |---:|---|---|---|
 | 503 | `GATEWAY_AGENT_OFFLINE` | REST / OpenAPI | Agent is not connected or metadata is unavailable |
@@ -27,17 +29,16 @@ REST capability execution returns these errors as HTTP statuses. OpenAPI also us
 | 504 | `GATEWAY_TIMEOUT` | REST | Agent response timed out |
 | 400 | `AGENT_VALIDATION_FAILED` | REST | Agent rejected params |
 | 409 | `AGENT_CONSTRAINT_VIOLATION` | REST | SELECT or DML hit a typed database integrity constraint; DML rollback was confirmed |
+| 409 | `AGENT_AFFECTED_ROWS_EXCEEDED` | REST | DML `RowsAffected()` exceeded `policy.max_affected_rows`; rollback was confirmed |
 | 502 | `AGENT_QUERY_FAILED` | REST | SQL execution failed |
 | 502 | `AGENT_TRANSACTION_OUTCOME_UNKNOWN` | REST | A mutation's commit, rollback, or committed success response could not be confirmed |
 | 504 | `AGENT_QUERY_TIMEOUT` | REST | Query exceeded timeout |
 | 502 | `AGENT_DB_UNREACHABLE` | REST | Agent cannot reach the DB |
 | 502 | `AGENT_INTERNAL_ERROR` | REST | Unexpected agent error |
 
-`AGENT_CONSTRAINT_VIOLATION` is common to SELECT and DML. Only a DML 409 carries the additional guarantee that rollback was confirmed. `AGENT_QUERY_TIMEOUT` means the agent observed its policy timeout and confirmed mutation rollback. `AGENT_TRANSACTION_OUTCOME_UNKNOWN` includes an already-finished transaction (`sql.ErrTxDone`-equivalent), an unconfirmed rollback, commit uncertainty, or failure to deliver a committed success response; commit and rollback are both possible.
+For mutations, `AGENT_CONSTRAINT_VIOLATION` and `AGENT_AFFECTED_ROWS_EXCEEDED` mean rollback was confirmed. Constraint violations can also occur on SELECT. If the transaction outcome cannot be confirmed, the Agent returns `AGENT_TRANSACTION_OUTCOME_UNKNOWN` instead: the change may have committed or rolled back. `AGENT_QUERY_TIMEOUT` indicates the agent observed its policy timeout; mutation rollback was confirmed.
 
 Do not automatically retry a mutation after `GATEWAY_TIMEOUT`, an in-flight agent disconnect, or `AGENT_TRANSACTION_OUTCOME_UNKNOWN`. Check DB state through an independent read capability. This no-auto-retry rule is mutation-specific. Constraint names, SQLSTATE/error numbers, SQL, and row data remain in the agent-local detail log only.
-
-MCP `tools/call` does not use these REST status mappings. After a known tool is invoked, runtime failures return HTTP 200 with `result.isError: true`. See [MCP Errors](/api/mcp#errors) for the response shape.
 
 ## Endpoint HTTP Errors
 
@@ -90,6 +91,7 @@ For agent errors, gateway returns the agent's public `code` and `message` unchan
 | `AGENT_QUERY_FAILED` | `database query failed` or `response exceeds policy.max_bytes` |
 | `AGENT_QUERY_TIMEOUT` | `query exceeded policy.timeout` |
 | `AGENT_CONSTRAINT_VIOLATION` | `database constraint violation` |
+| `AGENT_AFFECTED_ROWS_EXCEEDED` | `affected rows exceed policy.max_affected_rows` |
 | `AGENT_TRANSACTION_OUTCOME_UNKNOWN` | `transaction outcome is unknown` |
 | `AGENT_DB_UNREACHABLE` | `database is unreachable` |
 | `AGENT_INTERNAL_ERROR` | `agent internal error` |

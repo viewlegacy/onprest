@@ -284,7 +284,27 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 					assertMutationName(t, driver, dbCfg, mcpVersion.id, mcpVersion.rowName)
 				})
 			}
-			status, body := postCapability(t, baseURL, secrets.APIKey, "insert_row", `{"id":2,"name":"duplicate"}`)
+			beforeLimitScore := mutationScoreSum(t, driver, dbCfg)
+			status, body := postCapability(t, baseURL, secrets.APIKey, "limit_update", `{}`)
+			if status != http.StatusConflict {
+				t.Fatalf("affected-row limit REST status=%d body=%s", status, body)
+			}
+			requireAPIErrorCode(t, body, "AGENT_AFFECTED_ROWS_EXCEEDED")
+			if !strings.Contains(string(body), `"message":"affected rows exceed policy.max_affected_rows"`) {
+				t.Fatalf("affected-row limit REST message=%s", body)
+			}
+			if got := mutationScoreSum(t, driver, dbCfg); got != beforeLimitScore {
+				t.Fatalf("affected-row limit REST changed score sum from %d to %d", beforeLimitScore, got)
+			}
+			mcpLimitPayload := `{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"limit_update","arguments":{}}}`
+			status, body = postMCPStatusWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, mcpLimitPayload)
+			if status != http.StatusOK || !strings.Contains(string(body), `"isError":true`) || !strings.Contains(string(body), `"code":"AGENT_AFFECTED_ROWS_EXCEEDED"`) || !strings.Contains(string(body), `"message":"affected rows exceed policy.max_affected_rows"`) {
+				t.Fatalf("affected-row limit MCP status=%d body=%s", status, body)
+			}
+			if got := mutationScoreSum(t, driver, dbCfg); got != beforeLimitScore {
+				t.Fatalf("affected-row limit MCP changed score sum from %d to %d", beforeLimitScore, got)
+			}
+			status, body = postCapability(t, baseURL, secrets.APIKey, "insert_row", `{"id":2,"name":"duplicate"}`)
 			if status != http.StatusConflict {
 				t.Fatalf("constraint status=%d body=%s", status, body)
 			}
@@ -436,6 +456,9 @@ capabilities:
     params:
       id: {type: integer, required: true}
     policy: {readonly: false, timeout: 2s, max_rows: 1, max_bytes: 128KB}
+  limit_update:
+    sql: update onprest_it_mutations set score = score + 1
+    policy: {readonly: false, timeout: 2s, max_affected_rows: 1, max_bytes: 128KB}
   slow_update:
     sql: %s
     params:
@@ -501,6 +524,20 @@ func mutationRowCount(t *testing.T, driver string, cfg postgresConfig) int {
 		t.Fatal(err)
 	}
 	return count
+}
+
+func mutationScoreSum(t *testing.T, driver string, cfg postgresConfig) int {
+	t.Helper()
+	db, err := sql.Open(sqlDriverName(driver), integrationDBDSN(driver, cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var sum int
+	if err := db.QueryRow("select coalesce(sum(score), 0) from onprest_it_mutations").Scan(&sum); err != nil {
+		t.Fatal(err)
+	}
+	return sum
 }
 
 func mutationGuardValue(t *testing.T, driver string, cfg postgresConfig, table string) int {
