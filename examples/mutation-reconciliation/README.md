@@ -15,11 +15,11 @@ for operational decisions and UPDATE/DELETE considerations.
 
 Have Docker running, make, curl, a Unix shell, and the `onprest-gateway` and
 `onprest-agent` binaries. You can use prebuilt binaries or run `make build`
-from the OSS repository root to build them in `dist/`. Go is needed only for
+from the repository root to build them in `dist/`. Go is needed only for
 the response-loss exercise in step 3 (use the version in `go.mod`). SQL Server's
 amd64 container requires amd64 emulation on an ARM Docker host.
 
-Run the commands from the OSS repository root, which contains `Makefile`.
+Run the commands from the repository root, which contains `Makefile`.
 Choose one database and the absolute path to your binaries:
 
 ```bash
@@ -62,7 +62,7 @@ is occupied, stop your previous example before starting another. For deployment,
 use your own credentials and database settings and follow
 [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment).
 
-Start the Gateway in another terminal, also from the OSS repository root.
+Start the Gateway in another terminal, also from the repository root.
 Set the same binary-directory path:
 
 ```bash
@@ -73,7 +73,7 @@ set +a
 "$ONPREST_BIN_DIR/onprest-gateway"
 ```
 
-Start the Agent in a third terminal, from the OSS repository root, using the
+Start the Agent in a third terminal, from the repository root, using the
 same binary directory and selected database:
 
 ```bash
@@ -122,7 +122,7 @@ Expected result:
 
 ## 3. Lose a response, then confirm the order
 
-In another terminal, run this from the OSS repository root:
+In another terminal, run this from the repository root:
 
 ```bash
 go run ./examples/mutation-reconciliation/response-loss.go
@@ -213,7 +213,7 @@ cuts before and after commit, competing writes, UNIQUE conflicts, and read
 unavailability on real databases. The local helper is only for the manual
 post-completion exercise; it does not replace those tests.
 
-To select just the SQL Server reconciliation scenarios, run from the OSS root:
+To select just the SQL Server reconciliation scenarios, run from the repository root:
 
 ```bash
 ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it \
