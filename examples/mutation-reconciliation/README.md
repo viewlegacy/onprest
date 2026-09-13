@@ -3,7 +3,8 @@
 Define a read capability alongside a mutation so callers can check the database
 when a response is lost. This example creates an order, deliberately discards a
 successful INSERT response, and reads the order through a separate capability.
-You can use PostgreSQL, MySQL, SQL Server, or Oracle.
+You can use PostgreSQL, MySQL, SQL Server, or Oracle. Additional steps let you
+observe no row, changed contents, and an unavailable read.
 
 The caller chooses a UNIQUE `external_request_id` before inserting and compares
 all four fields when reading: request ID, product, quantity, and customer.
@@ -195,7 +196,135 @@ helper discards only a successful one-row INSERT response, so an upstream
 execution error is returned instead of being presented as simulated success.
 Use a fresh request ID or reset the example database to repeat an exercise.
 
-## 4. Clean up
+## 4. Try the other read results
+
+These checks use REST with the same `reconcile_order` capability. MCP reads
+return the same database state in `structuredContent`. Complete step 3 first;
+the changed-contents check uses the `002` order from that response-loss exercise.
+
+### No row
+
+Read an unused request ID:
+
+```bash
+curl --fail-with-body -sS \
+  -X POST "$GATEWAY_URL/api/v1/capabilities/reconcile_order" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"external_request_id":"req-20260906-004"}'
+```
+
+Expected result:
+
+```json
+{"rows":[],"count":0}
+```
+
+This shows how an empty read looks. No INSERT was sent for this ID, so this
+step does **not** reproduce an unfinished INSERT or prove that an unknown
+transaction rolled back. After a real lost response, a missing row can still
+mean the earlier transaction is unfinished; resolve its state before deciding
+whether to resend.
+
+### Changed contents
+
+Simulate another writer changing the `002` order after the INSERT. Run only the
+command for your selected database, using its container's administrative client.
+The Agent user intentionally has no UPDATE permission in this INSERT example.
+
+**PostgreSQL**
+
+```bash
+docker exec onprest-recon-postgres \
+  psql -v ON_ERROR_STOP=1 -U onprest_admin -d reconcile \
+  -c "UPDATE mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
+```
+
+**MySQL**
+
+```bash
+docker exec -e MYSQL_PWD=Onprest-admin-1 onprest-recon-mysql \
+  mysql -u root reconcile \
+  -e "UPDATE mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
+```
+
+**SQL Server**
+
+```bash
+docker exec -e SQLCMDPASSWORD=Onprest-admin-1 onprest-recon-sqlserver \
+  /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -d reconcile \
+  -Q "UPDATE dbo.mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002'"
+```
+
+**Oracle**
+
+```bash
+docker exec -i onprest-recon-oracle \
+  sqlplus -s -L system/Onprest-admin-1@localhost:1521/FREEPDB1 <<'SQL'
+WHENEVER SQLERROR EXIT FAILURE
+UPDATE system.mutation_reconciliation_orders SET quantity = 5 WHERE external_request_id = 'req-20260906-002';
+COMMIT;
+EXIT
+SQL
+```
+
+After running your database's command, read through the Gateway again:
+
+```bash
+curl --fail-with-body -sS \
+  -X POST "$GATEWAY_URL/api/v1/capabilities/reconcile_order" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"external_request_id":"req-20260906-002"}'
+```
+
+Expected result:
+
+```json
+{"rows":[{"external_request_id":"req-20260906-002","product_code":"SKU-001","quantity":5,"customer_code":"CUST-001"}],"count":1}
+```
+
+The ID exists, but the quantity differs from the original request's `2`. The
+current order does not match the intended payload. Investigate the change
+rather than resending the INSERT. This UPDATE only creates a competing-write
+condition; it is not an UPDATE reconciliation example.
+
+### Read unavailable
+
+Stop the Agent with Ctrl-C in its terminal and leave the Gateway running.
+Check health until it reports `agent_connected: false`:
+
+```bash
+curl --fail-with-body -sS "$GATEWAY_URL/healthz"
+```
+
+Then try the read:
+
+```bash
+curl --fail-with-body -sS \
+  -X POST "$GATEWAY_URL/api/v1/capabilities/reconcile_order" \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"external_request_id":"req-20260906-002"}'
+```
+
+Expect HTTP 503 with `GATEWAY_AGENT_OFFLINE` (curl exit code 22). This is a
+failed read, not an empty result; it tells you nothing about the order's presence
+or contents. Restore read access before making an INSERT decision.
+
+Restart the Agent in its terminal using the same binary directory and selected
+database:
+
+```bash
+"$ONPREST_BIN_DIR/onprest-agent" \
+  --config "examples/mutation-reconciliation/capability.$RECONCILIATION_DB.yaml"
+```
+
+Wait until health reports `agent_connected: true`, then repeat the SELECT above.
+It should again return the `002` order with quantity `5`: read access is restored,
+but the payload mismatch still needs investigation.
+
+## 5. Clean up
 
 Stop the Gateway and Agent with Ctrl-C (also stop the helper if it is still
 waiting for a request). Then remove the selected example container and its
