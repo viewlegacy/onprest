@@ -68,3 +68,9 @@ The exact result shape comes from the agent capability execution. Row fields are
 The `message` is public client-facing text. Agent validation errors may name the invalid field and reason, but raw detail, SQL text, DB-specific error text, credentials, and submitted param values are not included in external responses.
 
 Agent validation failures return HTTP 400. Typed database constraints return HTTP 409. Query failures and unknown transaction outcomes return HTTP 502; an unavailable or disconnected agent returns HTTP 503; agent policy timeouts and gateway-to-agent response timeouts return HTTP 504. A gateway timeout or disconnect leaves a mutation outcome unknown and must not be retried automatically. See [Errors](/api/errors) for the canonical mappings.
+
+## Reconcile a mutation after a lost response
+
+Call a separately defined read capability through the same endpoint to check
+the database state. See [Mutation Reconciliation](/operations/mutation-reconciliation) for
+the order INSERT example and how to interpret its read result.

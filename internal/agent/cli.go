@@ -24,6 +24,8 @@ func HandleCLI(ctx context.Context, args []string, stdout, stderr io.Writer) (bo
 		return true, 0
 	case "validate":
 		return true, handleValidateCLI(ctx, args[1:], stdout, stderr)
+	case "doctor":
+		return true, handleDoctorCLI(ctx, args[1:], stdout, stderr)
 	case "service":
 		return true, handleServiceCLI(args[1:], stdout, stderr)
 	case "help", "--help", "-h":
@@ -279,7 +281,8 @@ func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "  onprest-agent version                                 print agent version")
 	fmt.Fprintln(w, "  onprest-agent --version                               print agent version")
 	fmt.Fprintln(w, "  onprest-agent -v                                      print agent version")
-	fmt.Fprintln(w, "  onprest-agent validate [--config PATH] [--format text|json]")
+	fmt.Fprintln(w, "  onprest-agent validate [--config PATH] [--capability-file PATH] [--format text|json]")
+	fmt.Fprintln(w, "  onprest-agent doctor [--config PATH] [--capability-file PATH] [--format text|json]")
 	fmt.Fprintln(w, "  onprest-agent service install [--config PATH]  install OS service")
 	fmt.Fprintln(w, "  onprest-agent service start                    start OS service")
 	fmt.Fprintln(w, "  onprest-agent service stop                     stop OS service")
@@ -290,6 +293,11 @@ func printAgentUsage(w io.Writer) {
 func printValidateUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  onprest-agent validate [--config PATH] [--capability-file PATH] [--format text|json]")
+}
+
+func printDoctorUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  onprest-agent doctor [--config PATH] [--capability-file PATH] [--format text|json]")
 }
 
 func printServiceUsage(w io.Writer) {

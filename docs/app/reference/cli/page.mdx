@@ -80,6 +80,32 @@ Configuration diagnostics never reproduce unsafe YAML keys verbatim: keys outsid
 
 After a crash, recovery remains bounded to strictly named validation temporary files. The lifecycle lock remains held through output completion so concurrent commands cannot report the wrong run. Detailed recovery, cleanup, and file-protection guidance is centralized in [Agent Local Logs](/agent/local-logs).
 
+## Diagnose Agent and Gateway
+
+```bash
+./onprest-agent doctor --config ./capability.yaml
+./onprest-agent doctor --config ./capability.yaml --format json
+```
+
+`doctor` runs the same configuration and database preparation as `validate`, then checks the configured Gateway's DNS, TCP connection, TLS, challenge, and Agent-key verification. Each Gateway network stage is bounded to 10 seconds and the complete command to 60 seconds. A failed stage is reported as `failed` and dependent stages as `skipped`; `ws://` reports TLS as `skipped` with code `NOT_APPLICABLE`. The command does not replace a running Agent connection or execute a capability.
+
+Default text writes one safe line per check to stdout:
+
+```text
+doctor config: passed (OK) configuration is valid
+doctor gateway_tls: skipped (NOT_APPLICABLE) TLS is not used for ws://
+```
+
+JSON always uses this schema and preserves check order:
+
+```json
+{"ok":true,"checks":[{"stage":"config","status":"passed","code":"OK","message":"configuration is valid"}]}
+```
+
+The actual result includes every preparation and Gateway stage. A successful doctor exits `0`, a completed check failure exits `1`, and invalid arguments or formats exit `2`. Output contains safe summaries only.
+
+See [Troubleshooting](/operations/troubleshooting#run-the-doctor-probe) for stage-specific actions and [Agent Local Logs](/agent/local-logs) for protected diagnostic files.
+
 ## Agent Service Commands
 
 ```bash

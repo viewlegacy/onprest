@@ -2,24 +2,16 @@
 
 Onprest is designed to expose only agent-defined capabilities, not the database itself.
 
-The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions and return native affected count only after a successful commit. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions and return native affected count only after a successful commit. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
 
 ```text
 [API user / MCP client]
   |
-  | HTTPS
-  v
-[reverse proxy or LB]
-  | /api/v1/capabilities/*
-  | /mcp
-  | /openapi.json
-  | /healthz
-  | /ws/agent
+  | REST / MCP / OpenAPI / healthz
   v
 [onprest-gateway]
-  |
-  | outbound WebSocket from agent
-  v
+  ^
+  | outbound connection from Agent
 [onprest-agent + capability.yaml]
   |
   v
@@ -90,11 +82,9 @@ The OSS core is two independent binaries.
 | gateway | `onprest-gateway` | REST / MCP / OpenAPI / healthz / WebSocket / API key auth / capability auth |
 | agent | `onprest-agent` | YAML lint / DB ping / EXPLAIN / params validation / SQL execution / local detail logs |
 
-Nextra docs, the managed dashboard, Caddy, and any specific reverse proxy are not OSS core implementation dependencies.
-
 ## Gateway Responsibilities
 
-The gateway is a Go single binary. It has no persistent state and holds only an in-memory cache of the agent-generated public capability contract.
+The gateway is a Go single binary and does not persist application state. It reads authentication configuration at startup and keeps runtime state, such as the public capability cache and active connections, in memory. Runtime state is rebuilt after restart.
 
 - API key authentication
 - Per-API-key capability-level authorization
@@ -132,7 +122,7 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - reconnect every 30 seconds
 - up to `runtime.max_concurrent_requests` concurrent capability executions per connection (default 16), with an equally bounded waiting queue
 
-Normal startup and `onprest-agent validate` use one preparation path for full YAML load/lint, local diagnostic initialization, DB open, bounded Ping, and every capability's driver-specific EXPLAIN. Validation closes those resources and exits without retrieving a Gateway challenge, opening a WebSocket, publishing metadata, executing a business capability, or emitting `agent_ready`. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
+Normal startup and `onprest-agent validate` share the same configuration and database preparation. Validation closes those resources and exits without connecting to the Gateway or executing a capability. `onprest-agent doctor` reuses that preparation to diagnose Gateway connectivity and Agent-key authentication without changing the running connection. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 
@@ -160,11 +150,9 @@ Onprest assumes a dedicated gateway process per customer.
 
 In this model, API keys, the agent public key, OpenAPI cache, and stdout logs are not shared across customers. Because the gateway has no persistent DB and is separated by process and environment variables, the operational unit matches the trust boundary.
 
-## Reverse Proxy and TLS
+## TLS and Network Edge
 
-TLS termination and reverse proxy / load balancer choice are owned by the operating environment.
-
-The gateway works when directly exposed or when placed behind any compatible reverse proxy / LB. Forwarded headers are trusted only when they arrive from a source included in `GATEWAY_TRUSTED_PROXY_CIDRS`. A trusted proxy must overwrite, rather than append to, caller-provided forwarding headers.
+Network-edge infrastructure and TLS termination are environment-owned. The gateway can be exposed directly or placed behind an optional compatible reverse proxy or load balancer. See [Reverse Proxy](/gateway/reverse-proxy) when using one.
 
 Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. The default is `disable`. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
 

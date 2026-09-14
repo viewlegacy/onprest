@@ -896,6 +896,7 @@ func TestMCPExecutionErrorClassificationIsVersionGated(t *testing.T) {
 		{name: "internal", code: errAgentInternal, message: "agent internal error"},
 		{name: "busy", code: errAgentBusy, message: "agent concurrency limit reached"},
 		{name: "constraint", code: errAgentConstraintViolation, message: "database constraint violation"},
+		{name: "affected rows exceeded", code: errAgentAffectedRowsExceeded, message: "affected rows exceed policy.max_affected_rows"},
 		{name: "transaction outcome unknown", code: errAgentTransactionOutcomeUnknown, message: "transaction outcome is unknown"},
 	}
 	for _, version := range []struct {

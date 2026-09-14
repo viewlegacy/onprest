@@ -87,5 +87,6 @@ capabilities:
     policy:
       readonly: false
       timeout: 3s
+      max_affected_rows: 1
       max_bytes: 256KB
       expose_in_openapi: true

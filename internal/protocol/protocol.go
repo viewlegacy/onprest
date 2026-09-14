@@ -6,6 +6,8 @@ import (
 
 const AgentAuthVersion = "onprest-agent-v2"
 
+const AgentVerifyAuthVersion = "onprest-agent-verify-v1"
+
 type Request struct {
 	ID         string         `json:"id"`
 	Capability string         `json:"capability"`
@@ -30,6 +32,10 @@ type Error struct {
 
 func AgentAuthMessage(path, timestamp, nonce, challenge, handshakeKey string) []byte {
 	return []byte(AgentAuthVersion + "\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + challenge + "\n" + handshakeKey)
+}
+
+func AgentVerifyAuthMessage(path, timestamp, nonce, challenge string) []byte {
+	return []byte(AgentVerifyAuthVersion + "\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + challenge)
 }
 
 func ResultResponse(id string, result any) Response {
