@@ -829,7 +829,9 @@ func (db DatabaseDef) DSN() string {
 			q.Set("sslcert", db.TLS.CertFile)
 			q.Set("sslkey", db.TLS.KeyFile)
 		}
-		u.RawQuery = q.Encode()
+		// PostgreSQL URI query values use percent encoding, where '+' is
+		// literal data rather than the form-encoded representation of a space.
+		u.RawQuery = strings.ReplaceAll(q.Encode(), "+", "%20")
 		return u.String()
 	case "mysql":
 		return (&mysql.Config{User: db.User, Passwd: db.Password, Net: "tcp", Addr: hostPort, DBName: db.Name}).FormatDSN()
