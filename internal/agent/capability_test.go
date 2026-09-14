@@ -2,14 +2,21 @@ package agent
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
@@ -789,6 +796,50 @@ func TestPostgresPublicDriverAndDSNRoundTripToPGX(t *testing.T) {
 	if config.Config.TLSConfig == nil || config.Config.TLSConfig.ServerName != db.Host {
 		t.Fatalf("TLS config=%#v", config.Config.TLSConfig)
 	}
+	t.Run("TLS paths with spaces and literal plus", func(t *testing.T) {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cert := &x509.Certificate{
+			SerialNumber: big.NewInt(1),
+			NotBefore:    time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+			IsCA: true, BasicConstraintsValid: true,
+			KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		db := db
+		db.TLS.CAFile = filepath.Join(dir, "root CA+test.pem")
+		db.TLS.CertFile = filepath.Join(dir, "client cert+test.pem")
+		db.TLS.KeyFile = filepath.Join(dir, "client key+test.pem")
+		for path, block := range map[string]*pem.Block{
+			db.TLS.CAFile:   {Type: "CERTIFICATE", Bytes: der},
+			db.TLS.CertFile: {Type: "CERTIFICATE", Bytes: der},
+			db.TLS.KeyFile:  {Type: "PRIVATE KEY", Bytes: keyDER},
+		} {
+			if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		config, err := pgx.ParseConfig(db.DSN())
+		if err != nil {
+			t.Fatalf("ParseConfig with TLS paths containing spaces and plus: %v", err)
+		}
+		roots := x509.NewCertPool()
+		roots.AppendCertsFromPEM(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+		tlsConfig := config.Config.TLSConfig
+		if tlsConfig == nil || tlsConfig.RootCAs == nil || !tlsConfig.RootCAs.Equal(roots) || len(tlsConfig.Certificates) != 1 || !bytes.Equal(tlsConfig.Certificates[0].Certificate[0], der) {
+			t.Fatal("TLS config did not load the configured CA and client certificate")
+		}
+	})
 }
 
 func TestDatabaseTLSLintRejectsInvalidOrUnsupportedConfiguration(t *testing.T) {
