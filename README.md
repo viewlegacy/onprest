@@ -81,10 +81,7 @@ Managed dashboards and operations are available separately; this repository cont
 ```text
 API user / MCP client
         |
-        | HTTPS
-        v
-reverse proxy / load balancer
-        |
+        | REST / MCP / OpenAPI
         v
 onprest-gateway
         ^
@@ -99,8 +96,6 @@ legacy database
 The gateway knows routing, identity, rate limits, and which API keys may call which capability names.
 
 The agent knows what each capability means, how parameters are validated, which prepared SQL is executed, and—for SELECT—which result fields are allowed to leave the customer environment. Mutations return affected count only.
-
-TLS termination is environment-owned. Use any reverse proxy, platform proxy, or load balancer that supports HTTPS and WebSocket forwarding.
 
 ## Responsibility Split
 
@@ -159,7 +154,7 @@ Instead of giving an AI agent a DSN, schema, or SQL executor, you give it narrow
 - `get_invoice_status`
 - `list_recent_shipments`
 
-Each tool is backed by a reviewed SQL statement, validated parameters, timeout and byte limits, plus SELECT-only row limits and result-field allow-list. DML ignores `max_rows`, forbids `result`, and returns only native affected count.
+Each tool is backed by a reviewed SQL statement, validated parameters, and execution limits. SELECT results use a field allow-list; mutations return affected count only.
 
 This makes MCP useful without turning the legacy database into an unrestricted AI-accessible surface.
 
@@ -207,7 +202,7 @@ capabilities:
         type: string
 ```
 
-The agent loads this file at startup, validates it, runs SQL checks, and then connects to the gateway. `onprest-agent validate --config PATH` runs the same startup preflight without connecting to the gateway. Changes require an agent restart.
+The agent loads and validates this file at startup, including checks for each SQL statement, before connecting to the gateway. Changes require an agent restart.
 
 For the full schema, policy options, logging settings, and examples, see the documentation.
 
@@ -216,14 +211,14 @@ For the full schema, policy options, logging settings, and examples, see the doc
 Onprest is designed as if components may be compromised.
 
 - No SQL, DB credentials, DSNs, raw schema knowledge, capability execution rules, or agent private key are stored in the gateway.
-- The gateway stores only the agent public key, bcrypt-hashed API keys, and agent-defined public capability metadata.
+- The gateway does not persist application data. It is configured with the agent public key and bcrypt-hashed API keys, and caches only agent-defined public capability metadata.
 - Agent authentication uses Ed25519 signatures during the WebSocket handshake.
 - The agent connects outbound to the gateway; no inbound firewall path into the customer network is required.
 - API keys are capability-scoped.
 - Unknown capability names are rejected by the agent.
 - Parameters are validated before SQL runs.
 - SQL parameters are bound through `database/sql`.
-- Policies can constrain readonly mode, timeout, max bytes, and OpenAPI/MCP exposure; `max_rows` applies only to SELECT.
+- Agent-owned policies restrict allowed operations, bound execution time, response size, and row counts, and control OpenAPI/MCP exposure.
 - SELECT output fields are constrained by the `result` allow-list. DML cannot define `result` and returns only `{"count": n}`.
 - Only one agent connection is accepted at a time.
 - Gateway stdout logs do not include request params or agent error details.
@@ -413,7 +408,6 @@ Onprest exposes the same approved capabilities through REST and MCP.
 - `POST /mcp` supports MCP `initialize`, `ping`, `tools/list`, and `tools/call`
 - `GET /openapi.json` returns API-key-filtered OpenAPI
 - `GET /healthz` returns gateway health and agent connection state
-- `GET /ws/agent` is reserved for the outbound agent WebSocket
 
 `/openapi.json` and MCP `tools/list` are generated from agent-owned capability metadata and filtered per API key.
 

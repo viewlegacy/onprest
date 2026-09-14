@@ -163,6 +163,10 @@ capabilities:
 	}{
 		{name: "explicit zero max rows", policy: "      max_rows: 0", want: "max_rows must be > 0"},
 		{name: "negative max rows", policy: "      max_rows: -1", want: "max_rows must be > 0"},
+		{name: "explicit zero max affected rows", policy: "      max_affected_rows: 0", want: "max_affected_rows must be > 0"},
+		{name: "negative max affected rows", policy: "      max_affected_rows: -1", want: "max_affected_rows must be > 0"},
+		{name: "fractional max affected rows", policy: "      max_affected_rows: 1.5", want: "max_affected_rows must be an integer"},
+		{name: "overflow max affected rows", policy: "      max_affected_rows: 9223372036854775808", want: "max_affected_rows must be an int64"},
 		{name: "zero timeout", policy: "      timeout: 0s", want: "timeout must be > 0"},
 		{name: "negative timeout", policy: "      timeout: -1s", want: "timeout must be > 0"},
 	} {
@@ -804,17 +808,122 @@ func TestCapabilityFileMergesPolicyDefaults(t *testing.T) {
 	cf := validCapabilityFile()
 	defaultReadonly := false
 	capReadonly := true
-	cf.Defaults = PolicyDef{Readonly: &defaultReadonly, Timeout: "30s", MaxRows: intPtr(1000), MaxBytes: "2MB"}
+	defaultMaxAffectedRows := int64(20)
+	cf.Defaults = PolicyDef{Readonly: &defaultReadonly, Timeout: "30s", MaxRows: intPtr(1000), MaxBytes: "2MB", MaxAffectedRows: &defaultMaxAffectedRows}
 	cap := cf.Capabilities["get_customer"]
-	cap.Policy = PolicyDef{Readonly: &capReadonly, MaxRows: intPtr(5)}
+	cap.SQL = "update customers set id = id"
+	capReadonly = false
+	capMaxAffectedRows := int64(5)
+	cap.Policy = PolicyDef{Readonly: &capReadonly, MaxRows: intPtr(5), MaxAffectedRows: &capMaxAffectedRows}
 	cf.Capabilities["get_customer"] = cap
 
 	if err := cf.Lint(); err != nil {
 		t.Fatal(err)
 	}
 	got := cf.Capabilities["get_customer"].Policy
-	if !readonly(got) || got.Timeout != "30s" || resolvedMaxRows(got) != 5 || got.MaxBytes != "2MB" {
+	if readonly(got) || got.Timeout != "30s" || resolvedMaxRows(got) != 5 || got.MaxBytes != "2MB" || got.MaxAffectedRows == nil || *got.MaxAffectedRows != 5 {
 		t.Fatalf("merged policy = %#v", got)
+	}
+}
+
+func TestCapabilityFileRejectsMaxAffectedRowsForSelectIncludingDefaults(t *testing.T) {
+	for _, source := range []struct {
+		name     string
+		defaults bool
+	}{
+		{name: "capability policy"},
+		{name: "defaults", defaults: true},
+	} {
+		t.Run(source.name, func(t *testing.T) {
+			cf := validCapabilityFile()
+			limit := int64(1)
+			if source.defaults {
+				cf.Defaults.MaxAffectedRows = &limit
+			} else {
+				cap := cf.Capabilities["get_customer"]
+				cap.Policy.MaxAffectedRows = &limit
+				cf.Capabilities["get_customer"] = cap
+			}
+			if err := cf.Lint(); err == nil || !strings.Contains(err.Error(), "max_affected_rows is only supported for DML") {
+				t.Fatalf("Lint() error=%v, want SELECT max_affected_rows rejection", err)
+			}
+		})
+	}
+}
+
+func TestLoadCapabilityFileMaxAffectedRowsYAMLMergeAndLint(t *testing.T) {
+	const merged = `service:
+  title: Mutation limit fixture
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  name: fixture
+  user: fixture
+  password: fixture
+defaults:
+  readonly: false
+  max_affected_rows: 9
+capabilities:
+  source:
+    sql: update customers set name = name
+    policy: &mutation_policy
+      readonly: false
+      timeout: 1s
+      max_rows: 100
+      max_bytes: 128KB
+      max_affected_rows: 9223372036854775807
+  direct:
+    sql: update customers set name = name
+    policy:
+      <<: *mutation_policy
+      max_affected_rows: 7
+  inherited:
+    sql: delete from customers where id = 1
+`
+	cf, err := LoadCapabilityFile(writeCapabilityFixture(t, merged))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := cf.Capabilities["source"].Policy
+	direct := cf.Capabilities["direct"].Policy
+	inherited := cf.Capabilities["inherited"].Policy
+	if source.MaxAffectedRows == nil || *source.MaxAffectedRows != math.MaxInt64 {
+		t.Fatalf("source max_affected_rows=%#v, want MaxInt64", source.MaxAffectedRows)
+	}
+	if direct.MaxAffectedRows == nil || *direct.MaxAffectedRows != 7 {
+		t.Fatalf("direct max_affected_rows=%#v, want direct YAML value 7", direct.MaxAffectedRows)
+	}
+	if direct.Readonly == nil || *direct.Readonly || direct.Timeout != "1s" || resolvedMaxRows(direct) != 100 || direct.MaxBytes != "128KB" {
+		t.Fatalf("YAML merge fields were not preserved: %#v", direct)
+	}
+	if inherited.MaxAffectedRows == nil || *inherited.MaxAffectedRows != 9 {
+		t.Fatalf("inherited max_affected_rows=%#v, want defaults value 9", inherited.MaxAffectedRows)
+	}
+
+	const selectWithEffectiveLimit = `service:
+  title: Select limit fixture
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database:
+  driver: postgres
+  host: 127.0.0.1
+  port: 5432
+  name: fixture
+  user: fixture
+  password: fixture
+defaults:
+  max_affected_rows: 1
+capabilities:
+  read:
+    sql: select 1 as value
+`
+	if _, err := LoadCapabilityFile(writeCapabilityFixture(t, selectWithEffectiveLimit)); err == nil || !strings.Contains(err.Error(), "max_affected_rows is only supported for DML") {
+		t.Fatalf("LoadCapabilityFile() error=%v, want effective SELECT rejection", err)
 	}
 }
 

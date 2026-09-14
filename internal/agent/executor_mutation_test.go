@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,12 +33,18 @@ type mutationDriverState struct {
 	opens, closes                            int
 	beginCtx                                 context.Context
 	execErr, rowsErr, commitErr, rollbackErr error
+	commitApplyBeforeError                   bool
+	commitApplyAfterError                    bool
+	commitState                              int
 	beginErr                                 error
 	beginStarted                             chan struct{}
 	beginRelease                             chan struct{}
 	beginStartOnce                           sync.Once
 	beginSucceedAfterCancel                  bool
 	rows                                     int64
+	rowsStarted                              chan struct{}
+	rowsStartOnce                            sync.Once
+	rowsRelease                              chan struct{}
 	rollbackCtxErr                           error
 	execStarted                              chan struct{}
 	execRelease                              chan struct{}
@@ -543,7 +550,21 @@ func TestRunnerConnectionCloseCancelsAndRollsBackInflightMutation(t *testing.T) 
 
 type mutationTestTx struct{ state *mutationDriverState }
 
-func (t *mutationTestTx) Commit() error { t.state.call("commit"); return t.state.commitErr }
+func (t *mutationTestTx) Commit() error {
+	t.state.call("commit")
+	t.state.mu.Lock()
+	defer t.state.mu.Unlock()
+	if t.state.commitApplyBeforeError {
+		return t.state.commitErr
+	}
+	// This models the database state transition independently from the
+	// returned error. A driver can report a commit error after applying it.
+	t.state.commitState++
+	if t.state.commitApplyAfterError {
+		return t.state.commitErr
+	}
+	return t.state.commitErr
+}
 func (t *mutationTestTx) Rollback() error {
 	t.state.call("rollback")
 	t.state.rollbackCtxErr = t.state.beginCtx.Err()
@@ -564,6 +585,12 @@ type mutationTestResult struct{ state *mutationDriverState }
 func (r mutationTestResult) LastInsertId() (int64, error) { return 0, nil }
 func (r mutationTestResult) RowsAffected() (int64, error) {
 	r.state.call("rows")
+	if r.state.rowsStarted != nil {
+		r.state.rowsStartOnce.Do(func() { close(r.state.rowsStarted) })
+	}
+	if r.state.rowsRelease != nil {
+		<-r.state.rowsRelease
+	}
 	return r.state.rows, r.state.rowsErr
 }
 
@@ -587,15 +614,22 @@ func mutationRunnerWithoutCleanup(t *testing.T, state *mutationDriverState) *Run
 
 func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 	tests := []struct {
-		name      string
-		state     mutationDriverState
-		cancel    bool
-		maxBytes  string
-		wantCode  string
-		wantCalls string
-		discard   bool
+		name              string
+		state             mutationDriverState
+		cancel            bool
+		maxBytes          string
+		maxAffectedRows   *int64
+		wantCode          string
+		wantCalls         string
+		discard           bool
+		assertCommitState bool
+		wantCommitState   int
 	}{
 		{name: "success zero", state: mutationDriverState{rows: 0}, wantCalls: "begin,exec,rows,commit"},
+		{name: "exact affected rows limit", state: mutationDriverState{rows: 2}, maxAffectedRows: int64PtrAgent(2), wantCalls: "begin,exec,rows,commit"},
+		{name: "affected rows limit exceeded", state: mutationDriverState{rows: 2}, maxAffectedRows: int64PtrAgent(1), wantCode: errorAffectedRowsExceeded, wantCalls: "begin,exec,rows,rollback"},
+		{name: "maximum int64 affected rows", state: mutationDriverState{rows: math.MaxInt64}, maxAffectedRows: int64PtrAgent(math.MaxInt64), wantCalls: "begin,exec,rows,commit"},
+		{name: "affected rows rollback unknown", state: mutationDriverState{rows: 2, rollbackErr: errors.New("rollback")}, maxAffectedRows: int64PtrAgent(1), wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,rollback", discard: true},
 		{name: "rows error", state: mutationDriverState{rowsErr: errors.New("rows")}, wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
 		{name: "negative rows", state: mutationDriverState{rows: -1}, wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
 		{name: "max bytes before commit", state: mutationDriverState{rows: 1}, maxBytes: "1B", wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
@@ -604,6 +638,8 @@ func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 		{name: "rollback unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
 		{name: "rollback tx done unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: sql.ErrTxDone}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
 		{name: "commit unknown", state: mutationDriverState{rows: 2, commitErr: errors.New("commit")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit", discard: true},
+		{name: "commit disconnect before apply", state: mutationDriverState{rows: 2, commitErr: errors.New("commit connection reset before apply"), commitApplyBeforeError: true}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit", discard: true, assertCommitState: true, wantCommitState: 0},
+		{name: "commit disconnect after apply", state: mutationDriverState{rows: 2, commitErr: errors.New("commit connection reset after apply"), commitApplyAfterError: true}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit", discard: true, assertCommitState: true, wantCommitState: 1},
 		{name: "cancel before pool acquisition", state: mutationDriverState{}, cancel: true, wantCode: "AGENT_QUERY_TIMEOUT", wantCalls: ""},
 	}
 	for i := range tests {
@@ -621,23 +657,30 @@ func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 			if maxBytes == "" {
 				maxBytes = "128KB"
 			}
-			payload, count, failure := r.executeMutation(requestCtx, execCtx, CapabilityDef{Policy: PolicyDef{MaxBytes: maxBytes}}, "update t set v=1", nil)
+			payload, count, failure := r.executeMutation(requestCtx, execCtx, CapabilityDef{Policy: PolicyDef{MaxBytes: maxBytes, MaxAffectedRows: tc.maxAffectedRows}}, "update t set v=1", nil)
 			if tc.wantCode == "" {
-				if failure != nil || string(payload) != "{\"count\":0}" || count != 0 {
+				wantCount := tc.state.rows
+				if failure != nil || string(payload) != fmt.Sprintf("{\"count\":%d}", wantCount) || count != wantCount {
 					t.Fatalf("payload=%s count=%d failure=%v", payload, count, failure)
 				}
 			} else if failure == nil || failure.code != tc.wantCode {
 				t.Fatalf("failure=%v want=%s", failure, tc.wantCode)
+			} else if payload != nil || count != 0 {
+				t.Fatalf("failed mutation exposed payload/count: payload=%s count=%d", payload, count)
 			}
 			tc.state.mu.Lock()
 			calls := append([]string(nil), tc.state.calls...)
 			rollbackCtxErr := tc.state.rollbackCtxErr
+			commitState := tc.state.commitState
 			tc.state.mu.Unlock()
 			if got := joinCalls(calls); got != tc.wantCalls {
 				t.Fatalf("calls=%s want=%s", got, tc.wantCalls)
 			}
 			if rollbackCtxErr != nil {
 				t.Fatalf("transaction lifetime context was canceled before rollback completed: %v", rollbackCtxErr)
+			}
+			if tc.assertCommitState && commitState != tc.wantCommitState {
+				t.Fatalf("commit state=%d want %d", commitState, tc.wantCommitState)
 			}
 			if tc.discard {
 				conn, err := r.db.Conn(t.Context())
@@ -649,6 +692,115 @@ func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 				opens := tc.state.opens
 				closes := tc.state.closes
 				tc.state.mu.Unlock()
+				if opens != 2 || closes < 1 {
+					t.Fatalf("outcome-unknown connection was reused: opens=%d closes=%d", opens, closes)
+				}
+			}
+		})
+	}
+}
+
+func TestExecuteMutationCancellationAfterRowsAffectedRollsBackBeforeCommit(t *testing.T) {
+	state := &mutationDriverState{rows: 1, rowsStarted: make(chan struct{}), rowsRelease: make(chan struct{})}
+	runner := mutationRunner(t, state)
+	execCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan *mutationFailure, 1)
+	go func() {
+		_, _, failure := runner.executeMutation(t.Context(), execCtx, CapabilityDef{Policy: PolicyDef{MaxBytes: "128KB"}}, "update t set v=1", nil)
+		result <- failure
+	}()
+	select {
+	case <-state.rowsStarted:
+	case <-time.After(time.Second):
+		t.Fatal("RowsAffected did not run")
+	}
+	cancel()
+	close(state.rowsRelease)
+	select {
+	case failure := <-result:
+		if failure == nil || failure.code != "AGENT_QUERY_TIMEOUT" {
+			t.Fatalf("failure=%+v, want confirmed query timeout", failure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled mutation did not return")
+	}
+	state.mu.Lock()
+	calls := append([]string(nil), state.calls...)
+	state.mu.Unlock()
+	if got := joinCalls(calls); got != "begin,exec,rows,rollback" {
+		t.Fatalf("calls=%s, want rollback before commit", got)
+	}
+}
+
+func TestExecuteMutationAffectedRowsLimitWinsCancellationAfterRowsAffected(t *testing.T) {
+	tests := []struct {
+		name        string
+		rollbackErr error
+		wantCode    string
+		discard     bool
+	}{
+		{name: "rollback confirmed", wantCode: errorAffectedRowsExceeded},
+		{name: "rollback outcome unknown", rollbackErr: errors.New("rollback connection lost"), wantCode: errorOutcomeUnknown, discard: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &mutationDriverState{
+				rows:        2,
+				rowsStarted: make(chan struct{}),
+				rowsRelease: make(chan struct{}),
+				rollbackErr: tc.rollbackErr,
+			}
+			runner := mutationRunner(t, state)
+			execCtx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			limit := int64(1)
+			result := make(chan struct {
+				payload json.RawMessage
+				count   int64
+				failure *mutationFailure
+			}, 1)
+			go func() {
+				payload, count, failure := runner.executeMutation(t.Context(), execCtx, CapabilityDef{Policy: PolicyDef{MaxBytes: "128KB", MaxAffectedRows: &limit}}, "update t set v=1", nil)
+				result <- struct {
+					payload json.RawMessage
+					count   int64
+					failure *mutationFailure
+				}{payload: payload, count: count, failure: failure}
+			}()
+			select {
+			case <-state.rowsStarted:
+			case <-time.After(time.Second):
+				t.Fatal("RowsAffected did not reach the cancellation barrier")
+			}
+			cancel()
+			close(state.rowsRelease)
+			select {
+			case outcome := <-result:
+				if outcome.failure == nil || outcome.failure.code != tc.wantCode {
+					t.Fatalf("failure=%+v want code=%s", outcome.failure, tc.wantCode)
+				}
+				if outcome.payload != nil || outcome.count != 0 {
+					t.Fatalf("failed mutation exposed payload/count: payload=%s count=%d", outcome.payload, outcome.count)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("canceled over-limit mutation did not return")
+			}
+			state.mu.Lock()
+			calls := append([]string(nil), state.calls...)
+			state.mu.Unlock()
+			if got := joinCalls(calls); got != "begin,exec,rows,rollback" {
+				t.Fatalf("calls=%s, want exactly one rollback and no commit", got)
+			}
+			if tc.discard {
+				conn, err := runner.db.Conn(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = conn.Close()
+				state.mu.Lock()
+				opens, closes := state.opens, state.closes
+				state.mu.Unlock()
 				if opens != 2 || closes < 1 {
 					t.Fatalf("outcome-unknown connection was reused: opens=%d closes=%d", opens, closes)
 				}
@@ -797,6 +949,8 @@ func joinCalls(calls []string) string {
 	}
 	return out
 }
+
+func int64PtrAgent(value int64) *int64 { return &value }
 
 func TestClassifyDBConstraintErrors(t *testing.T) {
 	for _, tc := range []struct {

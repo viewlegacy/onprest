@@ -77,6 +77,44 @@ func TestCallAgentResponseKindContract(t *testing.T) {
 	}
 }
 
+func TestAffectedRowsExceededErrorPreservesRESTAndMCPNullCount(t *testing.T) {
+	message := "affected rows exceed policy.max_affected_rows"
+	for _, protocolName := range []string{"REST", "MCP"} {
+		t.Run(protocolName, func(t *testing.T) {
+			s, logs, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
+				return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentAffectedRowsExceeded, Message: message}}
+			})
+			defer cleanup()
+			if protocolName == "REST" {
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{}`))
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				s.httpSrv.Handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusConflict {
+					t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				assertAPIErrorMessage(t, rec.Body.Bytes(), errAgentAffectedRowsExceeded, message)
+			} else {
+				req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`))
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
+				rec := httptest.NewRecorder()
+				s.httpSrv.Handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+				}
+				assertMCPToolError(t, rec.Body.Bytes(), errAgentAffectedRowsExceeded, message)
+			}
+			entry := lastLogEntry(t, logs)
+			if entry["count"] != nil || entry["error_code"] != errAgentAffectedRowsExceeded {
+				t.Fatalf("log=%#v", entry)
+			}
+		})
+	}
+}
+
 func int64Ptr(value int64) *int64 { return &value }
 
 func TestMetaResponseKindsArePrivateAndParsed(t *testing.T) {

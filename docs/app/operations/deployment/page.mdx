@@ -93,10 +93,6 @@ docker run --rm -v "$PWD/capability.yaml:/config/capability.yaml:ro" onprest-age
 
 The mounted `capability.yaml` must use database and gateway addresses reachable from inside the container. Container platforms manage process start/stop and stdout/stderr collection. Do not use `onprest-agent service install` inside a container. `docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
 
-## Reverse Proxy Optionality
-
-TLS termination and reverse proxy selection are outside the OSS implementation boundary. The gateway works directly exposed or behind a compatible reverse proxy / LB.
-
 ## Deployment Boundary
 
 This page covers deployment of the two OSS binaries only. Managed products and their operating policies are outside the OSS core and are not deployment requirements for `onprest-gateway` or `onprest-agent`.

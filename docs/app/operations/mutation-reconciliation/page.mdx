@@ -1,0 +1,49 @@
+# Mutation Reconciliation
+
+For INSERT, UPDATE, and DELETE, `GATEWAY_TIMEOUT`, an in-flight Agent disconnect, or
+`AGENT_TRANSACTION_OUTCOME_UNKNOWN` does not prove commit or rollback. Check
+the database state through a separately defined read capability before deciding
+what to do next; do not resend the mutation automatically.
+
+See [Errors](/api/errors#rest-error-status-mappings) for the distinction between
+an unknown transaction outcome and errors that confirm rollback.
+
+## Order INSERT example
+
+The four-database [order example](https://github.com/viewlegacy/onprest/tree/main/examples/mutation-reconciliation)
+defines an INSERT capability and a SELECT capability. Choose a UNIQUE
+`external_request_id` before inserting the order. After a lost response, read
+that ID and compare the ID, product, quantity, and customer with the request.
+The request ID alone is insufficient to confirm business completion.
+
+| Read result | Operational decision |
+|---|---|
+| One row and all four fields match | The order is confirmed present with the intended contents; do not resend the INSERT. |
+| No row | The INSERT is unconfirmed; the earlier transaction may still be unfinished. Resolve its state before deciding whether to resend. |
+| A row exists but any field differs | Investigate the existing order and other writers. |
+| The read is unavailable or its outcome is unknown | Restore read access or investigate the database; the INSERT remains unconfirmed. |
+
+An `AGENT_CONSTRAINT_VIOLATION` for the UNIQUE key confirms rollback of that
+attempt. Read the existing row and compare the full intended payload to
+determine what it means for the business operation.
+
+The example README includes database setup, ready-to-use local configuration,
+and hands-on checks for all four read results above. It provides REST/MCP commands
+that discard a successful INSERT response and covers cleanup.
+
+## UPDATE and DELETE
+
+Define a read capability according to the business operation:
+
+- For UPDATE, read the target record and compare the intended changed values.
+  A match can confirm the intended current state. If other writers can change
+  it, include a business version or another way to
+  distinguish the operation when your completion criteria require that.
+- For DELETE, check whether the target record is still present. If absence meets
+  the business goal, it can confirm the current state; if you need to establish
+  which operation deleted it, use an audit record or equivalent business evidence.
+
+A current value or an absent row alone does not prove that this particular
+request performed the change. Decide what evidence your operation needs before
+exposing its mutation and read capabilities. The runnable example covers INSERT;
+it does not provide UPDATE/DELETE reconciliation fixtures.

@@ -5,12 +5,29 @@
 Check:
 
 - `gateway.url` points to `/ws/agent`.
-- reverse proxy supports WebSocket upgrade.
+- If a reverse proxy or load balancer is used, it supports WebSocket upgrade.
 - `GATEWAY_AGENT_PUBLIC_KEY` matches `gateway.agent_private_key`.
 - agent host can make outbound connections to gateway.
 - timestamp skew is not outside the allowed signing window.
 
 The gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when signature validation fails.
+
+## Run the doctor probe
+
+After the Gateway is running, use `doctor` to separate local preparation failures from Gateway transport and authentication failures:
+
+```bash
+onprest-agent doctor --config /absolute/path/capability.yaml --format json
+```
+
+Use the first failed check to choose the next action:
+
+- `config` or `database_*`: correct `capability.yaml` or restore database access.
+- `gateway_dns` or `gateway_connect`: check the configured hostname, port, DNS, firewall, and proxy path.
+- `gateway_tls`: check the hostname, SNI certificate, and the Agent host's OS trust store. There is no separate Gateway CA setting.
+- `gateway_challenge` or `gateway_verify`: check proxy routing, clock synchronization, and that `GATEWAY_AGENT_PUBLIC_KEY` matches `gateway.agent_private_key`.
+
+Later dependent checks are shown as `skipped`. Doctor does not establish or replace the normal WebSocket connection and does not execute a capability. See the [CLI Reference](/reference/cli#diagnose-agent-and-gateway) for output and exit codes, and [Agent Local Logs](/agent/local-logs) for the latest-failure log.
 
 ## OpenAPI Returns 503
 
@@ -19,6 +36,10 @@ The gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when si
 ## Mutation outcome is unknown
 
 `AGENT_TRANSACTION_OUTCOME_UNKNOWN`, `GATEWAY_TIMEOUT`, or an in-flight agent disconnect means the caller cannot safely infer commit or rollback. Do not retry automatically. Check the target record using an independent read capability and inspect the agent-local detail log. By contrast, `AGENT_QUERY_TIMEOUT` means the agent confirmed rollback after its policy timeout.
+
+`AGENT_AFFECTED_ROWS_EXCEEDED` is different: it means the DML exceeded `policy.max_affected_rows` and the Agent confirmed rollback. Check the SQL's target conditions and the intended number of affected rows before deciding whether to narrow the SQL or adjust the limit. Error responses do not include an affected count; the Gateway request log has `count: null`.
+
+See [Mutation Reconciliation](/operations/mutation-reconciliation) for the read-capability workflow and an INSERT example.
 
 Check agent startup logs and `onprest-agent.log`. DB ping or EXPLAIN failure prevents the agent from connecting.
 

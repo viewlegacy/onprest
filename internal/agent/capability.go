@@ -495,13 +495,17 @@ type PolicyDef struct {
 	Timeout         string `json:"timeout" yaml:"timeout"`
 	MaxRows         *int   `json:"max_rows,omitempty" yaml:"max_rows,omitempty"`
 	MaxBytes        string `json:"max_bytes" yaml:"max_bytes"`
+	MaxAffectedRows *int64 `json:"max_affected_rows,omitempty" yaml:"max_affected_rows,omitempty"`
 	ExposeInOpenAPI *bool  `json:"expose_in_openapi,omitempty" yaml:"expose_in_openapi,omitempty"`
 }
 
 func (p *PolicyDef) UnmarshalYAML(node *yaml.Node) error {
 	if err := validateKnownYAMLMapping(node, map[string]struct{}{
-		"readonly": {}, "timeout": {}, "max_rows": {}, "max_bytes": {}, "expose_in_openapi": {},
+		"readonly": {}, "timeout": {}, "max_rows": {}, "max_bytes": {}, "max_affected_rows": {}, "expose_in_openapi": {},
 	}, "policy definition", map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	if err := validateMaxAffectedRowsYAML(node, map[*yaml.Node]bool{}); err != nil {
 		return err
 	}
 	type plainPolicyDef PolicyDef
@@ -510,6 +514,61 @@ func (p *PolicyDef) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	*p = PolicyDef(decoded)
+	return nil
+}
+
+func validateMaxAffectedRowsYAML(node *yaml.Node, stack map[*yaml.Node]bool) error {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return errors.New("policy definition contains an empty YAML alias")
+		}
+		if stack[node] {
+			return errors.New("policy definition contains a cyclic YAML merge")
+		}
+		stack[node] = true
+		defer delete(stack, node)
+		return validateMaxAffectedRowsYAML(node.Alias, stack)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	if stack[node] {
+		return errors.New("policy definition contains a cyclic YAML merge")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			if value.Kind == yaml.SequenceNode {
+				for _, source := range value.Content {
+					if err := validateMaxAffectedRowsYAML(source, stack); err != nil {
+						return err
+					}
+				}
+			} else if err := validateMaxAffectedRowsYAML(value, stack); err != nil {
+				return err
+			}
+			continue
+		}
+		if key.Kind != yaml.ScalarNode || key.Value != "max_affected_rows" {
+			continue
+		}
+		actual, err := dereferenceYAMLNode(value, map[*yaml.Node]bool{})
+		if err != nil {
+			return err
+		}
+		if actual.Kind != yaml.ScalarNode || actual.Tag != "!!int" {
+			return errors.New("max_affected_rows must be an integer")
+		}
+		var parsed int64
+		if err := actual.Decode(&parsed); err != nil {
+			return fmt.Errorf("max_affected_rows must be an int64: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -614,6 +673,9 @@ func (cf *CapabilityFile) Lint() error {
 		}
 		if classification.operation == "" {
 			return fmt.Errorf("%s.sql operation is not supported", capabilityPath)
+		}
+		if classification.operation == sqlOperationSelect && cap.Policy.MaxAffectedRows != nil {
+			return fmt.Errorf("%s.policy.max_affected_rows is only supported for DML", capabilityPath)
 		}
 		if readonly(cap.Policy) && classification.operation != sqlOperationSelect {
 			return fmt.Errorf("%s.sql must be SELECT when policy.readonly is true", capabilityPath)
@@ -883,6 +945,9 @@ func (p PolicyDef) lint(path string) error {
 	if p.MaxRows == nil || *p.MaxRows <= 0 {
 		return fmt.Errorf("%s.max_rows must be > 0", path)
 	}
+	if p.MaxAffectedRows != nil && *p.MaxAffectedRows <= 0 {
+		return fmt.Errorf("%s.max_affected_rows must be > 0", path)
+	}
 	if _, err := maxBytes(p); err != nil {
 		return fmt.Errorf("%s.max_bytes is invalid", path)
 	}
@@ -926,6 +991,9 @@ func mergePolicy(defaults, cap PolicyDef) PolicyDef {
 	}
 	if cap.MaxBytes != "" {
 		out.MaxBytes = cap.MaxBytes
+	}
+	if cap.MaxAffectedRows != nil {
+		out.MaxAffectedRows = cap.MaxAffectedRows
 	}
 	if cap.ExposeInOpenAPI != nil {
 		out.ExposeInOpenAPI = cap.ExposeInOpenAPI
