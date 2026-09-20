@@ -21,36 +21,110 @@ const queryTimeoutDetail = "query exceeded policy.timeout"
 
 const affectedRowsExceededDetail = "affected rows exceed policy.max_affected_rows"
 
+type preparedExecution struct {
+	req      protocol.Request
+	cap      CapabilityDef
+	query    string
+	args     []any
+	timeout  time.Duration
+	metadata bool
+}
+
+func newCapabilityRateLimiters(cf *CapabilityFile, clock agentClock) map[string]*capabilityRateLimiter {
+	limiters := make(map[string]*capabilityRateLimiter)
+	now := clock()
+	for name, cap := range cf.Capabilities {
+		if cap.Policy.RateLimit != nil {
+			limiters[name] = newCapabilityRateLimiter(*cap.Policy.RateLimit, now)
+		}
+	}
+	return limiters
+}
+
 func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.Response {
+	prepared, rejected := r.admit(req)
+	if rejected != nil {
+		return *rejected
+	}
+	return r.executePrepared(parent, prepared)
+}
+
+func (r *Runner) prepare(req protocol.Request) (*preparedExecution, *protocol.Response) {
 	if req.Capability == "meta" {
-		return protocol.ResultResponse(req.ID, map[string]any{"data": BuildOpenAPI(r.cf), "response_kinds": responseKinds(r.cf)})
+		return &preparedExecution{req: req, metadata: true}, nil
 	}
 	cap, ok := r.caps[req.Capability]
 	if !ok {
-		return r.errorResponse(req, "GATEWAY_CAPABILITY_NOT_FOUND", "capability is not defined", "capability is not defined")
+		resp := r.errorResponse(req, "GATEWAY_CAPABILITY_NOT_FOUND", "capability is not defined", "capability is not defined")
+		return nil, &resp
 	}
 	params, err := validateParams(cap, req.Params)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
+		resp := r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
+		return nil, &resp
 	}
 	query, args, err := buildSQL(r.cf.Database.Driver, cap.SQL, params)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
+		resp := r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
+		return nil, &resp
 	}
 	d, err := timeout(cap.Policy)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
+		resp := r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
+		return nil, &resp
 	}
-	ctx, cancel := context.WithTimeout(parent, d)
+	return &preparedExecution{req: req, cap: cap, query: query, args: args, timeout: d}, nil
+}
+
+func (r *Runner) admit(req protocol.Request) (*preparedExecution, *protocol.Response) {
+	prepared, rejected := r.prepare(req)
+	if rejected != nil {
+		return prepared, rejected
+	}
+	if rejected = r.rateLimitRejection(prepared); rejected != nil {
+		return nil, rejected
+	}
+	return prepared, nil
+}
+
+func (r *Runner) rateLimitRejection(prepared *preparedExecution) *protocol.Response {
+	if prepared.metadata {
+		return nil
+	}
+	req := prepared.req
+	limiter := r.rateLimits[req.Capability]
+	if limiter == nil {
+		return nil
+	}
+	now := time.Now()
+	if r.clock != nil {
+		now = r.clock()
+	}
+	allowed, logRejection := limiter.take(now)
+	if allowed {
+		return nil
+	}
+	if logRejection {
+		r.detailError(req.Capability, "AGENT_RATE_LIMITED", rateLimitedMessage, rateLimitedMessage, req.ID)
+	}
+	resp := protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_RATE_LIMITED", Message: rateLimitedMessage}}
+	return &resp
+}
+
+func (r *Runner) executePrepared(parent context.Context, prepared *preparedExecution) protocol.Response {
+	if prepared.metadata {
+		return protocol.ResultResponse(prepared.req.ID, map[string]any{"data": BuildOpenAPI(r.cf), "response_kinds": responseKinds(r.cf)})
+	}
+	ctx, cancel := context.WithTimeout(parent, prepared.timeout)
 	defer cancel()
-	if cap.Operation.mutation() {
-		payload, _, failure := r.executeMutation(parent, ctx, cap, query, args)
+	if prepared.cap.Operation.mutation() {
+		payload, _, failure := r.executeMutation(parent, ctx, prepared.cap, prepared.query, prepared.args)
 		if failure != nil {
-			return r.errorResponse(req, failure.code, failure.message, failure.detail)
+			return r.errorResponse(prepared.req, failure.code, failure.message, failure.detail)
 		}
-		return protocol.Response{ID: req.ID, Result: payload}
+		return protocol.Response{ID: prepared.req.ID, Result: payload}
 	}
-	return r.executeSelect(ctx, parent, req, cap, query, args)
+	return r.executeSelect(ctx, parent, prepared.req, prepared.cap, prepared.query, prepared.args)
 }
 
 func responseKinds(cf *CapabilityFile) map[string]string {

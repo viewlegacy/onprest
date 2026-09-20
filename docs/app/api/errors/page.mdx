@@ -26,6 +26,7 @@ The same Agent error codes apply to MCP `tools/call` execution failures, but the
 |---:|---|---|---|
 | 503 | `GATEWAY_AGENT_OFFLINE` | REST / OpenAPI | Agent is not connected or metadata is unavailable |
 | 503 | `AGENT_BUSY` | REST | Agent execution slots and bounded waiting queue are full |
+| 429 | `AGENT_RATE_LIMITED` | REST | Agent capability `policy.rate_limit` is exhausted |
 | 504 | `GATEWAY_TIMEOUT` | REST | Agent response timed out |
 | 400 | `AGENT_VALIDATION_FAILED` | REST | Agent rejected params |
 | 409 | `AGENT_CONSTRAINT_VIOLATION` | REST | SELECT or DML hit a typed database integrity constraint; DML rollback was confirmed |
@@ -96,6 +97,7 @@ For agent errors, gateway returns the agent's public `code` and `message` unchan
 | `AGENT_DB_UNREACHABLE` | `database is unreachable` |
 | `AGENT_INTERNAL_ERROR` | `agent internal error` |
 | `AGENT_BUSY` | `agent request queue is full` |
+| `AGENT_RATE_LIMITED` | `agent rate limit exceeded` |
 
 Validation messages use the parameter name but never the submitted value.
 

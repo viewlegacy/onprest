@@ -11,7 +11,7 @@ Most AI/database integrations start from the wrong primitive: database access.
 
 Onprest starts from a smaller primitive: a named business capability. AI agents, SaaS products, internal tools, and partner systems call explicit operations such as `get_customer`, `search_orders`, or `check_inventory`. They never receive a DSN, raw SQL access, or a schema-wide CRUD surface.
 
-The public gateway handles routing, identity, rate limits, and observability. The on-prem agent owns SQL, credentials, validation, execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
+The public gateway handles routing, identity, edge rate limits, and observability. The on-prem agent owns SQL, credentials, validation, per-capability execution and rate policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
@@ -93,7 +93,7 @@ onprest-agent + capability.yaml
 legacy database
 ```
 
-The gateway knows routing, identity, rate limits, and which API keys may call which capability names.
+The gateway knows routing, identity, edge rate limits, and which API keys may call which capability names.
 
 The agent knows what each capability means, how parameters are validated, which prepared SQL is executed, and—for SELECT—which result fields are allowed to leave the customer environment. Mutations return affected count only.
 
@@ -107,7 +107,7 @@ The gateway can be useful without being trusted with meaning.
 | WebSocket edge | Yes | Outbound client |
 | API key authentication | Yes | No |
 | Capability authorization | Yes | Yes |
-| Rate limiting | Yes | No |
+| Rate limiting | Per-source HTTP limit | Optional per-capability execution limit |
 | Request observability | Yes | No |
 | OpenAPI/MCP filtering by API key | Yes | No |
 | SQL text | No | Yes |
@@ -128,7 +128,7 @@ This split is the core of Onprest. The gateway is public and operationally usefu
 
 Onprest assumes the public gateway may be observed or compromised.
 
-That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or capability execution rules. It can authenticate callers, apply rate limits, check whether an API key may call a capability name, serve the agent-defined public contract, and forward the request to the connected agent.
+That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or capability execution rules. It can authenticate callers, apply edge rate limits, check whether an API key may call a capability name, serve the agent-defined public contract, and forward the request to the connected agent.
 
 The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes prepared SQL, filters SELECT output or returns DML affected count, and keeps detailed DB errors local.
 
@@ -204,7 +204,7 @@ capabilities:
 
 The agent loads and validates this file at startup, including checks for each SQL statement, before connecting to the gateway. Changes require an agent restart.
 
-For the full schema, policy options, logging settings, and examples, see the documentation.
+For the full schema, policy defaults and overrides, logging settings, and examples, see [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml).
 
 ## Security Model at a Glance
 

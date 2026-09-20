@@ -176,6 +176,28 @@ capabilities:
 		{name: "overflow max affected rows", policy: "      max_affected_rows: 9223372036854775808", want: "max_affected_rows must be an int64"},
 		{name: "zero timeout", policy: "      timeout: 0s", want: "timeout must be > 0"},
 		{name: "negative timeout", policy: "      timeout: -1s", want: "timeout must be > 0"},
+		{name: "rate limit null", policy: "      rate_limit: null", want: "rate_limit must be an object"},
+		{name: "rate limit missing requests", policy: "      rate_limit: {per: 1s, burst: 1}", want: "requests must be > 0"},
+		{name: "rate limit missing per", policy: "      rate_limit: {requests: 1, burst: 1}", want: "per is required"},
+		{name: "rate limit missing burst", policy: "      rate_limit: {requests: 1, per: 1s}", want: "burst must be > 0"},
+		{name: "rate limit zero requests", policy: "      rate_limit: {requests: 0, per: 1s, burst: 1}", want: "requests must be > 0"},
+		{name: "rate limit negative requests", policy: "      rate_limit: {requests: -1, per: 1s, burst: 1}", want: "requests must be > 0"},
+		{name: "rate limit zero per", policy: "      rate_limit: {requests: 1, per: 0s, burst: 1}", want: "per must be > 0"},
+		{name: "rate limit negative per", policy: "      rate_limit: {requests: 1, per: -1s, burst: 1}", want: "per must be > 0"},
+		{name: "rate limit invalid per", policy: "      rate_limit: {requests: 1, per: soon, burst: 1}", want: "per is invalid"},
+		{name: "rate limit duration overflow", policy: "      rate_limit: {requests: 1, per: 2562048h, burst: 1}", want: "per is invalid"},
+		{name: "rate limit zero burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: 0}", want: "burst must be > 0"},
+		{name: "rate limit negative burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: -1}", want: "burst must be > 0"},
+		{name: "rate limit derived overflow", policy: "      rate_limit: {requests: 1, per: 2ns, burst: 9223372036854775807}", want: "burst and per are too large"},
+		{name: "rate limit sequence", policy: "      rate_limit: [1, 1s, 1]", want: "rate_limit must be an object"},
+		{name: "rate limit unknown field", policy: "      rate_limit: {requests: 1, per: 1s, burst: 1, window: fixed}", want: "field window not found"},
+		{name: "rate limit fractional requests", policy: "      rate_limit: {requests: 1.5, per: 1s, burst: 1}", want: "rate_limit.requests must be an integer"},
+		{name: "rate limit string requests", policy: `      rate_limit: {requests: "1", per: 1s, burst: 1}`, want: "rate_limit.requests must be an integer"},
+		{name: "rate limit requests overflow", policy: "      rate_limit: {requests: 9223372036854775808, per: 1s, burst: 1}", want: "rate_limit.requests must be an int64"},
+		{name: "rate limit numeric per", policy: "      rate_limit: {requests: 1, per: 1, burst: 1}", want: "per is invalid"},
+		{name: "rate limit fractional burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: 1.5}", want: "rate_limit.burst must be an integer"},
+		{name: "rate limit string burst", policy: `      rate_limit: {requests: 1, per: 1s, burst: "1"}`, want: "rate_limit.burst must be an integer"},
+		{name: "rate limit burst overflow", policy: "      rate_limit: {requests: 1, per: 1ns, burst: 9223372036854775808}", want: "rate_limit.burst must be an int64"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "capability.yaml")
@@ -187,6 +209,48 @@ capabilities:
 				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestCapabilityRateLimitDefaultsAndObjectOverride(t *testing.T) {
+	path := writeCapabilityFixture(t, `
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database: {driver: postgres, host: localhost, port: 5432, name: test, user: test}
+defaults:
+  rate_limit: {requests: 60, per: 1m, burst: 10}
+capabilities:
+  inherited:
+    sql: select 1 as id
+    result: {id: {type: integer}}
+  overridden:
+    sql: select 2 as id
+    policy:
+      rate_limit: {requests: 2, per: 1s, burst: 1}
+    result: {id: {type: integer}}
+`)
+	cf, err := LoadCapabilityFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inherited := cf.Capabilities["inherited"].Policy.RateLimit
+	if inherited == nil || inherited.Requests != 60 || inherited.Per != "1m" || inherited.Burst != 10 {
+		t.Fatalf("inherited rate limit = %#v", inherited)
+	}
+	overridden := cf.Capabilities["overridden"].Policy.RateLimit
+	if overridden == nil || overridden.Requests != 2 || overridden.Per != "1s" || overridden.Burst != 1 {
+		t.Fatalf("overridden rate limit = %#v", overridden)
+	}
+
+	without := validCapabilityFile()
+	if err := without.Lint(); err != nil {
+		t.Fatal(err)
+	}
+	for name, capability := range without.Capabilities {
+		if capability.Policy.RateLimit != nil {
+			t.Fatalf("%s unexpectedly has rate limit %#v", name, capability.Policy.RateLimit)
+		}
 	}
 }
 
@@ -501,6 +565,12 @@ func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
 	}
 	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
 		t.Fatalf("example runtime.max_concurrent_requests = %v, want 16", cf.Runtime.MaxConcurrentRequests)
+	}
+	for name, capability := range cf.Capabilities {
+		rate := capability.Policy.RateLimit
+		if rate == nil || rate.Requests != 60 || rate.Per != "1m" || rate.Burst != 10 {
+			t.Fatalf("example %s rate limit = %#v, want 60/1m burst 10", name, rate)
+		}
 	}
 }
 

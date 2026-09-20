@@ -25,12 +25,20 @@ import (
 const (
 	agentResponseWriteTimeout  = 5 * time.Second
 	agentChallengeFetchTimeout = 10 * time.Second
+	agentMinResponseQueueSize  = 256
+	// Gateway request IDs are 26-byte ULIDs. Keep generous compatibility room
+	// for internal peers while bounding every echoed response and detail-log ID;
+	// otherwise a non-reading peer could retain 256 near-16MiB IDs in the
+	// bounded response queue.
+	agentMaxWireIDBytes = 256
 )
 
 type Runner struct {
 	cfg             Config
 	cf              *CapabilityFile
 	caps            map[string]CapabilityDef
+	rateLimits      map[string]*capabilityRateLimiter
+	clock           agentClock
 	db              *sql.DB
 	logOut          io.Writer
 	detailLog       io.Writer
@@ -38,9 +46,11 @@ type Runner struct {
 }
 
 type requestTask struct {
-	req    protocol.Request
-	ctx    context.Context
-	cancel context.CancelFunc
+	prepared *preparedExecution
+	response *protocol.Response
+	id       string
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 type inflightRegistry struct {
@@ -95,7 +105,8 @@ func NewRunner(ctx context.Context, cfg Config, logOut io.Writer) (*Runner, erro
 		}
 		return nil, startupFailure()
 	}
-	r := &Runner{cfg: cfg, cf: prepared.cf, caps: prepared.caps, db: prepared.db, logOut: logOut, detailLog: prepared.detailLog.Writer, detailLogCloser: preparationLogCloser{prepared.detailLog}}
+	clock := agentClock(time.Now)
+	r := &Runner{cfg: cfg, cf: prepared.cf, caps: prepared.caps, rateLimits: newCapabilityRateLimiters(prepared.cf, clock), clock: clock, db: prepared.db, logOut: logOut, detailLog: prepared.detailLog.Writer, detailLogCloser: preparationLogCloser{prepared.detailLog}}
 	r.log("agent_ready", map[string]any{"capabilities": len(prepared.cf.Capabilities), "driver": prepared.cf.Database.Driver, "max_concurrent_requests": *prepared.cf.Runtime.MaxConcurrentRequests})
 	return r, nil
 }
@@ -190,7 +201,7 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 	connCtx, cancel := context.WithCancel(ctx)
 	maxConcurrent := *r.cf.Runtime.MaxConcurrentRequests
 	requests := make(chan requestTask, maxConcurrent)
-	responses := make(chan protocol.Response, maxConcurrent*2+1)
+	responses := make(chan protocol.Response, agentResponseQueueSize(maxConcurrent))
 	inflight := &inflightRegistry{cancels: map[string]context.CancelFunc{}}
 	done := make(chan struct{})
 	go func() {
@@ -210,11 +221,15 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 				case task := <-requests:
 					var resp protocol.Response
 					if task.ctx.Err() != nil {
-						inflight.finish(task.req.ID)
+						inflight.finish(task.id)
 						continue
 					}
-					resp = r.handle(task.ctx, task.req)
-					inflight.finish(task.req.ID)
+					if task.response != nil {
+						resp = *task.response
+					} else {
+						resp = r.executePrepared(task.ctx, task.prepared)
+					}
+					inflight.finish(task.id)
 					select {
 					case responses <- resp:
 					case <-connCtx.Done():
@@ -270,6 +285,12 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			}
 			continue
 		}
+		// Do not echo or log an invalid peer-controlled ID. Closing here also
+		// keeps it out of rate admission, the in-flight registry, and the bounded
+		// response queue. The WebSocket message itself remains bounded by ws.
+		if !validAgentWireID(envelope.ID) {
+			return
+		}
 		if envelope.Type != "" {
 			if envelope.Type == "cancel" && envelope.ID != "" {
 				inflight.cancel(envelope.ID)
@@ -289,6 +310,23 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			}
 			continue
 		}
+		prepared, prepareRejected := r.prepare(req)
+		if prepareRejected == nil {
+			if rateRejected := r.rateLimitRejection(prepared); rateRejected != nil {
+				select {
+				case responses <- *rateRejected:
+				case <-connCtx.Done():
+					return
+				default:
+					// A malicious peer that does not read rejections must not
+					// block the WebSocket reader or grow a response backlog.
+					cancel()
+					_ = conn.Close()
+					return
+				}
+				continue
+			}
+		}
 		taskCtx, taskCancel := context.WithCancel(connCtx)
 		if !inflight.add(req.ID, taskCancel) {
 			taskCancel()
@@ -299,8 +337,9 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			}
 			continue
 		}
+		task := requestTask{id: req.ID, prepared: prepared, response: prepareRejected, ctx: taskCtx, cancel: taskCancel}
 		select {
-		case requests <- requestTask{req: req, ctx: taskCtx, cancel: taskCancel}:
+		case requests <- task:
 		case <-connCtx.Done():
 			inflight.finish(req.ID)
 			return
@@ -317,6 +356,18 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			}
 		}
 	}
+}
+
+func validAgentWireID(id string) bool {
+	return id != "" && len(id) <= agentMaxWireIDBytes
+}
+
+func agentResponseQueueSize(maxConcurrent int) int {
+	size := maxConcurrent*2 + 1
+	if size < agentMinResponseQueueSize {
+		return agentMinResponseQueueSize
+	}
+	return size
 }
 
 func (r *Runner) log(event string, fields map[string]any) {

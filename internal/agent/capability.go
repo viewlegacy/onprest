@@ -491,18 +491,101 @@ func isYAMLMergeKey(node *yaml.Node) bool {
 }
 
 type PolicyDef struct {
-	Readonly        *bool  `json:"readonly,omitempty" yaml:"readonly,omitempty"`
-	Timeout         string `json:"timeout" yaml:"timeout"`
-	MaxRows         *int   `json:"max_rows,omitempty" yaml:"max_rows,omitempty"`
-	MaxBytes        string `json:"max_bytes" yaml:"max_bytes"`
-	MaxAffectedRows *int64 `json:"max_affected_rows,omitempty" yaml:"max_affected_rows,omitempty"`
-	ExposeInOpenAPI *bool  `json:"expose_in_openapi,omitempty" yaml:"expose_in_openapi,omitempty"`
+	Readonly        *bool         `json:"readonly,omitempty" yaml:"readonly,omitempty"`
+	Timeout         string        `json:"timeout" yaml:"timeout"`
+	MaxRows         *int          `json:"max_rows,omitempty" yaml:"max_rows,omitempty"`
+	MaxBytes        string        `json:"max_bytes" yaml:"max_bytes"`
+	MaxAffectedRows *int64        `json:"max_affected_rows,omitempty" yaml:"max_affected_rows,omitempty"`
+	RateLimit       *RateLimitDef `json:"rate_limit,omitempty" yaml:"rate_limit,omitempty"`
+	ExposeInOpenAPI *bool         `json:"expose_in_openapi,omitempty" yaml:"expose_in_openapi,omitempty"`
+}
+
+type RateLimitDef struct {
+	Requests int64  `json:"requests" yaml:"requests"`
+	Per      string `json:"per" yaml:"per"`
+	Burst    int64  `json:"burst" yaml:"burst"`
+}
+
+func (r *RateLimitDef) UnmarshalYAML(node *yaml.Node) error {
+	if err := validateKnownYAMLMapping(node, map[string]struct{}{
+		"requests": {}, "per": {}, "burst": {},
+	}, "rate_limit definition", map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	if err := validateRateLimitIntegerYAML(node, map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	type plainRateLimitDef RateLimitDef
+	var decoded plainRateLimitDef
+	if err := node.Decode(&decoded); err != nil {
+		return err
+	}
+	*r = RateLimitDef(decoded)
+	return nil
+}
+
+func validateRateLimitIntegerYAML(node *yaml.Node, stack map[*yaml.Node]bool) error {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return errors.New("rate_limit definition contains an empty YAML alias")
+		}
+		if stack[node] {
+			return errors.New("rate_limit definition contains a cyclic YAML merge")
+		}
+		stack[node] = true
+		defer delete(stack, node)
+		return validateRateLimitIntegerYAML(node.Alias, stack)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	if stack[node] {
+		return errors.New("rate_limit definition contains a cyclic YAML merge")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			if value.Kind == yaml.SequenceNode {
+				for _, source := range value.Content {
+					if err := validateRateLimitIntegerYAML(source, stack); err != nil {
+						return err
+					}
+				}
+			} else if err := validateRateLimitIntegerYAML(value, stack); err != nil {
+				return err
+			}
+			continue
+		}
+		if key.Kind != yaml.ScalarNode || (key.Value != "requests" && key.Value != "burst") {
+			continue
+		}
+		actual, err := dereferenceYAMLNode(value, map[*yaml.Node]bool{})
+		if err != nil {
+			return err
+		}
+		if actual.Kind != yaml.ScalarNode || actual.Tag != "!!int" {
+			return fmt.Errorf("rate_limit.%s must be an integer", key.Value)
+		}
+		var parsed int64
+		if err := actual.Decode(&parsed); err != nil {
+			return fmt.Errorf("rate_limit.%s must be an int64: %w", key.Value, err)
+		}
+	}
+	return nil
 }
 
 func (p *PolicyDef) UnmarshalYAML(node *yaml.Node) error {
 	if err := validateKnownYAMLMapping(node, map[string]struct{}{
-		"readonly": {}, "timeout": {}, "max_rows": {}, "max_bytes": {}, "max_affected_rows": {}, "expose_in_openapi": {},
+		"readonly": {}, "timeout": {}, "max_rows": {}, "max_bytes": {}, "max_affected_rows": {}, "rate_limit": {}, "expose_in_openapi": {},
 	}, "policy definition", map[*yaml.Node]bool{}); err != nil {
+		return err
+	}
+	if err := validateRateLimitYAML(node, map[*yaml.Node]bool{}); err != nil {
 		return err
 	}
 	if err := validateMaxAffectedRowsYAML(node, map[*yaml.Node]bool{}); err != nil {
@@ -514,6 +597,57 @@ func (p *PolicyDef) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	*p = PolicyDef(decoded)
+	return nil
+}
+
+func validateRateLimitYAML(node *yaml.Node, stack map[*yaml.Node]bool) error {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return errors.New("policy definition contains an empty YAML alias")
+		}
+		if stack[node] {
+			return errors.New("policy definition contains a cyclic YAML merge")
+		}
+		stack[node] = true
+		defer delete(stack, node)
+		return validateRateLimitYAML(node.Alias, stack)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	if stack[node] {
+		return errors.New("policy definition contains a cyclic YAML merge")
+	}
+	stack[node] = true
+	defer delete(stack, node)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if isYAMLMergeKey(key) {
+			if value.Kind == yaml.SequenceNode {
+				for _, source := range value.Content {
+					if err := validateRateLimitYAML(source, stack); err != nil {
+						return err
+					}
+				}
+			} else if err := validateRateLimitYAML(value, stack); err != nil {
+				return err
+			}
+			continue
+		}
+		if key.Kind != yaml.ScalarNode || key.Value != "rate_limit" {
+			continue
+		}
+		actual, err := dereferenceYAMLNode(value, map[*yaml.Node]bool{})
+		if err != nil {
+			return err
+		}
+		if actual.Kind != yaml.MappingNode {
+			return errors.New("rate_limit must be an object")
+		}
+	}
 	return nil
 }
 
@@ -950,6 +1084,11 @@ func (p PolicyDef) lint(path string) error {
 	if p.MaxAffectedRows != nil && *p.MaxAffectedRows <= 0 {
 		return fmt.Errorf("%s.max_affected_rows must be > 0", path)
 	}
+	if p.RateLimit != nil {
+		if err := p.RateLimit.lint(); err != nil {
+			return fmt.Errorf("%s.rate_limit: %w", path, err)
+		}
+	}
 	if _, err := maxBytes(p); err != nil {
 		return fmt.Errorf("%s.max_bytes is invalid", path)
 	}
@@ -996,6 +1135,9 @@ func mergePolicy(defaults, cap PolicyDef) PolicyDef {
 	}
 	if cap.MaxAffectedRows != nil {
 		out.MaxAffectedRows = cap.MaxAffectedRows
+	}
+	if cap.RateLimit != nil {
+		out.RateLimit = cap.RateLimit
 	}
 	if cap.ExposeInOpenAPI != nil {
 		out.ExposeInOpenAPI = cap.ExposeInOpenAPI

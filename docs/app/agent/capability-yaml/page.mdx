@@ -65,6 +65,10 @@ defaults:
   timeout: 30s
   max_rows: 1000
   max_bytes: 1MB
+  rate_limit:
+    requests: 60
+    per: 1m
+    burst: 10
 
 capabilities:
   get_customer:
@@ -212,6 +216,7 @@ If neither `defaults` nor capability `policy` sets a value, the implementation d
 | `max_rows` | `100` |
 | `max_affected_rows` | unlimited |
 | `max_bytes` | `1MB` |
+| `rate_limit` | unlimited |
 | `expose_in_openapi` | `true` |
 
 ## Capabilities
@@ -278,11 +283,18 @@ Parameter definitions retain yaml.v3 anchor, alias, and `<<` merge behavior, inc
 | `max_rows` | maximum rows returned by SELECT; ignored for DML |
 | `max_affected_rows` | maximum affected count for INSERT, UPDATE, and DELETE; DML only |
 | `max_bytes` | maximum response size, such as `256KB` |
+| `rate_limit` | optional per-capability token bucket with required `requests`, `per`, and `burst` fields |
 | `expose_in_openapi` | whether to include the capability in OpenAPI and MCP tools/list |
 
 Use read-only DB users for read capabilities. YAML policy is an application guard; DB privileges should still enforce least privilege.
 
 `timeout` accepts a positive Go duration string such as `5s` or `500ms`. When specified, `max_rows` must be a positive integer and `max_affected_rows` a positive int64. Invalid configured values are rejected at startup. `max_bytes` uses the same suffix syntax as `logging.max_size`, but requires a positive integer rather than allowing zero.
+
+`rate_limit.requests` and `rate_limit.burst` must be positive int64 integers, and `rate_limit.per` must be a positive Go duration. All three fields are required when the object is present. The bucket starts with `burst` tokens and refills at `requests` tokens per `per` using monotonic elapsed time. For example, `requests: 60`, `per: 1m`, and `burst: 10` starts with 10 tokens and refills one token per second; it is not a fixed calendar-minute window. Settings whose integer capacity calculation cannot be represented are rejected at startup.
+
+The `rate_limit` object follows normal policy precedence: a capability inherits the complete object from `defaults` when it omits the field, while a capability-level object replaces it as a unit. Omitting it from both locations adds no Agent rate limit; `runtime.max_concurrent_requests` and its bounded wait queue still apply. Buckets are fixed per configured capability, are not keyed by caller or request ID, and are not persisted. A Gateway reconnect keeps the current bucket, while an Agent restart starts again at `burst`.
+
+The Agent resolves the capability and validates params before consuming a token, then checks the bucket before entering the execution queue or acquiring database resources. A later busy response, cancellation, timeout, or execution failure does not return the token. Rate-limit rejection is `AGENT_RATE_LIMITED`; see [Errors](/api/errors#rest-error-status-mappings).
 
 Policy values follow the precedence described in [Defaults](#defaults). SELECT rejects `max_affected_rows`, including an inherited value, so set this limit on individual mutation capabilities in a file containing both reads and mutations.
 

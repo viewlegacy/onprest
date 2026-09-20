@@ -20,6 +20,7 @@ const (
 	errAgentDBUnreachable             = "AGENT_DB_UNREACHABLE"
 	errAgentInternal                  = "AGENT_INTERNAL_ERROR"
 	errAgentBusy                      = "AGENT_BUSY"
+	errAgentRateLimited               = "AGENT_RATE_LIMITED"
 	errAgentConstraintViolation       = "AGENT_CONSTRAINT_VIOLATION"
 	errAgentAffectedRowsExceeded      = "AGENT_AFFECTED_ROWS_EXCEEDED"
 	errAgentTransactionOutcomeUnknown = "AGENT_TRANSACTION_OUTCOME_UNKNOWN"
@@ -51,6 +52,8 @@ func agentErrorStatus(code string) (int, string) {
 		return http.StatusBadGateway, errAgentInternal
 	case errAgentBusy:
 		return http.StatusServiceUnavailable, errAgentBusy
+	case errAgentRateLimited:
+		return http.StatusTooManyRequests, errAgentRateLimited
 	case errAgentConstraintViolation:
 		return http.StatusConflict, errAgentConstraintViolation
 	case errAgentAffectedRowsExceeded:

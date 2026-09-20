@@ -346,6 +346,152 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 	}
 }
 
+func TestAgentCapabilityRateLimitRejectsBeforeRealPostgresThroughRESTAndMCP(t *testing.T) {
+	dbConfig := postgresContainerConfig(t)
+	db, err := sql.Open(sqlDriverName("postgres"), postgresDSN(dbConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := db.ExecContext(ctx, `create table if not exists onprest_agent_rate_limit_probe (kind text not null, id text primary key)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `truncate table onprest_agent_rate_limit_probe`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = db.ExecContext(cleanupCtx, `drop table if exists onprest_agent_rate_limit_probe`)
+	})
+
+	secrets := newITSecrets(t)
+	addr := freeAddr(t)
+	capabilityFile := writePostgresCapabilityWithRuntime(t, t.TempDir(), dbConfig, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, 2, `  rest_limited:
+    sql: insert into onprest_agent_rate_limit_probe (kind, id) values ('rest', :id)
+    params:
+      id: {type: string, required: true}
+    policy:
+      readonly: false
+      timeout: 2s
+      max_affected_rows: 1
+      max_bytes: 1KB
+      rate_limit: {requests: 1, per: 1h, burst: 2}
+  mcp_limited:
+    sql: insert into onprest_agent_rate_limit_probe (kind, id) values ('mcp', :id)
+    params:
+      id: {type: string, required: true}
+    policy:
+      readonly: false
+      timeout: 2s
+      max_affected_rows: 1
+      max_bytes: 1KB
+      rate_limit: {requests: 1, per: 1h, burst: 1}`)
+
+	runCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+	baseURL := startInternalGatewayWithConfig(t, runCtx, addr, secrets, 3*time.Second, io.Discard, func(cfg *gateway.Config) {
+		// Keep the Gateway limiter outside the test boundary. Agent-side
+		// rejection must be the only 429 reached by this workload.
+		cfg.RateLimit = gateway.RateLimitConfig{RequestsPerSecond: 1_000_000, Burst: 10_000}
+		cfg.AgentPingInterval = 20 * time.Millisecond
+		cfg.AgentPongTimeout = 50 * time.Millisecond
+	})
+	var agentLogs bytes.Buffer
+	runner, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, &agentLogs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerDone := make(chan error, 1)
+	go func() { runnerDone <- runner.Run(runCtx) }()
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+
+	type httpResult struct {
+		status int
+		body   []byte
+		err    error
+	}
+	const concurrentBurstRequests = 20
+	parallelResults := make(chan httpResult, concurrentBurstRequests)
+	for i := 0; i < concurrentBurstRequests; i++ {
+		go func(i int) {
+			status, body, err := postCapabilityRequest(baseURL, secrets.APIKey, "rest_limited", `{"id":"rest-`+time.Duration(i).String()+`"}`)
+			parallelResults <- httpResult{status: status, body: body, err: err}
+		}(i)
+	}
+	accepted, limited := 0, 0
+	for range concurrentBurstRequests {
+		got := <-parallelResults
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		switch got.status {
+		case http.StatusOK:
+			accepted++
+			if !strings.Contains(string(got.body), `"count":1`) {
+				t.Fatalf("REST accepted response = %s", got.body)
+			}
+		case http.StatusTooManyRequests:
+			limited++
+			requireAPIErrorCode(t, got.body, "AGENT_RATE_LIMITED")
+		default:
+			t.Fatalf("parallel REST status=%d body=%s", got.status, got.body)
+		}
+	}
+	if accepted != 2 || limited != concurrentBurstRequests-2 {
+		t.Fatalf("parallel burst results accepted=%d limited=%d", accepted, limited)
+	}
+	const restRejected = 50
+	for i := 0; i < restRejected; i++ {
+		secret := "REST-SECRET-SENTINEL-" + time.Duration(i).String()
+		status, body := postCapability(t, baseURL, secrets.APIKey, "rest_limited", `{"id":"`+secret+`"}`)
+		if status != http.StatusTooManyRequests {
+			t.Fatalf("REST rejection %d status=%d body=%s", i, status, body)
+		}
+		requireAPIErrorCode(t, body, "AGENT_RATE_LIMITED")
+		if !strings.Contains(string(body), "agent rate limit exceeded") || strings.Contains(string(body), secret) {
+			t.Fatalf("REST rejection exposed params or wrong message: %s", body)
+		}
+	}
+
+	mcpSuccess := postMCPPayloadWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":"mcp-ok","method":"tools/call","params":{"name":"mcp_limited","arguments":{"id":"mcp-ok"}}}`)
+	if !strings.Contains(string(mcpSuccess), `"count":1`) {
+		t.Fatalf("MCP burst response = %s", mcpSuccess)
+	}
+	const mcpRejected = 25
+	for i := 0; i < mcpRejected; i++ {
+		secret := "MCP-SECRET-SENTINEL-" + time.Duration(i).String()
+		body := postMCPPayloadWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":"mcp-limited","method":"tools/call","params":{"name":"mcp_limited","arguments":{"id":"`+secret+`"}}}`)
+		if text := requireMCPToolErrorCode(t, body, "AGENT_RATE_LIMITED"); !strings.Contains(text, "agent rate limit exceeded") || strings.Contains(string(body), secret) {
+			t.Fatalf("MCP rejection exposed params or wrong message: %s", body)
+		}
+	}
+
+	var restRows, mcpRows int
+	if err := db.QueryRowContext(ctx, `select count(*) from onprest_agent_rate_limit_probe where kind = 'rest'`).Scan(&restRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `select count(*) from onprest_agent_rate_limit_probe where kind = 'mcp'`).Scan(&mcpRows); err != nil {
+		t.Fatal(err)
+	}
+	if restRows != 2 || mcpRows != 1 {
+		t.Fatalf("DB reach counts = rest %d mcp %d, want burst-only 2/1", restRows, mcpRows)
+	}
+	waitForHealthAgentState(t, baseURL, true)
+	if connections := strings.Count(agentLogs.String(), `"event":"gateway_connected"`); connections != 1 {
+		t.Fatalf("Agent connection changed under rate-limit flood: %d logs=%s", connections, agentLogs.String())
+	}
+
+	stop()
+	select {
+	case <-runnerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("agent runner did not stop")
+	}
+}
+
 func TestPostgresDBUnreachableDuringQuery(t *testing.T) {
 	db, stopDB := dedicatedPostgresContainer(t)
 	secrets := newITSecrets(t)
