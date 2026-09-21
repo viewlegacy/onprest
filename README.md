@@ -107,7 +107,7 @@ The gateway can be useful without being trusted with meaning.
 | WebSocket edge | Yes | Outbound client |
 | API key authentication | Yes | No |
 | Capability authorization | Yes | Yes |
-| Rate limiting | Per-source HTTP limit | Optional per-capability execution limit |
+| Rate limiting | Yes (per source IP) | Yes (per capability) |
 | Request observability | Yes | No |
 | OpenAPI/MCP filtering by API key | Yes | No |
 | SQL text | No | Yes |
