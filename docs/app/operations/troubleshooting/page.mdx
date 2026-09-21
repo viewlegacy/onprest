@@ -92,7 +92,9 @@ This is expected. Do not look for SQL detail in gateway stdout or HTTP responses
 
 Check the error code to identify which limiter rejected the request.
 
-`GATEWAY_RATE_LIMITED` means the source IP exceeded the Gateway rate or burst limits. Review:
+`GATEWAY_RATE_LIMITED` means the source IP exceeded the Gateway rate or burst limits.
+
+Review:
 
 - `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND`
 - `GATEWAY_RATE_LIMIT_BURST`

@@ -41,7 +41,7 @@ This separation is the core of Onprest.
 - The agent validates params and policy, then enforces the SELECT result allow-list or DML count-only contract from `capability.yaml`.
 - OpenAPI / MCP tools are generated from the agent definition.
 
-Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL, holds no DB credentials, and cannot bypass a configured Agent capability rate limit.
+Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL, holds no DB credentials, and cannot bypass the capability contract and execution policies enforced by the Agent.
 
 ## Responsibility Split
 
@@ -127,7 +127,7 @@ Normal startup and `onprest-agent validate` share the same configuration and dat
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 
-Request IDs correlate responses, so concurrent responses may arrive out of request order. After capability and params validation, an optional capability token bucket runs before the execution queue and database. Its state is fixed per configured capability and resets to full burst only when the Agent restarts. Execution workers do not own the WebSocket reader, allowing ping/pong processing while workers are busy or requests are rate-rejected. One bounded writer sends response frames in sequence; each network write has five seconds to finish after it starts. A full execution wait queue returns `AGENT_BUSY`; an exhausted capability bucket returns `AGENT_RATE_LIMITED`. The transport handles fragmentation, ping/pong/close control frames, mask-direction validation, bounded messages, and handshake deadlines.
+Request IDs correlate responses, so concurrent responses may arrive out of request order. Execution workers do not own the WebSocket reader, allowing ping/pong processing while workers are busy. One bounded writer sends response frames in sequence; each network write has five seconds to finish after it starts. A full execution wait queue returns `AGENT_BUSY`. The transport handles fragmentation, ping/pong/close control frames, mask-direction validation, bounded messages, and handshake deadlines.
 
 ## Capability Tunnel
 

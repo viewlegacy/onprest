@@ -11,7 +11,7 @@ Most AI/database integrations start from the wrong primitive: database access.
 
 Onprest starts from a smaller primitive: a named business capability. AI agents, SaaS products, internal tools, and partner systems call explicit operations such as `get_customer`, `search_orders`, or `check_inventory`. They never receive a DSN, raw SQL access, or a schema-wide CRUD surface.
 
-The public gateway handles routing, identity, edge rate limits, and observability. The on-prem agent owns SQL, credentials, validation, per-capability execution and rate policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
+The public gateway handles routing, identity, edge rate limits, and observability. The on-prem agent owns SQL, credentials, validation, per-capability execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
@@ -204,7 +204,7 @@ capabilities:
 
 The agent loads and validates this file at startup, including checks for each SQL statement, before connecting to the gateway. Changes require an agent restart.
 
-For the full schema, policy defaults and overrides, logging settings, and examples, see [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml).
+For the full schema, policy options, logging settings, and examples, see [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml).
 
 ## Security Model at a Glance
 
