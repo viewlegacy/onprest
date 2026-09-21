@@ -127,8 +127,6 @@ Normal startup and `onprest-agent validate` share the same configuration and dat
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 
-Request IDs correlate responses, so concurrent responses may arrive out of request order. Execution workers do not own the WebSocket reader, allowing ping/pong processing while workers are busy. One bounded writer sends response frames in sequence; each network write has five seconds to finish after it starts. A full execution wait queue returns `AGENT_BUSY`. The transport handles fragmentation, ping/pong/close control frames, mask-direction validation, bounded messages, and handshake deadlines.
-
 ## Capability Tunnel
 
 A normal gateway-to-agent request contains only a capability name and params.
