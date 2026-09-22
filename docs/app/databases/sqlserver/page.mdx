@@ -46,5 +46,3 @@ This can have permission implications. Confirm the DB user has the permissions r
 ```bash
 go test -tags=integration ./it/... -args -onprest-it-db=sqlserver
 ```
-
-The release suite uses a real TDS connection to verify encryption, certificate and hostname failures, certificate replacement, and reconnect behavior. See [Test Commands](/reference/test-commands) for the complete release-test scope.

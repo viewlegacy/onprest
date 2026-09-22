@@ -11,13 +11,15 @@ Onprest OSS deployment is the gateway binary plus the agent binary.
 
 The repository does not need to be deployed from source. Build artifacts can be copied to another directory or host.
 
-## Supported Operating Systems
+## Supported Operating System Baseline
 
 | OS | Architectures | Minimum |
 |---|---|---|
 | Linux | `amd64`, `arm64` | A kernel supported by Go 1.26 |
 | Windows | `amd64` | Windows 10 or Windows Server 2016 |
 | macOS | `amd64`, `arm64` | macOS 12 |
+
+These are the officially supported baselines. Earlier versions may run, but they are not covered by the compatibility guarantee. Validate the exact release binary in the target environment before deploying to an older legacy system.
 
 Cross-building proves only that artifacts can be produced. See [Release Gate](/operations/release-gate) for the native runtime evidence required before release.
 
@@ -86,7 +88,11 @@ When the agent runs as an OS service, stdout/stderr are handled by the service m
 
 ### Database TLS certificate rotation
 
-Database TLS CA and client certificate files are loaded when the Agent creates the DB pool. Coordinate their rotation with the database server, replace each Agent-side file atomically, run `onprest-agent validate --config PATH`, and restart the Agent through the host service manager so a new pool loads the new material. Confirm a capability call after restart before retiring the old trust material. A failed CA, expiry, or hostname check stops the connection; the Agent does not retry with a weaker mode or plaintext.
+Database TLS CA and client certificate files are loaded when the Agent creates the DB pool. Use an overlap period so the old and new material are both accepted until the new connection is verified.
+
+For a private-CA rotation, first deploy a trust bundle containing both the old and new CA, run `onprest-agent validate --config PATH`, and restart the Agent through the host service manager. Rotate the database server certificate, confirm a capability call, and only then remove the old CA from the bundle and validate and restart again. For a client-certificate rotation, configure the database to accept both the old and new certificates or issuing CAs during the overlap, atomically replace the Agent certificate and key, validate and restart, confirm a capability call, and then revoke the old certificate or CA. If the database cannot provide an overlap period, schedule a coordinated maintenance window instead.
+
+Do not retire old trust or credentials until the post-restart capability check succeeds. A failed CA, expiry, or hostname check stops the connection; the Agent does not retry with a weaker mode or plaintext.
 
 ## Docker Optional Usage
 

@@ -153,7 +153,7 @@ In this model, API keys, the agent public key, OpenAPI cache, and stdout logs ar
 
 Network-edge infrastructure and TLS termination are environment-owned. The gateway can be exposed directly or placed behind an optional compatible reverse proxy or load balancer. See [Reverse Proxy](/gateway/reverse-proxy) when using one.
 
-Database TLS is independent from gateway-edge TLS. PostgreSQL, MySQL, SQL Server, and Oracle support `require` and `verify-full`; PostgreSQL additionally supports `verify-ca`. The default is `disable`. `verify-full` authenticates the trust chain and configured host name, while `require` provides encryption only. Optional client certificates are supported for PostgreSQL and MySQL. Unsupported combinations and verification failures are rejected instead of silently downgraded.
+Database TLS is independent from gateway-edge TLS. PostgreSQL, MySQL, SQL Server, and Oracle support `require` and `verify-full`; PostgreSQL additionally supports `verify-ca`. The default is `disable`. `verify-full` authenticates the trust chain and configured host name, while `require` provides encryption only. Optional client certificates are supported for PostgreSQL and MySQL. Unsupported combinations and verification failures are rejected instead of silently downgraded. See [Database configuration](/agent/capability-yaml#database) and the [database-specific guides](/databases) for field-level configuration.
 
 ## Product Boundary
 

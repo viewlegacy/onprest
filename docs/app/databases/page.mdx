@@ -33,14 +33,14 @@ Configuration load and lint failures are reported by the CLI or startup stderr b
 
 ## Connection Generation and TLS
 
-The agent generates DSNs from the `database` section of `capability.yaml`.
+The agent creates each database connection from the `database` section of `capability.yaml`.
 
-| Driver | Connection behavior |
+| Driver | TLS support |
 |---|---|
-| `postgres` | URL DSN with `disable`, `require`, `verify-ca`, or `verify-full`; optional client certificate authentication |
-| `mysql` | Structured driver config and connector-local TLS with `disable`, `require`, or `verify-full`; optional client certificate authentication |
-| `sqlserver` | URL DSN with `disable`, encrypted-but-unverified `require`, or CA/hostname-verified `verify-full` |
-| `oracle` | Pure-Go `go-ora` URL/TCPS with `disable`, `require`, or `verify-full`; no Oracle Instant Client or native Oracle runtime |
+| `postgres` | `disable`, `require`, `verify-ca`, or `verify-full`; optional client certificate authentication |
+| `mysql` | `disable`, `require`, or `verify-full`; optional client certificate authentication |
+| `sqlserver` | `disable`, encrypted-but-unverified `require`, or CA/hostname-verified `verify-full` |
+| `oracle` | `disable`, `require`, or `verify-full`; no Oracle Instant Client or native Oracle runtime |
 
 TLS defaults to `disable`. All four drivers support encryption-only `require` and identity-verifying `verify-full`; only PostgreSQL also supports `verify-ca`. `verify-full` uses the OS trust store when `ca_file` is omitted and verifies `server_name` or the connection host. Unsupported fields and modes are rejected at startup, and a failed verification never falls back to plaintext. Client certificates are supported only by PostgreSQL and MySQL.
 
