@@ -18,8 +18,9 @@ This gate verifies:
 - PostgreSQL DB interruption stability 5 consecutive times
 - all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
 - MySQL special-character credential connection
-- PostgreSQL `disable` / `require` / `verify-ca` / `verify-full` TLS against a real database, including private/wrong CA, hostname mismatch, and client-certificate authentication
-- SQL Server `require` / `verify-full` TLS against a TLS-enabled real database, including wrong CA and hostname rejection
+- the four-database TLS contract against real databases: `disable`, `require`, and `verify-full` for PostgreSQL, MySQL, SQL Server, and Oracle, plus PostgreSQL `verify-ca`
+- encryption observation, private/wrong CA, hostname and `server_name`, expiry, certificate replacement/pool recreation, reconnect without plaintext downgrade, and supported PostgreSQL/MySQL client-certificate authentication
+- Oracle TCPS through the pure-Go driver without Oracle Instant Client, including verification of an override name even though the driver supplies the connection host
 - Docker image operational tests
 - Docker Compose env-file operational tests
 - test/subtest skip count is zero in required mode (`go test -json` package records with no `Test` field are not test skips)
@@ -40,6 +41,8 @@ Pull requests targeting `main` and pushes to `main` also run these checks:
 | `release-gate / release-ready` | Requires both Linux integration and the complete reusable service lifecycle workflow to succeed |
 
 The three service checks use the native OS managers, a real Gateway, and a real PostgreSQL instance. Each host first runs the validation-log crash recovery and adversarial-path safety tests, including native symlink/reparse-point handling, then verifies service registration, actual runtime detail writes and rotation markers while production validation overlaps, latest-failure cleanup, and native file permissions. The reusable workflow fails if any OS job fails or is canceled; `release-ready` also fails unless both it and `integration-linux` succeed. General all-database and Docker coverage remains in `integration-linux`.
+
+Native results are required for the supported OS baseline in [Deployment](/operations/deployment#supported-operating-systems). A cross-build is artifact evidence, not a native runtime PASS. Record the exact commit, runner OS/version and architecture, command, exit status, and any skip; do not infer a minimum-OS result from a newer local machine.
 
 The release-gate caller owns concurrency cancellation. The called service lifecycle workflow deliberately has no competing concurrency group, so invoking it cannot cancel its own caller run.
 

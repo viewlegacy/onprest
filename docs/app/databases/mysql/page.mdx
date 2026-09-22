@@ -12,6 +12,10 @@ database:
   name: legacy
   user: readonly_user
   password: change-me
+  tls:
+    mode: verify-full
+    ca_file: /etc/onprest/db-ca.pem
+    server_name: mysql.internal.example.com
 ```
 
 ## SQL Parameters
@@ -27,6 +31,12 @@ sql: select id, name from customers where id = :customer_id
 MySQL capabilities are checked with `EXPLAIN` during agent startup.
 
 Use least-privilege read users for read capabilities and verify that the user can run the required read and EXPLAIN operations.
+
+## TLS
+
+`database.tls.mode` accepts `disable` (default), `require`, and `verify-full`. `require` encrypts without authenticating the server. `verify-full` verifies the trust chain and `server_name`, or `database.host` when no override is set. Set `ca_file` for a private CA; omitting it uses the OS trust store. Optional `cert_file` and `key_file` enable client-certificate authentication and must be supplied together. `verify-ca` is not supported.
+
+The Agent keeps the TLS configuration scoped to this database connection. Credentials and database names are encoded by the MySQL driver's structured configuration, including spaces, quotes, semicolons, and non-ASCII characters. New physical connections retain the selected TLS mode and never retry in plaintext. To replace a CA or client certificate, follow the [database TLS rotation procedure](/operations/deployment#database-tls-certificate-rotation).
 
 ## Integration Test
 

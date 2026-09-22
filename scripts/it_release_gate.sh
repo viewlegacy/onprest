@@ -101,9 +101,17 @@ run_go_json_no_skip "mysql-special-credentials" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
 	go test -json -tags=integration ./it/... -run '^TestMySQLDSNSpecialCredentialsConnectToRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=mysql
 
+run_go_json_no_skip "mysql-tls-contract" \
+	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
+	go test -json -tags=integration ./it/... -run '^TestMySQLTLSModesClientCertificateRotationAndReconnectAgainstRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=mysql
+
 run_go_json_no_skip "sqlserver-tls" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
 	go test -json -tags=integration ./it/... -run '^TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=sqlserver
+
+run_go_json_no_skip "oracle-tls-contract" \
+	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
+	go test -json -tags=integration ./it/... -run '^TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase$' -timeout 15m -count=1 -args -onprest-it-db=oracle
 
 run_go_json_no_skip "docker-image-ops" \
 	env ONPREST_IT_DOCKER=1 \

@@ -608,15 +608,15 @@ func TestMySQLDSNSpecialCredentialsConnectToRealDatabase(t *testing.T) {
 	root := admin
 	root.User = "root"
 	special := admin
-	special.User = "onprest@special/name"
-	special.Password = "p@ss:/word?&=#"
+	special.User = `onprest name;"日本@special/name`
+	special.Password = `p@ss:/word?&=# ;"日本`
 	execDBStatements(t, "mysql", root, []string{
-		"CREATE USER IF NOT EXISTS 'onprest@special/name'@'%' IDENTIFIED BY 'p@ss:/word?&=#'",
-		"GRANT SELECT ON `" + admin.Name + "`.* TO 'onprest@special/name'@'%'",
+		`CREATE USER IF NOT EXISTS 'onprest name;"日本@special/name'@'%' IDENTIFIED BY 'p@ss:/word?&=# ;"日本'`,
+		`GRANT SELECT ON ` + "`" + admin.Name + "`" + `.* TO 'onprest name;"日本@special/name'@'%'`,
 		"FLUSH PRIVILEGES",
 	})
 	t.Cleanup(func() {
-		execDBStatements(t, "mysql", root, []string{"DROP USER IF EXISTS 'onprest@special/name'@'%'"})
+		execDBStatements(t, "mysql", root, []string{`DROP USER IF EXISTS 'onprest name;"日本@special/name'@'%'`})
 	})
 
 	secrets := newITSecrets(t)

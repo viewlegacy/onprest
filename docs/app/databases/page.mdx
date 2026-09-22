@@ -37,12 +37,12 @@ The agent generates DSNs from the `database` section of `capability.yaml`.
 
 | Driver | Connection behavior |
 |---|---|
-| `postgres` | URL DSN with configurable `disable`, `require`, `verify-ca`, or `verify-full` TLS; optional client certificate authentication |
-| `mysql` | Driver-native `mysql.Config.FormatDSN()` TCP DSN, including correct handling of credential special characters; TLS is currently `disable` only |
-| `sqlserver` | URL DSN with configurable `disable`, encrypted-but-unverified `require`, or CA/hostname-verified `verify-full` TLS |
-| `oracle` | URL DSN with `oracle://user:password@host:port/name` |
+| `postgres` | URL DSN with `disable`, `require`, `verify-ca`, or `verify-full`; optional client certificate authentication |
+| `mysql` | Structured driver config and connector-local TLS with `disable`, `require`, or `verify-full`; optional client certificate authentication |
+| `sqlserver` | URL DSN with `disable`, encrypted-but-unverified `require`, or CA/hostname-verified `verify-full` |
+| `oracle` | Pure-Go `go-ora` URL/TCPS with `disable`, `require`, or `verify-full`; no Oracle Instant Client or native Oracle runtime |
 
-TLS defaults to `disable`. Select a verified mode where supported instead of relying only on network placement. MySQL and Oracle reject non-disabled TLS configuration until those driver paths provide an explicit verified implementation; they never silently downgrade a requested TLS mode.
+TLS defaults to `disable`. All four drivers support encryption-only `require` and identity-verifying `verify-full`; only PostgreSQL also supports `verify-ca`. `verify-full` uses the OS trust store when `ca_file` is omitted and verifies `server_name` or the connection host. Unsupported fields and modes are rejected at startup, and a failed verification never falls back to plaintext. Client certificates are supported only by PostgreSQL and MySQL.
 
 ## Topics
 

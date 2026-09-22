@@ -1,4 +1,4 @@
-.PHONY: build build-cross quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down reconciliation-change-order test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-docker-ops test-it-release-gate fmt vet clean
+.PHONY: build build-cross quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down reconciliation-change-order test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-database-tls test-it-docker-ops test-it-release-gate fmt vet clean
 
 DIST_DIR ?= dist
 RECONCILIATION_DB ?= postgres
@@ -45,6 +45,9 @@ test-it-postgres-stability:
 
 test-it-all-db:
 	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -run '^TestContainerDBDriver' -timeout 30m -count=1 -args -onprest-it-db=all
+
+test-it-database-tls:
+	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -run '^(TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification|TestMySQLTLSModesClientCertificateRotationAndReconnectAgainstRealDatabase|TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase|TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase)$$' -timeout 30m -count=1 -args -onprest-it-db=all
 
 test-it-docker-ops:
 	ONPREST_IT_DOCKER=1 go test -tags=integration ./it/... -run '^TestDockerTargetsBuildWhenDockerIntegrationEnabled$$' -count=1 -v

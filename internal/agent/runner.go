@@ -12,12 +12,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	_ "github.com/denisenkom/go-mssqldb"
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/sijms/go-ora/v2"
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 )
@@ -109,32 +104,6 @@ func NewRunner(ctx context.Context, cfg Config, logOut io.Writer) (*Runner, erro
 	r := &Runner{cfg: cfg, cf: prepared.cf, caps: prepared.caps, rateLimits: newCapabilityRateLimiters(prepared.cf, clock), clock: clock, db: prepared.db, logOut: logOut, detailLog: prepared.detailLog.Writer, detailLogCloser: preparationLogCloser{prepared.detailLog}}
 	r.log("agent_ready", map[string]any{"capabilities": len(prepared.cf.Capabilities), "driver": prepared.cf.Database.Driver, "max_concurrent_requests": *prepared.cf.Runtime.MaxConcurrentRequests})
 	return r, nil
-}
-
-func openDatabase(database DatabaseDef) (*sql.DB, error) {
-	if database.Driver != "postgres" {
-		return sql.Open(driverName(database.Driver), database.DSN())
-	}
-	config, err := pgx.ParseConfig(database.DSN())
-	if err != nil {
-		return nil, err
-	}
-	afterConnect := func(ctx context.Context, conn *pgx.Conn) error {
-		// lib/pq represented timestamp without time zone in an unnamed UTC
-		// location, while timestamptz used PostgreSQL's session TimeZone. Set
-		// both codecs explicitly so the pgx migration preserves those public
-		// string coercions and does not inherit the agent process timezone.
-		conn.TypeMap().RegisterType(&pgtype.Type{
-			Name: "timestamp", OID: pgtype.TimestampOID,
-			Codec: &pgtype.TimestampCodec{ScanLocation: time.FixedZone("", 0)},
-		})
-		conn.TypeMap().RegisterType(&pgtype.Type{
-			Name: "timestamptz", OID: pgtype.TimestamptzOID,
-			Codec: &pgtype.TimestamptzCodec{ScanLocation: postgresSessionLocation(ctx, conn)},
-		})
-		return nil
-	}
-	return stdlib.OpenDB(*config, stdlib.OptionAfterConnect(afterConnect)), nil
 }
 
 func postgresSessionLocation(ctx context.Context, conn *pgx.Conn) *time.Location {

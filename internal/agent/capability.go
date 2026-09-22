@@ -915,20 +915,20 @@ func (db DatabaseDef) lint() error {
 	default:
 		return fmt.Errorf("database.tls.mode must be one of disable, require, verify-ca, verify-full")
 	}
-	if db.Driver != "postgres" && db.Driver != "sqlserver" && mode != "disable" {
-		return fmt.Errorf("database.tls is currently supported only for postgres and sqlserver")
-	}
-	if db.Driver == "sqlserver" && mode == "verify-ca" {
-		return fmt.Errorf("database.tls.mode verify-ca is not supported for sqlserver; use require or verify-full")
+	if db.Driver != "postgres" && mode == "verify-ca" {
+		return fmt.Errorf("database.tls.mode verify-ca is supported only for postgres")
 	}
 	if (db.TLS.CertFile == "") != (db.TLS.KeyFile == "") {
 		return fmt.Errorf("database.tls.cert_file and key_file must be set together")
 	}
-	if db.Driver != "postgres" && (db.TLS.CertFile != "" || db.TLS.KeyFile != "") {
-		return fmt.Errorf("database.tls client certificates are supported only for postgres")
+	if db.Driver != "postgres" && db.Driver != "mysql" && (db.TLS.CertFile != "" || db.TLS.KeyFile != "") {
+		return fmt.Errorf("database.tls client certificates are supported only for postgres and mysql")
 	}
-	if db.Driver != "sqlserver" && db.TLS.ServerName != "" {
-		return fmt.Errorf("database.tls.server_name is supported only for sqlserver")
+	if db.TLS.ServerName != "" && mode != "verify-full" {
+		return fmt.Errorf("database.tls.server_name requires mode verify-full")
+	}
+	if db.TLS.CAFile != "" && mode != "verify-full" && !(db.Driver == "postgres" && mode == "verify-ca") {
+		return fmt.Errorf("database.tls.ca_file requires mode verify-full or postgres verify-ca")
 	}
 	if mode == "disable" && (db.TLS.CAFile != "" || db.TLS.CertFile != "" || db.TLS.KeyFile != "" || db.TLS.ServerName != "") {
 		return fmt.Errorf("database.tls certificate fields require an enabled TLS mode")
@@ -968,7 +968,15 @@ func (db DatabaseDef) DSN() string {
 		u.RawQuery = strings.ReplaceAll(q.Encode(), "+", "%20")
 		return u.String()
 	case "mysql":
-		return (&mysql.Config{User: db.User, Passwd: db.Password, Net: "tcp", Addr: hostPort, DBName: db.Name}).FormatDSN()
+		config := mysql.NewConfig()
+		config.User, config.Passwd, config.Net, config.Addr, config.DBName = db.User, db.Password, "tcp", hostPort, db.Name
+		switch db.tlsMode() {
+		case "require":
+			config.TLSConfig = "skip-verify"
+		case "verify-full":
+			config.TLSConfig = "true"
+		}
+		return config.FormatDSN()
 	case "sqlserver":
 		u := url.URL{
 			Scheme: "sqlserver",
@@ -1006,10 +1014,27 @@ func (db DatabaseDef) DSN() string {
 			Host:   hostPort,
 			Path:   "/" + db.Name,
 		}
+		if db.tlsMode() != "disable" {
+			q := u.Query()
+			q.Set("SSL", "enable")
+			if db.tlsMode() == "require" {
+				q.Set("SSL VERIFY", "false")
+			} else {
+				q.Set("SSL VERIFY", "true")
+			}
+			u.RawQuery = q.Encode()
+		}
 		return u.String()
 	default:
 		return ""
 	}
+}
+
+func (db DatabaseDef) tlsServerName() string {
+	if db.TLS.ServerName != "" {
+		return db.TLS.ServerName
+	}
+	return db.Host
 }
 
 func (p ParamDef) lint(path string) error {

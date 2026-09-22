@@ -3,6 +3,7 @@ package project
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -463,12 +464,18 @@ func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
 			t.Fatalf("%s does not use common all-DB test prefix: %s", path, name)
 		}
 	}
-	const postgresTLS = "TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification"
-	for source, text := range map[string]string{
-		"release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
+	for _, tlsContract := range []string{
+		"TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification",
+		"TestMySQLTLSModesClientCertificateRotationAndReconnectAgainstRealDatabase",
+		"TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase",
+		"TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase",
 	} {
-		if !strings.Contains(text, postgresTLS) {
-			t.Fatalf("%s does not include PostgreSQL TLS contract %q", source, postgresTLS)
+		for source, text := range map[string]string{
+			"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
+		} {
+			if !strings.Contains(text, tlsContract) {
+				t.Fatalf("%s does not include database TLS contract %q", source, tlsContract)
+			}
 		}
 	}
 	for source, text := range map[string]string{"test commands": testCommands, "release gate": releaseDocs} {
@@ -480,6 +487,38 @@ func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
 	}
 	if strings.Contains(testCommands, "exact filter `^TestContainerDBDriver`") || strings.Contains(releaseDocs, "all-DB smoke path") {
 		t.Fatal("DB gate documentation retained the superseded selection")
+	}
+}
+
+func TestMySQLTLSAdapterAvoidsProcessGlobalRegistry(t *testing.T) {
+	root := repoRoot(t)
+	agentDir := filepath.Join(root, "internal", "agent")
+	err := filepath.WalkDir(agentDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		content := readText(t, path)
+		for _, forbidden := range []string{"RegisterTLSConfig", "DeregisterTLSConfig"} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("production source %s uses process-global MySQL TLS registry API %s", path, forbidden)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	databaseAdapter := readText(t, filepath.Join(agentDir, "database.go"))
+	for _, required := range []string{"config.TLS = tlsConfig", "mysql.NewConnector(config)", "sql.OpenDB(connector)"} {
+		if !strings.Contains(databaseAdapter, required) {
+			t.Fatalf("MySQL adapter does not enforce connector-local TLS construction %q", required)
+		}
+	}
+	if strings.Contains(databaseAdapter, "config.TLSConfig =") {
+		t.Fatal("MySQL runtime adapter uses a named DSN TLS configuration instead of connector-local tls.Config")
 	}
 }
 

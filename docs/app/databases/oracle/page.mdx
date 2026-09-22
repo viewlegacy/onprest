@@ -14,6 +14,10 @@ database:
   name: legacy
   user: readonly_user
   password: change-me
+  tls:
+    mode: verify-full
+    ca_file: /etc/onprest/db-ca.pem
+    server_name: oracle.internal.example.com
 ```
 
 ## SQL Parameters
@@ -29,6 +33,12 @@ sql: select id, name from customers where id = :customer_id
 Oracle capabilities are checked with `EXPLAIN PLAN FOR` during agent startup.
 
 If EXPLAIN PLAN fails, the agent stops before connecting to gateway. Detail stays in the agent local log.
+
+## TLS
+
+`database.tls.mode` accepts `disable` (default), `require`, and `verify-full`. Non-disabled modes use the pure-Go `go-ora` TCPS path; they do not require Oracle Instant Client or another native runtime. `require` encrypts without authenticating the server. `verify-full` verifies the trust chain and `server_name`, or `database.host` when no override is set. Set `ca_file` for a private CA; omitting it uses the OS trust store.
+
+`verify-ca` and client certificate/key fields are rejected for Oracle. Reconnects retain TCPS and never retry in plaintext. To replace a private CA, follow the [database TLS rotation procedure](/operations/deployment#database-tls-certificate-rotation).
 
 ## Integration Test
 

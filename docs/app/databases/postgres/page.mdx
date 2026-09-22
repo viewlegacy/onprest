@@ -17,6 +17,7 @@ database:
     ca_file: /etc/onprest/db-ca.pem
     cert_file: /etc/onprest/db-client.pem
     key_file: /etc/onprest/db-client-key.pem
+    server_name: postgres.internal.example.com
 ```
 
 ## SQL Parameters
@@ -39,9 +40,9 @@ When a PostgreSQL `timestamp without time zone` column is declared as `type: str
 
 ## TLS
 
-`database.tls.mode` accepts `disable` (default), `require`, `verify-ca`, and `verify-full`. Use `verify-full` for CA and hostname verification. Set `ca_file` when the signing CA is not available through the driver's default trust location. `cert_file` and `key_file` enable client-certificate authentication and must be supplied together. Certificate files are read by the PostgreSQL driver from the configured paths, so restrict their filesystem permissions to the agent service account.
+`database.tls.mode` accepts `disable` (default), `require`, `verify-ca`, and `verify-full`. Use `verify-full` for CA and hostname verification. The verified name is `database.host` unless `server_name` is set. Set `ca_file` for a private CA; omitting it uses the OS trust store. `verify-ca` verifies the chain without the hostname. `cert_file` and `key_file` enable client-certificate authentication and must be supplied together. Certificate files are read when the Agent creates its DB pool, so restrict their filesystem permissions to the Agent service account.
 
-`require` encrypts the connection but does not provide the same server-identity guarantee as `verify-full`. Existing files with no `tls` section retain `sslmode=disable`.
+`require` encrypts the connection but does not provide the same server-identity guarantee as `verify-full`; it does not accept `ca_file` or `server_name`. Existing files with no `tls` section retain `sslmode=disable`. Reconnects keep the configured TLS mode and never retry in plaintext. To replace a CA or client certificate, follow the [database TLS rotation procedure](/operations/deployment#database-tls-certificate-rotation).
 
 ## Integration Test
 

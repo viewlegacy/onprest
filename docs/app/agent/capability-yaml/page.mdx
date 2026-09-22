@@ -178,19 +178,20 @@ The value must be a positive integer. The agent has the same number of bounded w
 | `password` | No | DB password; keep this only on the agent side |
 | `tls.mode` | No | TLS mode described below; defaults to `disable` |
 | `tls.ca_file` | No | PEM CA certificate used to verify the DB server |
-| `tls.cert_file` | No | PostgreSQL PEM client certificate for mutual TLS |
-| `tls.key_file` | No | PostgreSQL PEM client private key; required together with `cert_file` |
-| `tls.server_name` | No | SQL Server certificate hostname override; otherwise `host` is verified |
+| `tls.cert_file` | No | PostgreSQL or MySQL PEM client certificate for mutual TLS |
+| `tls.key_file` | No | PostgreSQL or MySQL PEM client private key; required together with `cert_file` |
+| `tls.server_name` | No | `verify-full` certificate hostname override; otherwise `host` is verified |
 
 TLS support is driver-specific:
 
 | Driver | Supported `tls.mode` | Behavior |
 |---|---|---|
-| PostgreSQL | `disable`, `require`, `verify-ca`, `verify-full` | Uses pgx TLS settings. Set `ca_file` for a private CA; client certificate and key are optional but must be supplied together. |
-| SQL Server | `disable`, `require`, `verify-full` | `require` encrypts while trusting the presented server certificate. `verify-full` verifies the certificate trust chain plus `server_name` or `host`; set `ca_file` for a private CA. |
-| MySQL / Oracle | `disable` only | Non-disabled TLS is rejected at startup; this avoids silently pretending that the generated connection is verified. |
+| PostgreSQL | `disable`, `require`, `verify-ca`, `verify-full` | Uses pgx TLS settings. Client certificate and key are supported. |
+| MySQL | `disable`, `require`, `verify-full` | Uses a connector-local TLS configuration, including optional client certificate authentication. |
+| SQL Server | `disable`, `require`, `verify-full` | Uses the pure-Go TDS driver. Client certificates are not supported. |
+| Oracle | `disable`, `require`, `verify-full` | Uses pure-Go `go-ora` TCPS. Oracle Instant Client is not required; client certificates are not supported. |
 
-Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`. `cert_file` and `key_file` are PostgreSQL-only; `server_name` is SQL Server-only. Prefer a verified mode on networks where the database connection can be intercepted.
+`require` encrypts the transport but does not authenticate the server. `verify-full` verifies the trust chain and `server_name`, or `host` when no override is set. `ca_file` is optional in verified modes; omitting it uses the OS trust store. PostgreSQL `verify-ca` verifies only the chain. Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`; `ca_file` is not accepted with `require`, and `server_name` is accepted only with `verify-full`. Client certificate and key must be supplied together and are accepted only for PostgreSQL and MySQL. Unsupported combinations fail startup instead of being ignored. Prefer `verify-full` on networks where the database connection can be intercepted.
 
 ## Logging
 
