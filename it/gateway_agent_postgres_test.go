@@ -102,6 +102,23 @@ func repoRoot(t *testing.T) string {
 
 func buildBinary(t *testing.T, repo, out, pkg string) {
 	t.Helper()
+	prebuilt := ""
+	switch pkg {
+	case "./cmd/gateway":
+		prebuilt = os.Getenv("ONPREST_IT_GATEWAY_BINARY")
+	case "./cmd/agent":
+		prebuilt = os.Getenv("ONPREST_IT_AGENT_BINARY")
+	}
+	if prebuilt != "" {
+		input, err := os.ReadFile(prebuilt)
+		if err != nil {
+			t.Fatalf("read prebuilt %s: %v", pkg, err)
+		}
+		if err := os.WriteFile(out, input, 0o755); err != nil {
+			t.Fatalf("copy prebuilt %s: %v", pkg, err)
+		}
+		return
+	}
 	cmd := exec.Command("go", "build", "-trimpath", "-o", out, pkg)
 	cmd.Dir = repo
 	var stderr bytes.Buffer
@@ -180,7 +197,7 @@ func startProcessInDir(t *testing.T, ctx context.Context, dir, bin string, args 
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = mergedProcessEnv(env)
 	var output lockedBuffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -193,6 +210,24 @@ func startProcessInDir(t *testing.T, ctx context.Context, dir, bin string, args 
 		}
 	})
 	return cmd
+}
+
+func mergedProcessEnv(overrides []string) []string {
+	keys := make(map[string]bool, len(overrides))
+	for _, item := range overrides {
+		key, _, ok := strings.Cut(item, "=")
+		if ok {
+			keys[key] = true
+		}
+	}
+	env := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, item := range os.Environ() {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok || !keys[key] {
+			env = append(env, item)
+		}
+	}
+	return append(env, overrides...)
 }
 
 func stopProcess(t *testing.T, cmd *exec.Cmd) {

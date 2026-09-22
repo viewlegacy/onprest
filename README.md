@@ -228,6 +228,11 @@ For production deployments, use a read-only database user whenever the intended 
 
 ## Quick Start
 
+For installation on a supported host, select and verify a signed release archive
+using [Binary Release Installation](https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation).
+The repository-based Quick Start below is a source-based evaluation with an
+included disposable database, not the production installation path.
+
 ### Prerequisites
 
 - A Go toolchain compatible with the version declared in [`go.mod`](go.mod), to build the binaries.
@@ -382,7 +387,7 @@ For real deployments, edit `capability.yaml` and place it beside `onprest-agent`
 
 ## Build
 
-Use a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
+Building from source is optional. Use a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
 
 Build the two binaries:
 

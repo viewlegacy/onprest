@@ -1,8 +1,12 @@
 package project
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -98,6 +102,480 @@ func TestMakeBuildCrossProducesBothBinariesForEveryTarget(t *testing.T) {
 	}
 }
 
+func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.T) {
+	root := repoRoot(t)
+	releaseDir := t.TempDir()
+	sha := strings.TrimSpace(runRepoCommand(t, root, nil, "git", "rev-parse", "HEAD"))
+	env := []string{
+		"VERSION=1.2.12",
+		"RELEASE_TAG=v1.2.12",
+		"RELEASE_SHA=" + sha,
+		"RELEASE_READY_URL=https://github.com/viewlegacy/onprest/actions/runs/123",
+		"RELEASE_DIR=" + releaseDir,
+	}
+	runRepoCommand(t, root, env, "make", "package-release")
+
+	targets := []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"}
+	for _, target := range targets {
+		ext := ".tar.gz"
+		if strings.HasPrefix(target, "windows-") {
+			ext = ".zip"
+		}
+		archivePath := filepath.Join(releaseDir, "onprest-1.2.12-"+target+ext)
+		entries := releaseArchiveEntries(t, archivePath)
+		rootName := "onprest-1.2.12-" + target + "/"
+		binaryExt := ""
+		if strings.HasPrefix(target, "windows-") {
+			binaryExt = ".exe"
+		}
+		for _, want := range []string{
+			rootName + "onprest-gateway" + binaryExt,
+			rootName + "onprest-agent" + binaryExt,
+			rootName + "LICENSE",
+			rootName + "gateway.env.example",
+			rootName + "capability.yaml.example",
+			rootName + "INSTALL.md",
+			rootName + "RELEASE-MANIFEST.txt",
+			rootName + "dependencies/onprest-gateway.txt",
+			rootName + "dependencies/onprest-agent.txt",
+		} {
+			if !entries[want] {
+				t.Fatalf("%s missing %s", filepath.Base(archivePath), want)
+			}
+		}
+	}
+
+	dependencies := readText(t, filepath.Join(releaseDir, "DEPENDENCIES.txt"))
+	if strings.Count(dependencies, "## ") != 10 {
+		t.Fatalf("dependency report has %d binary sections, want 10", strings.Count(dependencies, "## "))
+	}
+	evidence := readText(t, filepath.Join(releaseDir, "RELEASE-EVIDENCE.txt"))
+	for _, want := range []string{"release_tag=v1.2.12", "version=1.2.12", "commit_sha=" + sha, "actions/runs/123", "refs/tags/v1.2.12"} {
+		if !strings.Contains(evidence, want) {
+			t.Fatalf("release evidence missing %q", want)
+		}
+	}
+
+	if runtime.GOOS != "windows" {
+		native := runtime.GOOS + "-" + runtime.GOARCH
+		archivePath := filepath.Join(releaseDir, "onprest-1.2.12-"+native+".tar.gz")
+		extractDir := t.TempDir()
+		runRepoCommand(t, root, nil, "tar", "-xzf", archivePath, "-C", extractDir)
+		for _, binary := range []string{"onprest-gateway", "onprest-agent"} {
+			got := strings.TrimSpace(runRepoCommand(t, t.TempDir(), nil, filepath.Join(extractDir, "onprest-1.2.12-"+native, binary), "--version"))
+			if got != "1.2.12" {
+				t.Fatalf("packaged %s --version=%q", binary, got)
+			}
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(releaseDir, "VULNERABILITY-EVIDENCE.txt"), []byte(fakeVulnerabilityEvidence("1.2.12", sha)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(releaseDir, ".archive-digests")); err != nil {
+		t.Fatal(err)
+	}
+	runRepoCommand(t, root, env, "make", "finalize-release-artifacts")
+	runRepoCommand(t, root, env, "make", "verify-release-artifacts")
+	nativeTarget := runtime.GOOS + "/" + runtime.GOARCH
+	nativeName := strings.ReplaceAll(nativeTarget, "/", "-")
+	nativeExt := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		nativeExt = ".zip"
+	}
+	extracted := t.TempDir()
+	runRepoCommand(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
+		filepath.Join(releaseDir, "onprest-1.2.12-"+nativeName+nativeExt), extracted,
+		"1.2.12", "v1.2.12", sha, "https://github.com/viewlegacy/onprest/actions/runs/123",
+		nativeTarget, filepath.Join(releaseDir, "SHA256SUMS"))
+	for _, binary := range []string{"onprest-gateway", "onprest-agent"} {
+		if runtime.GOOS == "windows" {
+			binary += ".exe"
+		}
+		if _, err := os.Stat(filepath.Join(extracted, "onprest-1.2.12-"+nativeName, binary)); err != nil {
+			t.Fatalf("safe extraction missing %s: %v", binary, err)
+		}
+	}
+	checksum := readText(t, filepath.Join(releaseDir, "SHA256SUMS"))
+	if strings.Count(strings.TrimSpace(checksum), "\n")+1 != 8 {
+		t.Fatalf("SHA256SUMS entries=%d, want 8", strings.Count(strings.TrimSpace(checksum), "\n")+1)
+	}
+
+	for _, mutation := range []struct {
+		name     string
+		archive  string
+		kind     string
+		injected string
+	}{
+		{name: "manifest mismatch after checksum regeneration", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "manifest"},
+		{name: "Unix binary loses executable mode", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "mode"},
+		{name: "required entry missing", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "missing"},
+		{name: "symlink entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "symlink"},
+		{name: "hardlink entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "hardlink"},
+		{name: "relative traversal entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "relative", injected: "../onprest-verifier-escape"},
+		{name: "absolute tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
+		{name: "duplicate tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "duplicate"},
+		{name: "extra tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "extra"},
+		{name: "relative traversal zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "relative", injected: "../onprest-verifier-escape"},
+		{name: "absolute zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
+		{name: "zip symlink entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "symlink"},
+		{name: "zip special mode entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "mode"},
+		{name: "duplicate zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "duplicate"},
+		{name: "extra zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "extra"},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutatedDir := cloneReleaseAssets(t, releaseDir)
+			archive := filepath.Join(mutatedDir, mutation.archive)
+			if strings.HasSuffix(archive, ".zip") {
+				mutateZipArchive(t, archive, mutation.kind, mutation.injected)
+			} else {
+				mutateTarArchive(t, archive, mutation.kind, mutation.injected)
+			}
+			mutatedEnv := replaceEnv(env, "RELEASE_DIR", mutatedDir)
+			runRepoCommand(t, root, mutatedEnv, "make", "finalize-release-artifacts")
+			runRepoCommandMustFail(t, root, mutatedEnv, "make", "verify-release-artifacts")
+			target := "linux/amd64"
+			if strings.HasSuffix(archive, ".zip") {
+				target = "windows/amd64"
+			}
+			extractOutput := t.TempDir()
+			runRepoCommandMustFail(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
+				archive, extractOutput, "1.2.12", "v1.2.12", sha,
+				"https://github.com/viewlegacy/onprest/actions/runs/123", target, filepath.Join(mutatedDir, "SHA256SUMS"))
+			if entries, err := os.ReadDir(extractOutput); err != nil || len(entries) != 0 {
+				t.Fatalf("failed safe extraction wrote output: entries=%v err=%v", entryNames(entries), err)
+			}
+			if mutation.injected != "" && filepath.IsAbs(mutation.injected) {
+				if _, err := os.Stat(mutation.injected); !os.IsNotExist(err) {
+					t.Fatalf("unsafe archive path was created: %s", mutation.injected)
+				}
+			}
+		})
+	}
+	for _, mutation := range []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "source vulnerability scan missing", old: "## source ./...\n", new: ""},
+		{name: "vulnerability evidence has another SHA", old: "commit_sha=" + sha, new: "commit_sha=0000000000000000000000000000000000000000"},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			mutatedDir := cloneReleaseAssets(t, releaseDir)
+			path := filepath.Join(mutatedDir, "VULNERABILITY-EVIDENCE.txt")
+			body := readText(t, path)
+			if err := os.WriteFile(path, []byte(strings.Replace(body, mutation.old, mutation.new, 1)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mutatedEnv := replaceEnv(env, "RELEASE_DIR", mutatedDir)
+			runRepoCommand(t, root, mutatedEnv, "make", "finalize-release-artifacts")
+			runRepoCommandMustFail(t, root, mutatedEnv, "make", "verify-release-artifacts")
+		})
+	}
+	archiveToCorrupt := filepath.Join(releaseDir, "onprest-1.2.12-linux-amd64.tar.gz")
+	f, err := os.OpenFile(archiveToCorrupt, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("corrupt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runRepoCommandMustFail(t, root, env, "make", "verify-release-artifacts")
+}
+
+func TestReleasePackageRejectsMismatchedTagAndCommitBeforeBuilding(t *testing.T) {
+	root := repoRoot(t)
+	sha := strings.TrimSpace(runRepoCommand(t, root, nil, "git", "rev-parse", "HEAD"))
+	base := []string{
+		"VERSION=1.2.12",
+		"RELEASE_SHA=" + sha,
+		"RELEASE_READY_URL=https://github.com/viewlegacy/onprest/actions/runs/123",
+		"RELEASE_DIR=" + t.TempDir(),
+	}
+	runRepoCommandMustFail(t, root, append(base, "RELEASE_TAG=v1.2.11"), "make", "package-release")
+	runRepoCommandMustFail(t, root, []string{
+		"VERSION=1.2.12",
+		"RELEASE_TAG=v1.2.12",
+		"RELEASE_SHA=0000000000000000000000000000000000000000",
+		"RELEASE_READY_URL=https://github.com/viewlegacy/onprest/actions/runs/123",
+		"RELEASE_DIR=" + t.TempDir(),
+	}, "make", "package-release")
+}
+
+func TestNormalizeReleaseVersionRejectsShellMetacharacters(t *testing.T) {
+	root := repoRoot(t)
+	if got := strings.TrimSpace(runRepoCommand(t, root, nil, "bash", "scripts/normalize_release_version.sh", "v1.2.12")); got != "1.2.12" {
+		t.Fatalf("normalized version=%q", got)
+	}
+	marker := filepath.Join(t.TempDir(), "must-not-exist")
+	for _, invalid := range []string{"1.2", "v1.2.3.4", "1.2.3' ; touch " + marker + " ; #", "$(touch " + marker + ")"} {
+		runRepoCommandMustFail(t, root, nil, "bash", "scripts/normalize_release_version.sh", invalid)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("invalid version executed shell content: %s", marker)
+	}
+}
+
+func releaseArchiveEntries(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	entries := map[string]bool{}
+	if strings.HasSuffix(path, ".zip") {
+		r, err := zip.OpenReader(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		for _, file := range r.File {
+			entries[file.Name] = true
+		}
+		return entries
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries[header.Name] = true
+	}
+	return entries
+}
+
+func fakeVulnerabilityEvidence(version, sha string) string {
+	var body strings.Builder
+	fmt.Fprintf(&body, "Onprest release vulnerability scans\nversion=%s\ncommit_sha=%s\n\n## source ./...\nNo vulnerabilities found.\n", version, sha)
+	for _, target := range []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"} {
+		ext := ""
+		if strings.HasPrefix(target, "windows-") {
+			ext = ".exe"
+		}
+		for _, binary := range []string{"gateway", "agent"} {
+			fmt.Fprintf(&body, "\n## %s/onprest-%s%s\nNo vulnerabilities found.\n", target, binary, ext)
+		}
+	}
+	return body.String()
+}
+
+func cloneReleaseAssets(t *testing.T, source string) string {
+	t.Helper()
+	destination := t.TempDir()
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		from := filepath.Join(source, entry.Name())
+		to := filepath.Join(destination, entry.Name())
+		if err := os.Link(from, to); err == nil {
+			continue
+		}
+		input, err := os.Open(from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, err := os.Create(to)
+		if err != nil {
+			_ = input.Close()
+			t.Fatal(err)
+		}
+		_, copyErr := io.Copy(output, input)
+		closeInputErr := input.Close()
+		closeOutputErr := output.Close()
+		if copyErr != nil || closeInputErr != nil || closeOutputErr != nil {
+			t.Fatalf("copy %s: copy=%v input-close=%v output-close=%v", entry.Name(), copyErr, closeInputErr, closeOutputErr)
+		}
+	}
+	return destination
+}
+
+func replaceEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	result := append([]string(nil), env...)
+	for i, item := range result {
+		if strings.HasPrefix(item, prefix) {
+			result[i] = prefix + value
+			return result
+		}
+	}
+	return append(result, prefix+value)
+}
+
+func mutateTarArchive(t *testing.T, archivePath, kind, injected string) {
+	t.Helper()
+	input, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz, err := gzip.NewReader(input)
+	if err != nil {
+		_ = input.Close()
+		t.Fatal(err)
+	}
+	temporary := archivePath + ".mutated"
+	output, err := os.Create(temporary)
+	if err != nil {
+		_ = gz.Close()
+		_ = input.Close()
+		t.Fatal(err)
+	}
+	zw := gzip.NewWriter(output)
+	tw := tar.NewWriter(zw)
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kind == "missing" && strings.HasSuffix(header.Name, "/INSTALL.md") {
+			continue
+		}
+		if kind == "symlink" && strings.HasSuffix(header.Name, "/INSTALL.md") {
+			header.Typeflag = tar.TypeSymlink
+			header.Linkname = "../outside"
+			header.Size = 0
+			body = nil
+		}
+		if kind == "hardlink" && strings.HasSuffix(header.Name, "/INSTALL.md") {
+			header.Typeflag = tar.TypeLink
+			header.Linkname = "onprest-1.2.12-linux-amd64/LICENSE"
+			header.Size = 0
+			body = nil
+		}
+		if kind == "manifest" && strings.HasSuffix(header.Name, "/RELEASE-MANIFEST.txt") {
+			body = bytes.Replace(body, []byte("version=1.2.12"), []byte("version=9.9.9"), 1)
+			header.Size = int64(len(body))
+		}
+		if kind == "mode" && strings.HasSuffix(header.Name, "/onprest-gateway") {
+			header.Mode = 0o644
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if len(body) > 0 {
+			if _, err := tw.Write(body); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if kind == "relative" || kind == "absolute" || kind == "duplicate" || kind == "extra" {
+		body := []byte("must not be extracted")
+		name := injected
+		switch kind {
+		case "duplicate":
+			name = "onprest-1.2.12-linux-amd64/LICENSE"
+		case "extra":
+			name = "onprest-1.2.12-linux-amd64/EXTRA"
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, closeFn := range []func() error{tw.Close, zw.Close, output.Close, gz.Close, input.Close} {
+		if err := closeFn(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(temporary, archivePath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mutateZipArchive(t *testing.T, archivePath, kind, injected string) {
+	t.Helper()
+	input, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	temporary := archivePath + ".mutated"
+	output, err := os.Create(temporary)
+	if err != nil {
+		_ = input.Close()
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(output)
+	for _, file := range input.File {
+		header := file.FileHeader
+		if kind == "symlink" && strings.HasSuffix(header.Name, "/INSTALL.md") {
+			header.SetMode(os.ModeSymlink | 0o777)
+		}
+		if kind == "mode" && strings.HasSuffix(header.Name, "/INSTALL.md") {
+			header.SetMode(os.ModeDevice | 0o644)
+		}
+		writer, err := zw.CreateHeader(&header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(writer, reader); err != nil {
+			_ = reader.Close()
+			t.Fatal(err)
+		}
+		if err := reader.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name := injected
+	switch kind {
+	case "duplicate":
+		name = "onprest-1.2.12-windows-amd64/LICENSE"
+	case "extra":
+		name = "onprest-1.2.12-windows-amd64/EXTRA"
+	case "symlink":
+		name = ""
+	}
+	if name != "" {
+		header := &zip.FileHeader{Name: name, Method: zip.Store}
+		header.SetMode(0o644)
+		writer, err := zw.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte("must not be extracted")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, closeFn := range []func() error{zw.Close, output.Close, input.Close} {
+		if err := closeFn(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(temporary, archivePath); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runRepoCommand(t *testing.T, dir string, extraEnv []string, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
@@ -108,6 +586,20 @@ func runRepoCommand(t *testing.T, dir string, extraEnv []string, name string, ar
 	cmd.Stderr = &output
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, output.String())
+	}
+	return output.String()
+}
+
+func runRepoCommandMustFail(t *testing.T, dir string, extraEnv []string, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), extraEnv...)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("%s %s unexpectedly succeeded\n%s", name, strings.Join(args, " "), output.String())
 	}
 	return output.String()
 }
@@ -130,7 +622,7 @@ func TestDockerfileBuildsSelectableSingleBinaryTargets(t *testing.T) {
 	for _, want := range []string{
 		"ARG TARGET=gateway",
 		"ARG VERSION=dev",
-		"go build -trimpath -ldflags=\"-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION}\" -o /out/onprest ./cmd/${TARGET}",
+		"go build -buildvcs=false -trimpath -ldflags=\"-X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION} -X github.com/viewlegacy/onprest/internal/buildinfo.ReleaseMarker=onprest-release-version:${VERSION}\" -o /out/onprest ./cmd/${TARGET}",
 		"ENTRYPOINT [\"/app/onprest\"]",
 	} {
 		if !strings.Contains(dockerfile, want) {
@@ -267,36 +759,88 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	release := readWorkflow(t, filepath.Join(workflowDir, "release-gate.yml"))
 	assertMainWorkflowTriggers(t, release)
 	releaseJobs := workflowSection(t, release, "jobs")
-	for _, job := range []string{"integration-linux", "service-lifecycle", "release-ready"} {
+	for _, job := range []string{"package-candidate", "integration-linux", "service-lifecycle", "release-ready"} {
 		if _, ok := releaseJobs[job]; !ok {
 			t.Fatalf("release gate workflow missing %s job", job)
 		}
 	}
 	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") ||
+		!strings.Contains(text, "make release-artifacts") ||
+		!strings.Contains(text, "release-candidate-${{ github.sha }}") ||
 		!strings.Contains(text, "uses: ./.github/workflows/service-lifecycle.yml") ||
-		!strings.Contains(text, "SERVICE_RESULT") || !strings.Contains(text, "concurrency:") || !strings.Contains(text, "cancel-in-progress: true") {
+		!strings.Contains(text, "PACKAGE_RESULT") || !strings.Contains(text, "SERVICE_RESULT") || !strings.Contains(text, "concurrency:") || !strings.Contains(text, "cancel-in-progress: true") {
 		t.Fatal("release gate workflow does not aggregate Linux integration and reusable service lifecycle")
+	}
+	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
+	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "ONPREST_IT_DISTRIBUTION_VERSION", "must be extracted outside the source tree", `cd / && "$absolute" --version`} {
+		if !strings.Contains(releaseScript, marker) {
+			t.Fatalf("release gate script does not validate prebuilt archive binaries: missing %q", marker)
+		}
 	}
 
 	service := readWorkflow(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
 	serviceEvents := workflowSection(t, service, "on")
-	for _, event := range []string{"workflow_call", "workflow_dispatch"} {
-		if _, ok := serviceEvents[event]; !ok {
-			t.Fatalf("service lifecycle workflow missing %s trigger", event)
-		}
+	if _, ok := serviceEvents["workflow_call"]; !ok {
+		t.Fatal("service lifecycle workflow missing workflow_call trigger")
 	}
-	for _, event := range []string{"push", "pull_request"} {
+	for _, event := range []string{"push", "pull_request", "workflow_dispatch"} {
 		if _, ok := serviceEvents[event]; ok {
 			t.Fatalf("service lifecycle workflow must be triggered through release-gate, found direct %s", event)
 		}
 	}
 	serviceJobs := workflowSection(t, service, "jobs")
 	for _, job := range []string{"linux-systemd", "macos-launchd", "windows-service"} {
-		if _, ok := serviceJobs[job]; !ok {
+		definition, ok := serviceJobs[job].(map[string]any)
+		if !ok {
 			t.Fatalf("service lifecycle workflow missing %s job", job)
+		}
+		steps, ok := definition["steps"].([]any)
+		if !ok {
+			t.Fatalf("service lifecycle %s steps missing", job)
+		}
+		validateAt, downloadAt := -1, -1
+		for i, raw := range steps {
+			step, _ := raw.(map[string]any)
+			if step["name"] == "Validate release version input" {
+				validateAt = i
+			}
+			if step["uses"] == "actions/download-artifact@v5" {
+				downloadAt = i
+			}
+		}
+		if validateAt < 0 || downloadAt < 0 || validateAt >= downloadAt {
+			t.Fatalf("service lifecycle %s must reject invalid version before artifact download", job)
 		}
 	}
 	serviceText := readText(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
+	if strings.Count(serviceText, "${{ inputs.version }}") != 3 || strings.Contains(serviceText, "version=${{ inputs.version }}") {
+		t.Fatal("service lifecycle version input must enter scripts only through quoted environment values")
+	}
+	for _, marker := range []string{"normalize_release_version.sh \"$INPUT_VERSION\"", "-notmatch '^[0-9]+\\.[0-9]+\\.[0-9]+$'", "docker exec --env \"PACKAGE_VERSION=$PACKAGE_VERSION\""} {
+		if !strings.Contains(serviceText, marker) {
+			t.Fatalf("service lifecycle version validation missing %q", marker)
+		}
+	}
+	for _, workflow := range []string{"release-gate.yml", "release.yml", "service-lifecycle.yml"} {
+		text := readText(t, filepath.Join(workflowDir, workflow))
+		for _, forbidden := range []string{"tar -x", "unzip ", "Expand-Archive"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s contains raw archive extraction %q", workflow, forbidden)
+			}
+		}
+		if !strings.Contains(text, "go run ./internal/releaseverify extract") {
+			t.Fatalf("%s does not use the common safe archive extractor", workflow)
+		}
+	}
+	scanScript := readText(t, filepath.Join(root, "scripts", "scan_release_binaries.sh"))
+	for _, forbidden := range []string{"tar -x", "unzip "} {
+		if strings.Contains(scanScript, forbidden) {
+			t.Fatalf("binary scan contains raw archive extraction %q", forbidden)
+		}
+	}
+	if !strings.Contains(scanScript, "go run ./internal/releaseverify extract") || !strings.Contains(scanScript, ".archive-digests") {
+		t.Fatal("binary scan does not verify the package-time archive digest through the safe extractor")
+	}
 	if strings.Contains(serviceText, "concurrency:") {
 		t.Fatal("called service lifecycle workflow must not share caller concurrency and cancel its own release gate")
 	}
@@ -423,12 +967,17 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		t.Fatal("Unix lifecycle invokes final cleanup after starting the Gateway but before installing the service")
 	}
 	for _, invocation := range []string{
-		"test_service_lifecycle_unix.sh /workspace/dist/onprest-agent /workspace/dist/onprest-gateway",
-		"test_service_lifecycle_unix.sh ./dist/onprest-agent ./dist/onprest-gateway",
-		"test_service_lifecycle_windows.ps1 -AgentBin .\\dist\\onprest-agent.exe -GatewayBin .\\dist\\onprest-gateway.exe",
+		"Extract Linux release archive outside the repository",
+		"onprest-$PACKAGE_VERSION-linux-amd64.tar.gz",
+		"onprest-$PACKAGE_VERSION-$target.tar.gz",
+		"onprest-$($env:PACKAGE_VERSION)-windows-amd64.zip",
+		"run_service_lifecycle_sanitized_unix.sh",
+		"development tool remains on service test PATH",
+		"LINUX_PACKAGE_ROOT",
+		"$env:RUNNER_TEMP",
 	} {
 		if !strings.Contains(serviceText, invocation) {
-			t.Fatalf("service lifecycle workflow does not pass both production binaries: %q", invocation)
+			t.Fatalf("service lifecycle workflow does not use the source-free archive path: %q", invocation)
 		}
 	}
 	systemdImage := readText(t, filepath.Join(root, "scripts", "service-test-systemd.Dockerfile"))
@@ -436,6 +985,129 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		if !strings.Contains(systemdImage, want) {
 			t.Fatalf("systemd service test image missing %q", want)
 		}
+	}
+}
+
+func TestTagReleaseWorkflowRequiresExactSuccessfulGateAndLeastPrivilege(t *testing.T) {
+	root := repoRoot(t)
+	path := filepath.Join(root, ".github", "workflows", "release.yml")
+	workflow := readWorkflow(t, path)
+	basePermissions := workflowSection(t, workflow, "permissions")
+	if basePermissions["contents"] != "read" || basePermissions["actions"] != "read" || len(basePermissions) != 2 {
+		t.Fatalf("release base permissions are not read-only: %#v", basePermissions)
+	}
+	events := workflowSection(t, workflow, "on")
+	push, ok := events["push"].(map[string]any)
+	if !ok {
+		t.Fatalf("release workflow push trigger missing: %#v", events["push"])
+	}
+	tags, ok := push["tags"].([]any)
+	if !ok || len(tags) != 1 || tags[0] != "v*.*.*" {
+		t.Fatalf("release tags=%#v", push["tags"])
+	}
+	for _, forbidden := range []string{"pull_request", "workflow_dispatch"} {
+		if _, exists := events[forbidden]; exists {
+			t.Fatalf("release workflow unexpectedly has %s trigger", forbidden)
+		}
+	}
+	jobs := workflowSection(t, workflow, "jobs")
+	for _, job := range []string{"verify_release_ready", "build", "release_archive_integration", "release_archive_service_lifecycle", "attest", "publish"} {
+		if _, ok := jobs[job]; !ok {
+			t.Fatalf("release workflow missing %s", job)
+		}
+	}
+	attest := jobs["attest"].(map[string]any)
+	attestPermissions := attest["permissions"].(map[string]any)
+	for key, want := range map[string]any{"contents": "read", "actions": "read", "id-token": "write", "attestations": "write", "artifact-metadata": "write"} {
+		if attestPermissions[key] != want {
+			t.Fatalf("attest permission %s=%#v, want %q", key, attestPermissions[key], want)
+		}
+	}
+	if len(attestPermissions) != 5 {
+		t.Fatalf("attest permissions include unexpected grants: %#v", attestPermissions)
+	}
+	publish := jobs["publish"].(map[string]any)
+	publishPermissions := publish["permissions"].(map[string]any)
+	if publishPermissions["contents"] != "write" || publishPermissions["actions"] != "read" || len(publishPermissions) != 2 {
+		t.Fatalf("publish permissions are not limited to release content plus artifact read: %#v", publishPermissions)
+	}
+	text := readText(t, path)
+	for _, required := range []string{
+		"head_sha=$GITHUB_SHA",
+		"scripts/select_release_ready_run.rb",
+		"test \"$(git rev-parse \"$GITHUB_REF_NAME^{commit}\")\" = \"$GITHUB_SHA\"",
+		"make release-artifacts",
+		`test "$(cd / && "$install_dir/onprest-gateway" --version)" = "$VERSION"`,
+		`test "$(cd / && "$install_dir/onprest-agent" --version)" = "$VERSION"`,
+		"TestDistributionBinariesDirectAndGenericProxyHTTPAndWebSocket",
+		"TestOperationalAgentSecretRotationWithRealBinaries",
+		"uses: ./.github/workflows/service-lifecycle.yml",
+		"artifact-name: release-assets-${{ github.sha }}",
+		"actions/attest@v4",
+		"subject-path: release-dist/*",
+		"artifact-metadata: write",
+		"id-token: write",
+		"attestations: write",
+		"contents: write",
+		"refusing to overwrite it",
+		"sha256sum --check SHA256SUMS",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("release workflow missing %q", required)
+		}
+	}
+	integrationSource := readText(t, filepath.Join(root, "it", "gateway_process_operational_test.go"))
+	prebuiltSource := readText(t, filepath.Join(root, "it", "gateway_agent_postgres_test.go"))
+	for _, marker := range []string{"PATH=\" + runtimePath", "startReverseProxy", "renderCapability", "assertRESTCapability", "assertMCPTools"} {
+		if !strings.Contains(integrationSource, marker) {
+			t.Fatalf("distribution direct/proxy E2E missing %q", marker)
+		}
+	}
+	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "copy prebuilt"} {
+		if !strings.Contains(prebuiltSource, marker) {
+			t.Fatalf("distribution E2E cannot consume packaged binary: missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{"pull_request:", "actions/attest-build-provenance", "cancel-in-progress: true"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("release workflow contains forbidden %q", forbidden)
+		}
+	}
+}
+
+func TestReleaseReadySelectionRejectsWrongSHAAndUnsuccessfulRuns(t *testing.T) {
+	root := repoRoot(t)
+	tmp := t.TempDir()
+	jobs := filepath.Join(tmp, "jobs")
+	if err := os.Mkdir(jobs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exactSHA := "1111111111111111111111111111111111111111"
+	otherSHA := "2222222222222222222222222222222222222222"
+	runs := `{"workflow_runs":[` +
+		`{"id":1,"html_url":"https://github.com/viewlegacy/onprest/actions/runs/1","head_sha":"` + otherSHA + `","status":"completed","conclusion":"success"},` +
+		`{"id":2,"html_url":"https://github.com/viewlegacy/onprest/actions/runs/2","head_sha":"` + exactSHA + `","status":"completed","conclusion":"failure"},` +
+		`{"id":3,"html_url":"https://github.com/viewlegacy/onprest/actions/runs/3","head_sha":"` + exactSHA + `","status":"completed","conclusion":"cancelled"},` +
+		`{"id":4,"html_url":"https://github.com/viewlegacy/onprest/actions/runs/4","head_sha":"` + exactSHA + `","status":"completed","conclusion":"success"}` +
+		`]}`
+	runsPath := filepath.Join(tmp, "runs.json")
+	if err := os.WriteFile(runsPath, []byte(runs), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for id, conclusion := range map[string]string{"1": "success", "2": "success", "3": "success", "4": "failure"} {
+		body := `{"jobs":[{"name":"release-ready","conclusion":"` + conclusion + `"}]}`
+		if err := os.WriteFile(filepath.Join(jobs, id+".json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runRepoCommandMustFail(t, root, nil, "ruby", "scripts/select_release_ready_run.rb", exactSHA, runsPath, jobs)
+
+	if err := os.WriteFile(filepath.Join(jobs, "4.json"), []byte(`{"jobs":[{"name":"release-ready","conclusion":"success"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimSpace(runRepoCommand(t, root, nil, "ruby", "scripts/select_release_ready_run.rb", exactSHA, runsPath, jobs))
+	if got != "4\thttps://github.com/viewlegacy/onprest/actions/runs/4" {
+		t.Fatalf("selected release-ready run = %q", got)
 	}
 }
 

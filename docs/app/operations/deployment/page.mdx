@@ -9,7 +9,7 @@ Onprest OSS deployment is the gateway binary plus the agent binary.
 | `onprest-gateway` | public or private server reachable by clients and agent | gateway env |
 | `onprest-agent` | on-prem or DB-adjacent environment | `capability.yaml` |
 
-The repository does not need to be deployed from source. Build artifacts can be copied to another directory or host.
+The repository does not need to be deployed from source. Verified release archives are the normal binary installation path; locally built artifacts can also be copied to another directory or host.
 
 ## Supported Operating System Baseline
 
@@ -23,6 +23,129 @@ These are the officially supported baselines. Earlier versions may run, but they
 
 Cross-building proves only that artifacts can be produced. See [Release Gate](/operations/release-gate) for the native runtime evidence required before release.
 
+## Binary Release Installation
+
+Each GitHub release provides one archive for every supported OS/CPU target. Unix
+archives use `.tar.gz`; Windows uses `.zip`. Every archive contains both
+`onprest-gateway` and `onprest-agent`, `LICENSE`, `INSTALL.md`, minimal
+`gateway.env.example` and `capability.yaml.example` files,
+`RELEASE-MANIFEST.txt`, and a dependency report for each binary.
+
+| Host | Architecture | Release asset |
+|---|---|---|
+| Linux | `amd64` | `onprest-X.Y.Z-linux-amd64.tar.gz` |
+| Linux | `arm64` | `onprest-X.Y.Z-linux-arm64.tar.gz` |
+| macOS | Intel (`amd64`) | `onprest-X.Y.Z-darwin-amd64.tar.gz` |
+| macOS | Apple silicon (`arm64`) | `onprest-X.Y.Z-darwin-arm64.tar.gz` |
+| Windows | `amd64` | `onprest-X.Y.Z-windows-amd64.zip` |
+
+Download the archive together with `SHA256SUMS`, then verify both its digest and
+the GitHub artifact attestation before extraction. The verification tools run on
+the operator's verification machine; they are not Agent runtime dependencies.
+The commands below require the GitHub CLI (`gh`) on that verification machine.
+Replace `X.Y.Z` with the release version you intend to install.
+
+### Linux
+
+```bash
+set -euo pipefail
+
+VERSION=X.Y.Z
+ASSET=onprest-${VERSION}-linux-amd64.tar.gz
+
+gh release download "v${VERSION}" \
+  --repo viewlegacy/onprest \
+  --pattern "$ASSET" \
+  --pattern SHA256SUMS
+CHECKSUM_COUNT=$(awk -v asset="$ASSET" '$2 == asset { count++ } END { print count + 0 }' SHA256SUMS)
+[ "$CHECKSUM_COUNT" -eq 1 ] || { echo "Expected one checksum for $ASSET" >&2; exit 1; }
+awk -v asset="$ASSET" '$2 == asset { print }' SHA256SUMS | sha256sum --check -
+gh attestation verify "$ASSET" \
+  --repo viewlegacy/onprest \
+  --signer-workflow viewlegacy/onprest/.github/workflows/release.yml \
+  --source-ref "refs/tags/v${VERSION}"
+tar -xzf "$ASSET"
+cd "onprest-${VERSION}-linux-amd64"
+./onprest-gateway --version
+./onprest-agent --version
+```
+
+For Linux arm64, set `ASSET=onprest-${VERSION}-linux-arm64.tar.gz` and use the
+matching extracted directory.
+
+### macOS
+
+```bash
+set -euo pipefail
+
+VERSION=X.Y.Z
+ASSET=onprest-${VERSION}-darwin-arm64.tar.gz # use darwin-amd64 on Intel
+
+gh release download "v${VERSION}" \
+  --repo viewlegacy/onprest \
+  --pattern "$ASSET" \
+  --pattern SHA256SUMS
+CHECKSUM_COUNT=$(awk -v asset="$ASSET" '$2 == asset { count++ } END { print count + 0 }' SHA256SUMS)
+[ "$CHECKSUM_COUNT" -eq 1 ] || { echo "Expected one checksum for $ASSET" >&2; exit 1; }
+awk -v asset="$ASSET" '$2 == asset { print }' SHA256SUMS | shasum -a 256 --check -
+gh attestation verify "$ASSET" \
+  --repo viewlegacy/onprest \
+  --signer-workflow viewlegacy/onprest/.github/workflows/release.yml \
+  --source-ref "refs/tags/v${VERSION}"
+tar -xzf "$ASSET"
+cd "${ASSET%.tar.gz}"
+./onprest-gateway --version
+./onprest-agent --version
+```
+
+### Windows PowerShell
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$Version = 'X.Y.Z'
+$Asset = "onprest-$Version-windows-amd64.zip"
+
+gh release download "v$Version" `
+  --repo viewlegacy/onprest `
+  --pattern $Asset `
+  --pattern SHA256SUMS
+if ($LASTEXITCODE -ne 0) { throw "Release download failed for v$Version" }
+$Matches = @(Get-Content SHA256SUMS | Where-Object {
+  ($_ -split '\s+', 2)[1] -eq $Asset
+})
+if ($Matches.Count -ne 1) { throw "Expected one checksum for $Asset" }
+$Expected = ($Matches[0] -split '\s+', 2)[0].ToLowerInvariant()
+$Actual = (Get-FileHash -Algorithm SHA256 $Asset).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected) { throw "Checksum mismatch for $Asset" }
+gh attestation verify $Asset `
+  --repo viewlegacy/onprest `
+  --signer-workflow viewlegacy/onprest/.github/workflows/release.yml `
+  --source-ref "refs/tags/v$Version"
+if ($LASTEXITCODE -ne 0) { throw "Attestation verification failed for $Asset" }
+Expand-Archive -LiteralPath $Asset -DestinationPath .
+Set-Location "onprest-$Version-windows-amd64"
+.\onprest-gateway.exe --version
+.\onprest-agent.exe --version
+```
+
+Selecting exactly one checksum entry also fails when the chosen archive is
+absent from the checksum manifest. The attestation must identify the
+`viewlegacy/onprest` release workflow and the tag being installed.
+`RELEASE-MANIFEST.txt` records that tag, its exact commit SHA, the binary
+version, target, and successful `release-ready` run URL. Confirm that the target
+matches the host and that both binaries print the manifest version with
+`--version`.
+
+The release also publishes aggregate `DEPENDENCIES.txt`,
+`VULNERABILITY-EVIDENCE.txt`, and `RELEASE-EVIDENCE.txt` assets. `SHA256SUMS`
+covers the five archives and those three evidence files. Do not install a
+release when an expected asset is absent, a digest differs, or attestation
+verification reports another repository, workflow, or source ref.
+
+After extraction, continue with the bundled `INSTALL.md`. It maps the generated
+keys into the two configuration files and gives Unix and Windows commands for
+validation and startup.
+
 ## New Customer Setup
 
 1. Generate an agent key pair with `onprest-gateway create-agent-secret`.
@@ -35,7 +158,7 @@ Cross-building proves only that artifacts can be produced. See [Release Gate](/o
 8. Start the agent.
 9. Verify `/healthz`, `/openapi.json`, REST, and MCP.
 
-## Binary Deployment
+## Binary Operation
 
 This is the primary deployment path for legacy environments without Docker.
 
@@ -48,6 +171,23 @@ set +a
 
 ```bash
 ./onprest-agent --config ./capability.yaml
+```
+
+The Gateway reads process environment variables; it does not read
+`gateway.env` itself. On Windows PowerShell, copy the configured values into the
+process environment (or the service environment) before starting it:
+
+```powershell
+$env:GATEWAY_AGENT_PUBLIC_KEY = '<generated-agent-public-key>'
+$env:GATEWAY_API_KEYS_JSON = '[{"name":"operator","key_hash":"<generated-key-hash>","capabilities":["get_customer"]}]'
+.\onprest-gateway.exe
+```
+
+In another PowerShell session, validate and start the Agent:
+
+```powershell
+.\onprest-agent.exe validate --config .\capability.yaml
+.\onprest-agent.exe --config .\capability.yaml
 ```
 
 Keep the agent binary and `capability.yaml` together. Agent local logs are written next to the agent binary.

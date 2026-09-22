@@ -13,6 +13,35 @@ else
 fi
 KEEP_LOGS="${ONPREST_IT_GATE_KEEP_LOGS:-0}"
 
+assert_prebuilt_distribution() {
+	local gateway="${ONPREST_IT_GATEWAY_BINARY:-}"
+	local agent="${ONPREST_IT_AGENT_BINARY:-}"
+	local version="${ONPREST_IT_DISTRIBUTION_VERSION:-}"
+	if [[ -z $gateway && -z $agent ]]; then
+		return
+	fi
+	if [[ -z $gateway || -z $agent || -z $version ]]; then
+		echo "gateway, agent, and distribution version must be provided together" >&2
+		exit 1
+	fi
+	for binary in "$gateway" "$agent"; do
+		if [[ ! -x $binary ]]; then
+			echo "prebuilt distribution binary is missing or not executable: $binary" >&2
+			exit 1
+		fi
+		absolute="$(cd "$(dirname "$binary")" && pwd -P)/$(basename "$binary")"
+		if [[ $absolute == "$ROOT_DIR"/* ]]; then
+			echo "prebuilt distribution binary must be extracted outside the source tree: $absolute" >&2
+			exit 1
+		fi
+		if [[ $(cd / && "$absolute" --version) != "$version" ]]; then
+			echo "prebuilt distribution binary version does not match $version: $absolute" >&2
+			exit 1
+		fi
+	done
+	echo "PASS: source-free distribution binaries ($version)"
+}
+
 cleanup_logs() {
 	if [[ "$LOG_DIR_CREATED" == "1" && "$KEEP_LOGS" != "1" && -d "$LOG_DIR" ]]; then
 		rm -rf "$LOG_DIR"
@@ -73,6 +102,7 @@ assert_no_testcontainers_left() {
 mkdir -p "$LOG_DIR"
 echo "integration release gate logs: $LOG_DIR"
 
+assert_prebuilt_distribution
 assert_docker_available
 
 echo "==> govulncheck"

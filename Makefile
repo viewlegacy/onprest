@@ -1,17 +1,36 @@
-.PHONY: build build-cross quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down reconciliation-change-order test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-database-tls test-it-docker-ops test-it-release-gate fmt vet clean
+.PHONY: build build-cross package-release scan-release-binaries finalize-release-artifacts release-artifacts verify-release-artifacts quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down reconciliation-change-order test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-database-tls test-it-docker-ops test-it-release-gate fmt vet clean
 
 DIST_DIR ?= dist
+RELEASE_DIR ?= release-dist
 RECONCILIATION_DB ?= postgres
 VERSION ?= dev
-VERSION_LDFLAGS := -s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=$(VERSION)
+VERSION_LDFLAGS := -X github.com/viewlegacy/onprest/internal/buildinfo.Version=$(VERSION) -X github.com/viewlegacy/onprest/internal/buildinfo.ReleaseMarker=onprest-release-version:$(VERSION)
 
 build:
 	mkdir -p "$(DIST_DIR)"
-	CGO_ENABLED=0 go build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(DIST_DIR)/onprest-gateway" ./cmd/gateway
-	CGO_ENABLED=0 go build -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(DIST_DIR)/onprest-agent" ./cmd/agent
+	CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(DIST_DIR)/onprest-gateway" ./cmd/gateway
+	CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="$(VERSION_LDFLAGS)" -o "$(DIST_DIR)/onprest-agent" ./cmd/agent
 
 build-cross:
 	bash scripts/cross_build.sh
+
+package-release:
+	bash scripts/package_release.sh
+
+scan-release-binaries:
+	bash scripts/scan_release_binaries.sh
+
+finalize-release-artifacts:
+	bash scripts/finalize_release_artifacts.sh
+
+release-artifacts:
+	$(MAKE) package-release
+	$(MAKE) scan-release-binaries
+	$(MAKE) finalize-release-artifacts
+	$(MAKE) verify-release-artifacts
+
+verify-release-artifacts:
+	bash scripts/verify_release_artifacts.sh
 
 quickstart-db:
 	docker compose -f examples/postgres.compose.yml up -d

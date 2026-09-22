@@ -574,6 +574,29 @@ func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
 	}
 }
 
+func TestReleaseCapabilityExampleLoads(t *testing.T) {
+	templatePath := filepath.Join("..", "..", "release", "capability.yaml.example")
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := strings.ReplaceAll(string(content), "replace-with-create-agent-secret-private-key", testAgentPrivateKey)
+	path := filepath.Join(t.TempDir(), "capability.yaml")
+	if err := os.WriteFile(path, []byte(configured), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cf, err := LoadCapabilityFile(path)
+	if err != nil {
+		t.Fatalf("LoadCapabilityFile(release example): %v", err)
+	}
+	if cf.Service.Title != "Example Onprest Service" || cf.Database.Driver != "postgres" {
+		t.Fatalf("release example loaded unexpected contract: service=%q driver=%q", cf.Service.Title, cf.Database.Driver)
+	}
+	if _, ok := cf.Capabilities["get_customer"]; !ok {
+		t.Fatal("release example missing get_customer capability")
+	}
+}
+
 func TestCapabilityFileRuntimeMaxConcurrentRequests(t *testing.T) {
 	tests := []struct {
 		name    string

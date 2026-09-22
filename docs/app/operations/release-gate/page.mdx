@@ -34,17 +34,46 @@ Pull requests targeting `main` and pushes to `main` also run these checks:
 
 | Check | Scope |
 |---|---|
-| `release-gate / integration-linux` | Runs `make test-it-release-gate` once on Linux |
+| `release-gate / package-candidate` | Builds the five canonical archives, records dependencies, scans the ten distributed binaries, and verifies their checksums |
+| `release-gate / integration-linux` | Extracts the Linux amd64 archive and runs `make test-it-release-gate` once, supplying its binaries to real-process integration cases |
 | `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
 | `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
 | `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
-| `release-gate / release-ready` | Requires both Linux integration and the complete reusable service lifecycle workflow to succeed |
+| `release-gate / release-ready` | Requires packaging, Linux integration, and the complete reusable service lifecycle workflow to succeed |
 
-The three service checks use the native OS managers, a real Gateway, and a real PostgreSQL instance. Each host first runs the validation-log crash recovery and adversarial-path safety tests, including native symlink/reparse-point handling, then verifies service registration, actual runtime detail writes and rotation markers while production validation overlaps, latest-failure cleanup, and native file permissions. The reusable workflow fails if any OS job fails or is canceled; `release-ready` also fails unless both it and `integration-linux` succeed. General all-database and Docker coverage remains in `integration-linux`.
+The GitHub release gate additionally verifies that the canonical five-target
+archive set can be built, each archive has both binaries and its
+install/configuration files, and all ten distributed binaries pass binary-mode
+vulnerability analysis. Source and binary scan evidence is bound to the release
+version and exact commit SHA. After checking the archive checksum, release jobs
+safely verify and extract the complete expected contents and manifest. The
+Linux integration job verifies the extracted Gateway and Agent version from
+`/` before running the local command above.
+
+The three service checks extract the canonical archive into runner temporary storage and use the native OS managers, a real Gateway, and a real PostgreSQL instance from a working directory outside the checkout. Their service-test PATH contains OS runtime and manager commands but not the checked-out Go, Git, Make, or Docker tool paths. Each host first runs the validation-log crash recovery and adversarial-path safety tests, including native symlink/reparse-point handling, then verifies service registration, actual runtime detail writes and rotation markers while production validation overlaps, latest-failure cleanup, and native file permissions. The reusable workflow fails if any OS job fails or is canceled; `release-ready` also fails unless packaging, Linux integration, and the complete lifecycle workflow succeed. Generic reverse-proxy and direct access, Agent-key rotation, private logging, and failure recovery remain part of the canonical integration/lifecycle gate, using the extracted candidate binaries in real-process cases.
 
 Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-operating-system-baseline); results from a newer OS do not establish minimum-version support.
 
 The release-gate caller owns concurrency cancellation. The called service lifecycle workflow deliberately has no competing concurrency group, so invoking it cannot cancel its own caller run.
+
+## Release Publication
+
+A semantic version tag (`vX.Y.Z`) starts the dedicated release workflow. Before
+building or publishing, it verifies that the tag resolves to the workflow's
+exact commit SHA and queries the GitHub Actions API for an already successful
+`release-ready` job from `release-gate.yml` with that same SHA. Missing,
+failed, canceled, or different-SHA runs are rejected.
+
+The build job recreates the canonical five-target byte set from the tagged
+commit, retains the successful release-gate run URL in `RELEASE-EVIDENCE.txt`,
+and verifies source and binary vulnerabilities. Before attestation, the tagged
+Linux archive runs the direct, generic-proxy, source-free, and Agent-key rotation
+integration paths, and all three native service jobs use the tagged archives.
+A separate job with only the OIDC and attestation permissions uses
+`actions/attest` for every published file. A final job with only release-content
+write permission verifies `SHA256SUMS` and creates the release. Pull requests
+never receive attestation or release-write permission, and an existing release
+is never overwritten.
 
 ## Requirements
 
@@ -68,3 +97,5 @@ A release candidate should pass `integration-linux`, all three native service ch
 - no gateway DB credentials
 - direct and reverse-proxy deployment both remain valid
 - error detail redaction remains intact
+- all five archives and their evidence files match `SHA256SUMS` and the release
+  workflow/tag artifact attestation
