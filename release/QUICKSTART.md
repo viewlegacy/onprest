@@ -4,8 +4,8 @@ These files contain public development credentials and a disposable PostgreSQL
 setup. Use them only for local evaluation on a trusted computer. Never copy
 these keys, API credentials, or database password into a real deployment.
 
-Download the matching `onprest-X.Y.Z-<os>-<arch>` binary archive from the same
-GitHub Release. Extract both archives in a working directory. No source
+Download the matching OS/CPU binary archive from the same GitHub Release.
+Extract both archives in a working directory. No source
 checkout, Go toolchain, or `make` is needed. Docker Compose is needed only if
 you use the included disposable database.
 

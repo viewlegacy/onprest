@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"io/fs"
@@ -241,9 +242,60 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 		}
 	}
 	checksum := readText(t, filepath.Join(releaseDir, "SHA256SUMS"))
-	if strings.Count(strings.TrimSpace(checksum), "\n")+1 != 9 {
-		t.Fatalf("SHA256SUMS entries=%d, want 9", strings.Count(strings.TrimSpace(checksum), "\n")+1)
+	if strings.Count(strings.TrimSpace(checksum), "\n")+1 != 15 {
+		t.Fatalf("SHA256SUMS entries=%d, want 15", strings.Count(strings.TrimSpace(checksum), "\n")+1)
 	}
+	for _, pair := range [][2]string{
+		{"onprest-linux-amd64.tar.gz", "onprest-1.2.12-linux-amd64.tar.gz"},
+		{"onprest-linux-arm64.tar.gz", "onprest-1.2.12-linux-arm64.tar.gz"},
+		{"onprest-darwin-amd64.tar.gz", "onprest-1.2.12-darwin-amd64.tar.gz"},
+		{"onprest-darwin-arm64.tar.gz", "onprest-1.2.12-darwin-arm64.tar.gz"},
+		{"onprest-windows-amd64.zip", "onprest-1.2.12-windows-amd64.zip"},
+		{"onprest-quickstart.tar.gz", "onprest-1.2.12-quickstart.tar.gz"},
+	} {
+		alias, err := os.ReadFile(filepath.Join(releaseDir, pair[0]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := os.ReadFile(filepath.Join(releaseDir, pair[1]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(alias, canonical) {
+			t.Fatalf("latest alias %s differs from %s", pair[0], pair[1])
+		}
+	}
+	t.Run("latest alias mismatch despite regenerated checksum", func(t *testing.T) {
+		mutatedDir := cloneReleaseAssets(t, releaseDir)
+		aliasName := "onprest-linux-amd64.tar.gz"
+		aliasPath := filepath.Join(mutatedDir, aliasName)
+		if err := os.Remove(aliasPath); err != nil {
+			t.Fatal(err)
+		}
+		body := []byte("not the versioned release archive")
+		if err := os.WriteFile(aliasPath, body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(readText(t, filepath.Join(mutatedDir, "SHA256SUMS"))), "\n")
+		replaced := false
+		for i, line := range lines {
+			if strings.HasSuffix(line, "  "+aliasName) {
+				lines[i] = fmt.Sprintf("%x  %s", sha256.Sum256(body), aliasName)
+				replaced = true
+			}
+		}
+		if !replaced {
+			t.Fatalf("checksum for latest alias %s missing", aliasName)
+		}
+		checksumPath := filepath.Join(mutatedDir, "SHA256SUMS")
+		if err := os.Remove(checksumPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(checksumPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runRepoCommandMustFail(t, root, replaceEnv(env, "RELEASE_DIR", mutatedDir), "make", "verify-release-artifacts")
+	})
 
 	for _, mutation := range []struct {
 		name     string
@@ -1266,12 +1318,13 @@ func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
 			t.Fatalf("test commands do not document the %s TLS contract", database)
 		}
 	}
-	for source, text := range map[string]string{"test commands": testCommands, "release gate": releaseDocs} {
-		for _, coverage := range []string{"private", "hostname", "client"} {
-			if !strings.Contains(text, coverage) {
-				t.Fatalf("%s does not document PostgreSQL TLS %s coverage", source, coverage)
-			}
+	for _, coverage := range []string{"private", "hostname", "client"} {
+		if !strings.Contains(testCommands, coverage) {
+			t.Fatalf("test commands do not document PostgreSQL TLS %s coverage", coverage)
 		}
+	}
+	if !strings.Contains(releaseDocs, "database TLS checks") {
+		t.Fatal("release gate does not summarize database TLS coverage")
 	}
 	if strings.Contains(testCommands, "exact filter `^TestContainerDBDriver`") || strings.Contains(releaseDocs, "all-DB smoke path") {
 		t.Fatal("DB gate documentation retained the superseded selection")

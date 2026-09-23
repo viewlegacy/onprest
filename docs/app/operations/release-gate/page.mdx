@@ -55,7 +55,8 @@ Missing, failed, canceled, or different-SHA results block the release.
 
 The tagged binaries and separate Quick Start asset are rebuilt and tested. Each
 published asset receives a GitHub artifact attestation, and `SHA256SUMS`
-covers all six archives and the evidence files. The workflow creates the
+covers the six versioned archives, their matching latest-download copies, and
+the evidence files. The workflow creates the
 GitHub Release after these checks pass; it never overwrites an existing
 Release.
 

@@ -113,13 +113,22 @@ func verifyTopLevel(cfg config) error {
 		"SHA256SUMS":                                    true,
 		"onprest-" + cfg.version + "-quickstart.tar.gz": true,
 	}
+	aliases := map[string]string{
+		"onprest-quickstart.tar.gz": "onprest-" + cfg.version + "-quickstart.tar.gz",
+	}
 	for _, target := range cfg.targets {
 		name := strings.ReplaceAll(target, "/", "-")
 		ext := ".tar.gz"
 		if strings.HasPrefix(name, "windows-") {
 			ext = ".zip"
 		}
-		expected["onprest-"+cfg.version+"-"+name+ext] = true
+		canonical := "onprest-" + cfg.version + "-" + name + ext
+		alias := "onprest-" + name + ext
+		expected[canonical] = true
+		aliases[alias] = canonical
+	}
+	for alias := range aliases {
+		expected[alias] = true
 	}
 	entries, err := os.ReadDir(cfg.dir)
 	if err != nil {
@@ -129,56 +138,69 @@ func verifyTopLevel(cfg config) error {
 		return fmt.Errorf("top-level asset count=%d, want %d", len(entries), len(expected))
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !expected[entry.Name()] {
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || !expected[entry.Name()] {
 			return fmt.Errorf("unexpected top-level entry %q", entry.Name())
 		}
 	}
-	return verifyChecksums(cfg.dir, expected)
+	digests, err := verifyChecksums(cfg.dir, expected)
+	if err != nil {
+		return err
+	}
+	for alias, canonical := range aliases {
+		if digests[alias] != digests[canonical] {
+			return fmt.Errorf("latest alias %q does not match %q", alias, canonical)
+		}
+	}
+	return nil
 }
 
-func verifyChecksums(dir string, expected map[string]bool) error {
+func verifyChecksums(dir string, expected map[string]bool) (map[string]string, error) {
 	want := map[string]string{}
 	f, err := os.Open(filepath.Join(dir, "SHA256SUMS"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) != 2 || len(fields[0]) != 64 {
-			return fmt.Errorf("invalid SHA256SUMS line %q", scanner.Text())
+			return nil, fmt.Errorf("invalid SHA256SUMS line %q", scanner.Text())
 		}
 		if _, err := hex.DecodeString(fields[0]); err != nil {
-			return fmt.Errorf("invalid checksum for %q", fields[1])
+			return nil, fmt.Errorf("invalid checksum for %q", fields[1])
 		}
 		if fields[1] == "SHA256SUMS" || !expected[fields[1]] || !safeArchiveName(fields[1], false) || want[fields[1]] != "" {
-			return fmt.Errorf("unexpected or duplicate checksum subject %q", fields[1])
+			return nil, fmt.Errorf("unexpected or duplicate checksum subject %q", fields[1])
 		}
 		want[fields[1]] = fields[0]
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if len(want) != len(expected)-1 {
-		return fmt.Errorf("checksum subject count=%d, want %d", len(want), len(expected)-1)
+		return nil, fmt.Errorf("checksum subject count=%d, want %d", len(want), len(expected)-1)
 	}
 	for name, digest := range want {
 		file, err := os.Open(filepath.Join(dir, name))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		hasher := sha256.New()
 		_, copyErr := io.Copy(hasher, file)
 		closeErr := file.Close()
 		if copyErr != nil || closeErr != nil {
-			return fmt.Errorf("hash %s: copy=%v close=%v", name, copyErr, closeErr)
+			return nil, fmt.Errorf("hash %s: copy=%v close=%v", name, copyErr, closeErr)
 		}
 		if hex.EncodeToString(hasher.Sum(nil)) != digest {
-			return fmt.Errorf("checksum mismatch for %s", name)
+			return nil, fmt.Errorf("checksum mismatch for %s", name)
 		}
 	}
-	return nil
+	return want, nil
 }
 
 func verifyChecksumSubject(checksumPath, archivePath string) error {

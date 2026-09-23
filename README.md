@@ -228,24 +228,26 @@ For production deployments, use a read-only database user whenever the intended 
 
 ## Quick Start
 
-Download the binary for your computer and the Quick Start files from the same v1.2.12 release (links become available when that release is published):
+Download the latest published binary for your host and the matching Quick Start files. These links follow the latest GitHub Release:
 
 | Host | Download |
 |---|---|
-| Linux x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-linux-amd64.tar.gz) |
-| Linux ARM64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-linux-arm64.tar.gz) |
-| macOS Intel | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-darwin-amd64.tar.gz) |
-| macOS Apple silicon | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-darwin-arm64.tar.gz) |
-| Windows x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-windows-amd64.zip) |
-| All hosts | [⬇ Quick Start files](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-quickstart.tar.gz) |
+| Linux x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-amd64.tar.gz) |
+| Linux ARM64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-arm64.tar.gz) |
+| macOS Intel | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-amd64.tar.gz) |
+| macOS Apple silicon | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-arm64.tar.gz) |
+| Windows x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-windows-amd64.zip) |
+| All hosts | [⬇ Quick Start files](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-quickstart.tar.gz) |
 
-On Linux x64, put both downloaded archives in one directory and run:
+On Linux x64, save both downloads in one directory and run:
 
 ```sh
-tar -xzf onprest-1.2.12-linux-amd64.tar.gz
-tar -xzf onprest-1.2.12-quickstart.tar.gz
-cd onprest-1.2.12-linux-amd64
-QUICKSTART=../onprest-1.2.12-quickstart
+tar -xzf onprest-linux-amd64.tar.gz
+tar -xzf onprest-quickstart.tar.gz
+BINARY_DIR=$(tar -tzf onprest-linux-amd64.tar.gz | sed -n '1s#/$##p')
+cd "$BINARY_DIR"
+VERSION=$(./onprest-gateway --version)
+QUICKSTART="../onprest-${VERSION}-quickstart"
 docker compose -f "$QUICKSTART/postgres.compose.yml" up -d --wait
 ./onprest-agent validate --config "$QUICKSTART/capability.postgres.yaml"
 set -a
@@ -254,16 +256,29 @@ set +a
 ./onprest-gateway
 ```
 
-In a second terminal, change to the same binary directory and run `./onprest-agent --config ../onprest-1.2.12-quickstart/capability.postgres.yaml`. Once it connects, try:
+In a second terminal, change to the extracted binary directory and start the Agent:
 
 ```sh
-curl -sS http://localhost:8080/healthz
-curl -sS -H 'Authorization: Bearer orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM' \
-  -H 'Content-Type: application/json' -d '{"customer_id":1}' \
-  http://localhost:8080/api/v1/capabilities/get_customer
+VERSION=$(./onprest-gateway --version)
+./onprest-agent --config "../onprest-${VERSION}-quickstart/capability.postgres.yaml"
 ```
 
-You should see `"agent_connected":true` and a row for Ada Lovelace. No source checkout, Go, or `make` is needed. Docker is only for the disposable example database; the [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start) covers other hosts, MCP, and an existing evaluation PostgreSQL database. The included credentials are public examples—use fresh keys and the separate production templates for a real deployment.
+After the Agent connects, check health and read a customer:
+
+```sh
+curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS -H 'Authorization: Bearer orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM' \
+  -H 'Content-Type: application/json' -d '{"customer_id":1}' \
+  http://127.0.0.1:8080/api/v1/capabilities/get_customer
+```
+
+You should see `"agent_connected":true` and a row for Ada Lovelace. Stop both binaries with Ctrl+C, then remove the disposable database from the first terminal:
+
+```sh
+docker compose -f "$QUICKSTART/postgres.compose.yml" down -v --remove-orphans
+```
+
+No source checkout, Go, or `make` is needed. Docker is only for the disposable example database. The [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start) covers other hosts, MCP, and an existing evaluation PostgreSQL database. The included credentials are public examples; use fresh keys and the separate production templates for a real deployment.
 
 ## Build from Source
 
