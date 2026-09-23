@@ -101,15 +101,3 @@ Review:
 - trusted proxy source IP detection
 
 `AGENT_RATE_LIMITED` means the request exceeded the Agent policy for that capability. Check `policy.rate_limit` on the target capability, or under `defaults` when inherited, and compare it with the actual call rate. See [Capability YAML](/agent/capability-yaml#policy) for the policy fields and [Errors](/api/errors#rest-error-status-mappings) for the response contract.
-
-## Docker or Testcontainers Issues
-
-Container-backed integration tests require Docker daemon access.
-
-Use mandatory mode when skips should fail the gate:
-
-```bash
-ONPREST_IT_REQUIRE_CONTAINERS=1 make test-it-release-gate
-```
-
-If tests fail after interruption, check for leftover testcontainers resources and rerun the release gate. See [Test Commands](/reference/test-commands) for the meaning of `ONPREST_IT_REQUIRE_CONTAINERS` and the full command list.

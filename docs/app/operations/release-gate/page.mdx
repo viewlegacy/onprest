@@ -1,95 +1,20 @@
-# Release Gate
+# How Releases Are Checked
 
-This page explains how release binaries are qualified. Maintainers run these
-checks before publication; users can install a published release without Go or
-the source repository.
+Published Onprest releases contain prebuilt Gateway and Agent binaries for
+Linux, macOS, and Windows, plus a separate Quick Start asset. Users do not
+need Go or the source repository to install them.
 
-The individual unit, integration, DB-selection, and make targets are documented once in [Test Commands](/reference/test-commands). This page covers only the release gate itself and its acceptance criteria.
+Before publication, GitHub Actions builds the five OS/CPU archives, checks
+their contents and versions, scans the distributed binaries for known
+vulnerabilities, and runs database-backed integration and native service
+checks. The Quick Start asset is exercised with a released binary archive
+against a disposable PostgreSQL database.
 
-## Release Gate Command
+A version tag starts the release workflow only after the `release-ready` gate
+has succeeded for that exact commit. The workflow then tests the tagged
+artifacts and publishes the GitHub Release. `SHA256SUMS` and GitHub artifact
+attestations are provided for operators who choose to verify their downloads;
+verification is not required to install Onprest.
 
-```bash
-make test-it-release-gate
-```
-
-This gate verifies:
-
-- Go vulnerability analysis reports zero reachable known vulnerabilities for `./...`
-- unit tests
-- PostgreSQL integration tests 3 consecutive times
-- PostgreSQL DB interruption stability 5 consecutive times
-- all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
-- MySQL special-character credential connection
-- the four-database TLS contract against real databases: `disable`, `require`, and `verify-full` for PostgreSQL, MySQL, SQL Server, and Oracle, plus PostgreSQL `verify-ca`
-- encryption observation, private/wrong CA, hostname and `server_name`, expiry, certificate replacement/pool recreation, reconnect without plaintext downgrade, and supported PostgreSQL/MySQL client-certificate authentication
-- Oracle TCPS through the pure-Go driver without Oracle Instant Client
-- Docker image operational tests
-- Docker Compose env-file operational tests
-- test/subtest skip count is zero in required mode (`go test -json` package records with no `Test` field are not test skips)
-- testcontainers residue is zero
-
-## GitHub Actions
-
-Every push and pull request runs `go test ./...` and `go vet ./...`.
-
-Pull requests targeting `main` and pushes to `main` also run these checks:
-
-| Check | Scope |
-|---|---|
-| `release-gate / package-candidate` | Builds five OS/CPU binary archives and one separate Quick Start archive, scans the ten distributed binaries, and verifies checksums |
-| `release-gate / integration-linux` | Extracts the Linux amd64 archive and runs `make test-it-release-gate` once, supplying its binaries to real-process integration cases |
-| `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
-| `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
-| `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
-| `release-gate / release-ready` | Requires packaging, Linux integration, and the complete reusable service lifecycle workflow to succeed |
-
-The gate verifies archive contents and both binaries on each target. It keeps
-the public development credentials in the separate Quick Start asset and
-exercises that asset together with the extracted Linux binaries against a
-disposable PostgreSQL database. Source and all ten distributed binaries pass
-vulnerability checks, and the archive checksums are verified before test
-extraction.
-
-The Linux, macOS, and Windows service checks run extracted binaries with native
-service managers and a real PostgreSQL database. They cover installation,
-start, stop, recovery, and private logs. Linux integration also covers direct
-and reverse-proxy access and Agent-key rotation.
-
-Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-operating-system-baseline); results from a newer OS do not establish minimum-version support.
-
-## Release Publication
-
-A semantic version tag (`vX.Y.Z`) starts the release workflow. Publication
-requires a successful `release-ready` result for the exact tagged commit SHA.
-Missing, failed, canceled, or different-SHA results block the release.
-
-The tagged binaries and separate Quick Start asset are rebuilt and tested. Each
-published asset receives a GitHub artifact attestation, and `SHA256SUMS`
-covers all six archives and the evidence files. The workflow creates the
-GitHub Release after these checks pass; it never overwrites an existing
-Release.
-
-## Requirements
-
-Release gate commands require Go 1.26.6 or later as declared in `go.mod`. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.6 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
-
-Container-backed tests require Docker daemon access. To make container availability mandatory, use:
-
-```bash
-ONPREST_IT_REQUIRE_CONTAINERS=1
-```
-
-If Docker is unavailable and mandatory mode is not enabled, container-backed tests may skip. Required release gates should run with no skipped integration or operational cases.
-
-## Acceptance Criteria
-
-A release candidate should pass `integration-linux`, all three native service checks, and the final `release-ready` aggregation for the exact candidate commit, and preserve the architecture boundaries:
-
-- zero reachable known vulnerabilities reported by `govulncheck ./...`
-- two deployable binaries: `onprest-gateway` and `onprest-agent`
-- no gateway SQL construction
-- no gateway DB credentials
-- direct and reverse-proxy deployment both remain valid
-- error detail redaction remains intact
-- all six archives and their evidence files match `SHA256SUMS` and the release
-  workflow/tag artifact attestation
+For installation, use [Deployment](/operations/deployment). Contributors and
+maintainers can find runnable commands in [Test Commands](/reference/test-commands).

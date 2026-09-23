@@ -100,9 +100,10 @@ The gateway is a Go single binary and does not persist application state. It rea
 - graceful shutdown
 - one request-body limit for both REST and MCP, configured by gateway env and defaulting to 1 MiB
 
-Agent connections are limited to one live connection. Before upgrade, the gateway issues a one-time, one-minute challenge that is included in the Ed25519-signed handshake and consumed atomically. Issued challenges do not survive a gateway restart, so a complete pre-restart handshake cannot be replayed afterward. Non-loopback agent transport requires `wss://` by default. The gateway sends WebSocket ping frames and requires timely pong traffic, so a stale TCP session is closed and a replacement may connect. If another agent tries to connect while the existing session is still live, the gateway rejects it and writes a warning log.
-
-All outbound agent messages pass through one bounded writer queue with write deadlines. Each request has independent pending state; disconnect or write failure releases affected callers immediately instead of waiting for the request timeout. Meta retrieval is retried with bounded backoff only for the current connection generation, and disconnected metadata is not served as current state.
+The Gateway accepts one live Agent connection. The Agent authenticates with a
+signed challenge, and non-loopback connections use `wss://` by default. If the
+connection drops, callers receive an error rather than stale capability data;
+the Agent reconnects automatically.
 
 ## Agent Responsibilities
 
@@ -123,7 +124,10 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - reconnect every 30 seconds
 - up to `runtime.max_concurrent_requests` concurrent capability executions per connection (default 16), with an equally bounded waiting queue
 
-Normal startup and `onprest-agent validate` share the same configuration and database preparation. Validation closes those resources and exits without connecting to the Gateway or executing a capability. `onprest-agent doctor` reuses that preparation to diagnose Gateway connectivity and Agent-key authentication without changing the running connection. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
+`onprest-agent validate` checks configuration and database readiness without
+connecting to the Gateway or executing a capability. `onprest-agent doctor`
+adds Gateway connectivity and Agent-key checks without replacing a running
+Agent connection.
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 
@@ -141,7 +145,9 @@ A normal gateway-to-agent request contains only a capability name and params.
 }
 ```
 
-The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Omitted or true `readonly` accepts one `SELECT`; explicit false also accepts one `INSERT`, `UPDATE`, or `DELETE`. The dialect-aware scanner rejects multiple statements and recognizes nested block comments in PostgreSQL and SQL Server. Integer JSON tokens remain exact through signed 64-bit conversion; SELECT values must be finite and representable by their declared result types, while DML returns only a non-negative native affected count.
+The Agent checks the capability name, parameters, and policy before querying
+the database. Read-only capabilities return only declared result fields;
+mutations return an affected count after a successful commit.
 
 ## Dedicated Gateway Model
 

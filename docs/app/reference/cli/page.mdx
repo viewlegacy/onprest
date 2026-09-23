@@ -76,9 +76,9 @@ Validation failures use exit `1`. Text failures go to stderr; JSON failures go t
 
 DB-specific detail is never included in CLI output. Read a validation log only when text output reports a validation detail-log path or JSON includes `detail_log`; configuration and busy failures do not create one, and diagnostic-finalization failure deliberately omits that field. See [Agent Local Logs](/agent/local-logs) for the file lifecycle and protection rules, and [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure) for operator actions.
 
-Configuration diagnostics never reproduce unsafe YAML keys verbatim: keys outside the bounded identifier form, including keys with whitespace, quotes, line breaks, or terminal control characters, are replaced by a fixed placeholder. The lifecycle lock remains held through the completed text or JSON write. Unlock/close is attempted exactly once afterward; a native release error cannot append another record, switch output streams, or contradict the already completed validation result, and process exit remains the kernel-level release fallback.
-
-After a crash, recovery remains bounded to strictly named validation temporary files. The lifecycle lock remains held through output completion so concurrent commands cannot report the wrong run. Detailed recovery, cleanup, and file-protection guidance is centralized in [Agent Local Logs](/agent/local-logs).
+The command protects its diagnostic files and recovers interrupted validation
+runs. See [Agent Local Logs](/agent/local-logs) if a validation is busy or a
+diagnostic file needs attention.
 
 ## Diagnose Agent and Gateway
 
@@ -136,7 +136,7 @@ dist/onprest-agent
 ## Cross Build
 
 This is the source-build interface for developers. Operators can instead use a
-verified [binary release archive](/operations/deployment#binary-release-installation),
+[binary release archive](/operations/deployment#binary-release-installation),
 which requires neither this repository nor a Go toolchain on the installed host.
 
 ```bash
