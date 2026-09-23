@@ -173,6 +173,18 @@ func assertMCPInitializeResponse(t *testing.T, body []byte, wantVersion string) 
 	}
 }
 
+func expectedGatewayBuildVersion(t *testing.T) string {
+	t.Helper()
+	if os.Getenv("ONPREST_IT_GATEWAY_BINARY") == "" {
+		return "dev"
+	}
+	version := os.Getenv("ONPREST_IT_DISTRIBUTION_VERSION")
+	if version == "" {
+		t.Fatal("ONPREST_IT_DISTRIBUTION_VERSION is required with a prebuilt gateway")
+	}
+	return version
+}
+
 func newITSecrets(t *testing.T) itSecrets {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

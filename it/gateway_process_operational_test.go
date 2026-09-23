@@ -45,7 +45,7 @@ func TestGatewayProcessEnvFileMCPLogsAndShutdown(t *testing.T) {
 			t.Fatalf("MCP response missing result: %s", string(body))
 		}
 		if payload == validMCPInitializePayload {
-			assertMCPInitializeResponse(t, body, "dev")
+			assertMCPInitializeResponse(t, body, expectedGatewayBuildVersion(t))
 		}
 	}
 	status, body := postCapability(t, "http://"+addr, secrets.APIKey, "echo_customer", `{"secret":"must-not-log"}`)

@@ -18,8 +18,14 @@ allowed_tools=(
   sort systemctl systemd-analyze tail touch tr uname wc
 )
 for tool in "${allowed_tools[@]}"; do
-  path=$(PATH=$original_path command -v "$tool" || true)
-  if [[ -n $path ]]; then ln -s "$path" "$runtime_path/$tool"; fi
+  path=$(PATH=$original_path type -P "$tool" || true)
+  if [[ -n $path ]]; then
+    if [[ $path != /* || ! -x $path ]]; then
+      echo "service test tool is not an absolute executable: $tool ($path)" >&2
+      exit 1
+    fi
+    ln -s "$path" "$runtime_path/$tool"
+  fi
 done
 export PATH=$runtime_path
 for tool in go git make docker; do

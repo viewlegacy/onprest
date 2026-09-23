@@ -213,9 +213,12 @@ jobs:
           $installDir = Join-Path $env:PACKAGE_ROOT "onprest-$($env:PACKAGE_VERSION)-windows-amd64"
           $capability = Join-Path $env:PACKAGE_ROOT 'capability.input.yaml'
           Copy-Item .\scripts\service-test-capability.yaml $capability
-          $env:Path = "$env:SystemRoot\System32;$env:SystemRoot"
+          $runtimeTools = Join-Path $env:RUNNER_TEMP 'onprest-runtime-tools'
+          New-Item -ItemType Directory -Force $runtimeTools | Out-Null
+          Copy-Item (Join-Path $env:SystemRoot 'System32\sc.exe') (Join-Path $runtimeTools 'sc.exe')
+          $env:Path = $runtimeTools
           foreach ($tool in @('go', 'git', 'make', 'docker')) {
-            if (Get-Command $tool -ErrorAction SilentlyContinue) { throw "development tool remains on service test PATH: $tool" }
+            if (Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue) { throw "development tool remains on service test PATH: $tool" }
           }
           Set-Location $env:RUNTIME_CWD
           & "$env:GITHUB_WORKSPACE\scripts\test_service_lifecycle_windows.ps1" `
