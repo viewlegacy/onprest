@@ -228,34 +228,11 @@ For production deployments, use a read-only database user whenever the intended 
 
 ## Quick Start
 
-Download two assets from the same [GitHub Release](https://github.com/viewlegacy/onprest/releases/latest): the archive for your computer and `onprest-X.Y.Z-quickstart.tar.gz`. The links below open the latest release's download list; choose files with the same version number. Binary archives begin with v1.2.12.
+Use the prebuilt Gateway and Agent from the [GitHub Releases](https://github.com/viewlegacy/onprest/releases) page. Download your OS/CPU binary archive and the matching `onprest-X.Y.Z-quickstart.tar.gz` from the same release. The Quick Start asset contains a disposable PostgreSQL setup, matching local configuration, and public development credentials.
 
-| Computer | Binary archive |
-|---|---|
-| Linux x64 | [Download `onprest-X.Y.Z-linux-amd64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest) |
-| Linux ARM64 | [Download `onprest-X.Y.Z-linux-arm64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest) |
-| macOS Intel | [Download `onprest-X.Y.Z-darwin-amd64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest) |
-| macOS Apple silicon | [Download `onprest-X.Y.Z-darwin-arm64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest) |
-| Windows x64 | [Download `onprest-X.Y.Z-windows-amd64.zip`](https://github.com/viewlegacy/onprest/releases/latest) |
-| Quick Start (all OS) | [Download `onprest-X.Y.Z-quickstart.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest) |
+Follow the [binary Quick Start](https://docs.onprest.viewlegacy.com/quick-start) to start the database, validate the Agent, run both binaries, and verify health, REST, OpenAPI, and MCP. No source checkout, Go toolchain, or `make` is needed. Docker Compose is one option for supplying the evaluation database; an existing disposable PostgreSQL database also works.
 
-For a local trial on Linux or macOS, extract both archives into the same directory. This Linux x64 example uses the version you downloaded; substitute the archive and directory name on other Unix hosts. Docker supplies a disposable PostgreSQL database. The [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start) also covers Windows and using your own evaluation database.
-
-```sh
-tar -xzf onprest-X.Y.Z-linux-amd64.tar.gz
-tar -xzf onprest-X.Y.Z-quickstart.tar.gz
-cd onprest-X.Y.Z-linux-amd64
-QUICKSTART=../onprest-X.Y.Z-quickstart
-docker compose -f "$QUICKSTART/postgres.compose.yml" up -d --wait
-./onprest-agent validate --config "$QUICKSTART/capability.postgres.yaml"
-set -a; . "$QUICKSTART/gateway.env"; set +a
-./onprest-gateway
-```
-
-In a second terminal, start the Agent from the same binary directory with `./onprest-agent --config /absolute/path/to/onprest-X.Y.Z-quickstart/capability.postgres.yaml`. Then try `curl http://localhost:8080/healthz`; the [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start) has the REST and MCP examples. No source checkout, Go toolchain, or `make` is needed. The bundled keys and database password are public trial values; never use them in production.
-
-For production, use the separate configuration templates in the OS/CPU archive and generate unique keys. Download verification is [available](https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation) if you want it.
-
+For production, use the separate configuration templates in the OS/CPU archive, generate unique keys, and [verify the release assets](https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation) before installation. The Quick Start keys and database password must never be reused.
 ## Build from Source
 
 Building from source is optional. Use a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
