@@ -4,9 +4,9 @@ This archive contains the `onprest-gateway` and `onprest-agent` binaries for the
 target named in `RELEASE-MANIFEST.txt`. It does not require a source checkout,
 Go, Docker, or a native database client runtime.
 
-The release also includes `SHA256SUMS` and GitHub artifact attestations if
-your organization chooses to verify downloads. This is optional and not
-required to run the binaries.
+For production, verify the downloaded archive before extraction. The checksum
+and GitHub artifact attestation procedure is at:
+<https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation>
 
 The templates in this archive are intentionally incomplete. Add at least one
 reviewed capability to `capabilities: {}` and replace every placeholder before

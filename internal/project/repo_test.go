@@ -1222,16 +1222,17 @@ func TestReleaseReadySelectionRejectsWrongSHAAndUnsuccessfulRuns(t *testing.T) {
 	}
 }
 
-func TestDatabaseGateSelectionAndContributorCommands(t *testing.T) {
+func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
 	root := repoRoot(t)
 	makefile := readText(t, filepath.Join(root, "Makefile"))
 	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
 	integrationReadme := readText(t, filepath.Join(root, "it", "README.md"))
 	testCommands := readText(t, filepath.Join(root, "docs", "app", "reference", "test-commands", "page.mdx"))
+	releaseDocs := readText(t, filepath.Join(root, "docs", "app", "operations", "release-gate", "page.mdx"))
 
 	const allDBSelector = "-run '^TestContainerDBDriver'"
 	for source, text := range map[string]string{
-		"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme,
+		"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
 	} {
 		if !strings.Contains(text, allDBSelector) {
 			t.Fatalf("%s does not use common all-DB selection %q", source, allDBSelector)
@@ -1265,10 +1266,15 @@ func TestDatabaseGateSelectionAndContributorCommands(t *testing.T) {
 			t.Fatalf("test commands do not document the %s TLS contract", database)
 		}
 	}
-	for _, command := range []string{"make test-it-all-db", "make test-it-database-tls", "make test-it-release-gate"} {
-		if !strings.Contains(testCommands, command) {
-			t.Fatalf("contributor guide does not include %q", command)
+	for source, text := range map[string]string{"test commands": testCommands, "release gate": releaseDocs} {
+		for _, coverage := range []string{"private", "hostname", "client"} {
+			if !strings.Contains(text, coverage) {
+				t.Fatalf("%s does not document PostgreSQL TLS %s coverage", source, coverage)
+			}
 		}
+	}
+	if strings.Contains(testCommands, "exact filter `^TestContainerDBDriver`") || strings.Contains(releaseDocs, "all-DB smoke path") {
+		t.Fatal("DB gate documentation retained the superseded selection")
 	}
 }
 

@@ -2,9 +2,7 @@
 
 Onprest supports PostgreSQL, MySQL, SQL Server, and Oracle through the agent.
 
-The Gateway does not need database credentials or driver configuration. The
-Agent connects to the selected database and checks each capability's SQL
-before making it available through REST or MCP.
+The gateway remains database-agnostic. Driver behavior, placeholder conversion, EXPLAIN validation, and DB-specific errors stay on the agent side. Each database is exercised by Testcontainers-backed integration tests. The agent uses DB-specific connection handling, placeholder conversion, EXPLAIN verification, schema/seed setup, result scanning, timeout handling, and error redaction.
 
 ## Least Privilege
 
@@ -31,11 +29,9 @@ The agent verifies capabilities before connecting to the gateway.
 | EXPLAIN | Catch invalid SQL before exposing the capability |
 | YAML lint | Reject invalid driver, policy, params, result, or logging settings |
 
-If startup fails, check the Agent output and its local log. The standalone
-`onprest-agent validate` command reports its own diagnostic path when a
-database check fails; see [Troubleshooting](/operations/troubleshooting).
+Configuration load and lint failures are reported by the CLI or startup stderr before a runtime diagnostic log is opened. If normal startup reaches the runtime diagnostic sink and then fails during database open, ping, or EXPLAIN, recordable private details are written to `onprest-agent.log`. The standalone `onprest-agent validate` path performs the same DB checks but reports a separate `onprest-agent.validate.log` only after it commits a complete failure record.
 
-## Database TLS
+## Connection Generation and TLS
 
 The agent creates each database connection from the `database` section of `capability.yaml`.
 

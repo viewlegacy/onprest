@@ -3,6 +3,6 @@ export default {
   deployment: 'Deployment',
   'capability-changes': 'Capability Changes',
   'mutation-reconciliation': 'Mutation Reconciliation',
-  'release-gate': 'Release Checks',
+  'release-gate': 'Release Gate',
   troubleshooting: 'Troubleshooting'
 }

@@ -38,8 +38,10 @@ The OSS core consists of two independent Go single binaries.
 
 | Binary | Role |
 |---|---|
-| `onprest-gateway` | Authenticates callers and exposes REST, MCP, and OpenAPI endpoints |
-| `onprest-agent` | Owns database access and executes the capabilities you define |
+| `onprest-gateway` | API key authentication, capability authorization, REST/MCP/OpenAPI, and agent WebSocket handling |
+| `onprest-agent` | `capability.yaml` loading, DB ping, EXPLAIN, param/policy validation, SELECT result filtering, DML count validation, and SQL execution |
+
+This `/docs` site is a public documentation project built with Nextra / Next.js. Node.js, Nextra, and Next.js are not required to run or distribute the OSS core.
 
 ## Start Here
 
@@ -47,4 +49,4 @@ The OSS core consists of two independent Go single binaries.
 - [Architecture](/architecture): Understand Onprest's trust boundaries and gateway / agent responsibilities.
 - [Security](/security): Review the compromise model, key rotation, and detail redaction policy.
 - [Capability YAML](/agent/capability-yaml): Define inputs and policy, plus SELECT output allow-lists; DML is count-only.
-- [How Releases Are Checked](/operations/release-gate): See what is checked before publication.
+- [Release Gate](/operations/release-gate): See how published release binaries are tested.
