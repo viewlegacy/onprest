@@ -12,21 +12,11 @@ The individual unit, integration, DB-selection, and make targets are documented 
 make test-it-release-gate
 ```
 
-This gate verifies:
-
-- Go vulnerability analysis reports zero reachable known vulnerabilities for `./...`
-- unit tests
-- PostgreSQL integration tests 3 consecutive times
-- PostgreSQL DB interruption stability 5 consecutive times
-- all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
-- MySQL special-character credential connection
-- the four-database TLS contract against real databases: `disable`, `require`, and `verify-full` for PostgreSQL, MySQL, SQL Server, and Oracle, plus PostgreSQL `verify-ca`
-- encryption observation, private/wrong CA, hostname and `server_name`, expiry, certificate replacement/pool recreation, reconnect without plaintext downgrade, and supported PostgreSQL/MySQL client-certificate authentication
-- Oracle TCPS through the pure-Go driver without Oracle Instant Client
-- Docker image operational tests
-- Docker Compose env-file operational tests
-- test/subtest skip count is zero in required mode (`go test -json` package records with no `Test` field are not test skips)
-- testcontainers residue is zero
+This command runs unit and real-database integration tests, PostgreSQL
+stability checks, database TLS checks, Docker operations tests, and source
+vulnerability analysis. Required tests may not be skipped, and test containers
+must be cleaned up. See [Test Commands](/reference/test-commands) for the
+individual targets.
 
 ## GitHub Actions
 
@@ -91,5 +81,3 @@ A release candidate should pass `integration-linux`, all three native service ch
 - no gateway DB credentials
 - direct and reverse-proxy deployment both remain valid
 - error detail redaction remains intact
-- all six archives and their evidence files match `SHA256SUMS` and the release
-  workflow/tag artifact attestation

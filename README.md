@@ -228,11 +228,43 @@ For production deployments, use a read-only database user whenever the intended 
 
 ## Quick Start
 
-Use the prebuilt Gateway and Agent from the [GitHub Releases](https://github.com/viewlegacy/onprest/releases) page. Download your OS/CPU binary archive and the matching `onprest-X.Y.Z-quickstart.tar.gz` from the same release. The Quick Start asset contains a disposable PostgreSQL setup, matching local configuration, and public development credentials.
+Download the binary for your computer and the Quick Start files from the same v1.2.12 release (links become available when that release is published):
 
-Follow the [binary Quick Start](https://docs.onprest.viewlegacy.com/quick-start) to start the database, validate the Agent, run both binaries, and verify health, REST, OpenAPI, and MCP. No source checkout, Go toolchain, or `make` is needed. Docker Compose is one option for supplying the evaluation database; an existing disposable PostgreSQL database also works.
+| Host | Download |
+|---|---|
+| Linux x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-linux-amd64.tar.gz) |
+| Linux ARM64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-linux-arm64.tar.gz) |
+| macOS Intel | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-darwin-amd64.tar.gz) |
+| macOS Apple silicon | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-darwin-arm64.tar.gz) |
+| Windows x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-windows-amd64.zip) |
+| All hosts | [⬇ Quick Start files](https://github.com/viewlegacy/onprest/releases/download/v1.2.12/onprest-1.2.12-quickstart.tar.gz) |
 
-For production, use the separate configuration templates in the OS/CPU archive, generate unique keys, and [verify the release assets](https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation) before installation. The Quick Start keys and database password must never be reused.
+On Linux x64, put both downloaded archives in one directory and run:
+
+```sh
+tar -xzf onprest-1.2.12-linux-amd64.tar.gz
+tar -xzf onprest-1.2.12-quickstart.tar.gz
+cd onprest-1.2.12-linux-amd64
+QUICKSTART=../onprest-1.2.12-quickstart
+docker compose -f "$QUICKSTART/postgres.compose.yml" up -d --wait
+./onprest-agent validate --config "$QUICKSTART/capability.postgres.yaml"
+set -a
+. "$QUICKSTART/gateway.env"
+set +a
+./onprest-gateway
+```
+
+In a second terminal, change to the same binary directory and run `./onprest-agent --config ../onprest-1.2.12-quickstart/capability.postgres.yaml`. Once it connects, try:
+
+```sh
+curl -sS http://localhost:8080/healthz
+curl -sS -H 'Authorization: Bearer orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM' \
+  -H 'Content-Type: application/json' -d '{"customer_id":1}' \
+  http://localhost:8080/api/v1/capabilities/get_customer
+```
+
+You should see `"agent_connected":true` and a row for Ada Lovelace. No source checkout, Go, or `make` is needed. Docker is only for the disposable example database; the [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start) covers other hosts, MCP, and an existing evaluation PostgreSQL database. The included credentials are public examples—use fresh keys and the separate production templates for a real deployment.
+
 ## Build from Source
 
 Building from source is optional. Use a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
