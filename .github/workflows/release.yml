@@ -95,11 +95,11 @@ jobs:
           VERSION=${VERSION#v}
           package_root="$RUNNER_TEMP/onprest-release-integration"
           go run ./internal/releaseverify extract \
-            "release-dist/onprest-$VERSION-linux-amd64.tar.gz" "$package_root" \
+            "release-dist/onprest-linux-amd64.tar.gz" "$package_root" \
             "$VERSION" "v$VERSION" "$RELEASE_SHA" "$RELEASE_READY_URL" linux/amd64 release-dist/SHA256SUMS
           quickstart_root="$RUNNER_TEMP/onprest-quickstart"
           go run ./internal/releaseverify extract \
-            "release-dist/onprest-$VERSION-quickstart.tar.gz" "$quickstart_root" \
+            "release-dist/onprest-quickstart.tar.gz" "$quickstart_root" \
             "$VERSION" "v$VERSION" "$RELEASE_SHA" "$RELEASE_READY_URL" quickstart release-dist/SHA256SUMS
           install_dir="$package_root/onprest-$VERSION-linux-amd64"
           test "$(cd / && "$install_dir/onprest-gateway" --version)" = "$VERSION"

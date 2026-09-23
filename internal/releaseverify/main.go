@@ -99,36 +99,34 @@ func run(args []string) error {
 			return fmt.Errorf("%s: %w", target, err)
 		}
 	}
-	if _, _, err := loadAndVerifyQuickstart(cfg, filepath.Join(cfg.dir, "onprest-"+cfg.version+"-quickstart.tar.gz")); err != nil {
+	if _, _, err := loadAndVerifyQuickstart(cfg, filepath.Join(cfg.dir, quickstartAssetName)); err != nil {
 		return fmt.Errorf("quickstart: %w", err)
 	}
 	return nil
 }
 
+// Release asset names carry no version so that GitHub's
+// releases/latest/download/<name> URL stays stable. The version is kept in
+// each archive's root directory and RELEASE-MANIFEST.txt.
+const quickstartAssetName = "onprest-quickstart.tar.gz"
+
+func archiveAssetName(targetName string) string {
+	if strings.HasPrefix(targetName, "windows-") {
+		return "onprest-" + targetName + ".zip"
+	}
+	return "onprest-" + targetName + ".tar.gz"
+}
+
 func verifyTopLevel(cfg config) error {
 	expected := map[string]bool{
-		"DEPENDENCIES.txt":                              true,
-		"RELEASE-EVIDENCE.txt":                          true,
-		"VULNERABILITY-EVIDENCE.txt":                    true,
-		"SHA256SUMS":                                    true,
-		"onprest-" + cfg.version + "-quickstart.tar.gz": true,
-	}
-	aliases := map[string]string{
-		"onprest-quickstart.tar.gz": "onprest-" + cfg.version + "-quickstart.tar.gz",
+		"DEPENDENCIES.txt":           true,
+		"RELEASE-EVIDENCE.txt":       true,
+		"VULNERABILITY-EVIDENCE.txt": true,
+		"SHA256SUMS":                 true,
+		quickstartAssetName:          true,
 	}
 	for _, target := range cfg.targets {
-		name := strings.ReplaceAll(target, "/", "-")
-		ext := ".tar.gz"
-		if strings.HasPrefix(name, "windows-") {
-			ext = ".zip"
-		}
-		canonical := "onprest-" + cfg.version + "-" + name + ext
-		alias := "onprest-" + name + ext
-		expected[canonical] = true
-		aliases[alias] = canonical
-	}
-	for alias := range aliases {
-		expected[alias] = true
+		expected[archiveAssetName(strings.ReplaceAll(target, "/", "-"))] = true
 	}
 	entries, err := os.ReadDir(cfg.dir)
 	if err != nil {
@@ -146,61 +144,52 @@ func verifyTopLevel(cfg config) error {
 			return fmt.Errorf("unexpected top-level entry %q", entry.Name())
 		}
 	}
-	digests, err := verifyChecksums(cfg.dir, expected)
-	if err != nil {
-		return err
-	}
-	for alias, canonical := range aliases {
-		if digests[alias] != digests[canonical] {
-			return fmt.Errorf("latest alias %q does not match %q", alias, canonical)
-		}
-	}
-	return nil
+	return verifyChecksums(cfg.dir, expected)
 }
 
-func verifyChecksums(dir string, expected map[string]bool) (map[string]string, error) {
+func verifyChecksums(dir string, expected map[string]bool) error {
 	want := map[string]string{}
 	f, err := os.Open(filepath.Join(dir, "SHA256SUMS"))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) != 2 || len(fields[0]) != 64 {
-			return nil, fmt.Errorf("invalid SHA256SUMS line %q", scanner.Text())
+			return fmt.Errorf("invalid SHA256SUMS line %q", scanner.Text())
 		}
 		if _, err := hex.DecodeString(fields[0]); err != nil {
-			return nil, fmt.Errorf("invalid checksum for %q", fields[1])
+			return fmt.Errorf("invalid checksum for %q", fields[1])
 		}
 		if fields[1] == "SHA256SUMS" || !expected[fields[1]] || !safeArchiveName(fields[1], false) || want[fields[1]] != "" {
-			return nil, fmt.Errorf("unexpected or duplicate checksum subject %q", fields[1])
+			return fmt.Errorf("unexpected or duplicate checksum subject %q", fields[1])
 		}
 		want[fields[1]] = fields[0]
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return err
 	}
 	if len(want) != len(expected)-1 {
-		return nil, fmt.Errorf("checksum subject count=%d, want %d", len(want), len(expected)-1)
+		return fmt.Errorf("checksum subject count=%d, want %d", len(want), len(expected)-1)
 	}
 	for name, digest := range want {
 		file, err := os.Open(filepath.Join(dir, name))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		hasher := sha256.New()
 		_, copyErr := io.Copy(hasher, file)
 		closeErr := file.Close()
 		if copyErr != nil || closeErr != nil {
-			return nil, fmt.Errorf("hash %s: copy=%v close=%v", name, copyErr, closeErr)
+			return fmt.Errorf("hash %s: copy=%v close=%v", name, copyErr, closeErr)
 		}
 		if hex.EncodeToString(hasher.Sum(nil)) != digest {
-			return nil, fmt.Errorf("checksum mismatch for %s", name)
+			return fmt.Errorf("checksum mismatch for %s", name)
 		}
 	}
-	return want, nil
+	return nil
 }
 
 func verifyChecksumSubject(checksumPath, archivePath string) error {
@@ -322,10 +311,7 @@ func verifyHeadings(label string, body []byte, want []string) error {
 
 func verifyArchive(cfg config, target string) error {
 	targetName := strings.ReplaceAll(target, "/", "-")
-	root := "onprest-" + cfg.version + "-" + targetName
-	windows := strings.HasPrefix(targetName, "windows-")
-	archivePath := filepath.Join(cfg.dir, root+map[bool]string{false: ".tar.gz", true: ".zip"}[windows])
-	_, _, _, err := loadAndVerifyArchive(cfg, target, archivePath)
+	_, _, _, err := loadAndVerifyArchive(cfg, target, filepath.Join(cfg.dir, archiveAssetName(targetName)))
 	return err
 }
 
@@ -333,9 +319,8 @@ func loadAndVerifyArchive(cfg config, target, archivePath string) (map[string]ar
 	targetName := strings.ReplaceAll(target, "/", "-")
 	root := "onprest-" + cfg.version + "-" + targetName
 	windows := strings.HasPrefix(targetName, "windows-")
-	archiveExt := map[bool]string{false: ".tar.gz", true: ".zip"}[windows]
-	if filepath.Base(archivePath) != root+archiveExt {
-		return nil, "", "", fmt.Errorf("archive name=%q, want %q", filepath.Base(archivePath), root+archiveExt)
+	if filepath.Base(archivePath) != archiveAssetName(targetName) {
+		return nil, "", "", fmt.Errorf("archive name=%q, want %q", filepath.Base(archivePath), archiveAssetName(targetName))
 	}
 	var (
 		entries map[string]archiveEntry
@@ -480,8 +465,8 @@ func quickstartFiles() []string {
 
 func loadAndVerifyQuickstart(cfg config, archivePath string) (map[string]archiveEntry, string, error) {
 	root := "onprest-" + cfg.version + "-quickstart"
-	if filepath.Base(archivePath) != root+".tar.gz" {
-		return nil, "", fmt.Errorf("quickstart archive name=%q, want %q", filepath.Base(archivePath), root+".tar.gz")
+	if filepath.Base(archivePath) != quickstartAssetName {
+		return nil, "", fmt.Errorf("quickstart archive name=%q, want %q", filepath.Base(archivePath), quickstartAssetName)
 	}
 	entries, err := readTarGz(archivePath)
 	if err != nil {

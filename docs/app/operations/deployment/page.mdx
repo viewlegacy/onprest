@@ -35,18 +35,21 @@ capability and replace all placeholders before using them.
 
 | Host | Architecture | Release asset |
 |---|---|---|
-| Linux | `amd64` | `onprest-X.Y.Z-linux-amd64.tar.gz` |
-| Linux | `arm64` | `onprest-X.Y.Z-linux-arm64.tar.gz` |
-| macOS | Intel (`amd64`) | `onprest-X.Y.Z-darwin-amd64.tar.gz` |
-| macOS | Apple silicon (`arm64`) | `onprest-X.Y.Z-darwin-arm64.tar.gz` |
-| Windows | `amd64` | `onprest-X.Y.Z-windows-amd64.zip` |
+| Linux | `amd64` | `onprest-linux-amd64.tar.gz` |
+| Linux | `arm64` | `onprest-linux-arm64.tar.gz` |
+| macOS | Intel (`amd64`) | `onprest-darwin-amd64.tar.gz` |
+| macOS | Apple silicon (`arm64`) | `onprest-darwin-arm64.tar.gz` |
+| Windows | `amd64` | `onprest-windows-amd64.zip` |
 
-Each release also provides `onprest-X.Y.Z-quickstart.tar.gz`, the example files
-for the [Quick Start](/quick-start). It contains public development credentials
-and is not used for production installation. Every archive is also published
-under a name without the version, such as `onprest-linux-amd64.tar.gz`, so
+Each release also provides `onprest-quickstart.tar.gz`, the example files for
+the [Quick Start](/quick-start). It contains public development credentials and
+is not used for production installation.
+
+Asset names do not include the version, so
 `https://github.com/viewlegacy/onprest/releases/latest/download/<name>` always
-points to the latest release.
+points to the latest release. To download a specific release, use
+`https://github.com/viewlegacy/onprest/releases/download/vX.Y.Z/<name>`. The
+extracted directory name and `RELEASE-MANIFEST.txt` show the version.
 
 Download the archive for your host from the
 [GitHub Releases](https://github.com/viewlegacy/onprest/releases) page and
@@ -55,10 +58,10 @@ to it and run:
 
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS   # macOS: shasum -a 256 --check --ignore-missing SHA256SUMS
-gh attestation verify onprest-X.Y.Z-linux-amd64.tar.gz --repo viewlegacy/onprest
+gh attestation verify onprest-linux-amd64.tar.gz --repo viewlegacy/onprest
 ```
 
-On Windows, compare `(Get-FileHash onprest-X.Y.Z-windows-amd64.zip).Hash` with
+On Windows, compare `(Get-FileHash onprest-windows-amd64.zip).Hash` with
 the matching line in `SHA256SUMS`. Attestation verification uses the
 [GitHub CLI](https://cli.github.com/) and can run on any computer, not only the
 installation host.

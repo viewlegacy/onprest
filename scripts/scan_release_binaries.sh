@@ -29,10 +29,10 @@ test -s "$archive_digests"
 for target in "${ONPREST_RELEASE_TARGETS[@]}"; do
 	target_name=${target//\//-}
 	ext=""
-	archive="$RELEASE_DIR/onprest-$VERSION-$target_name.tar.gz"
+	archive="$RELEASE_DIR/onprest-$target_name.tar.gz"
 	if [[ $target_name == windows-* ]]; then
 		ext=".exe"
-		archive="$RELEASE_DIR/onprest-$VERSION-$target_name.zip"
+		archive="$RELEASE_DIR/onprest-$target_name.zip"
 	fi
 	extract_dir="$tmp_dir/$target_name"
 	go run ./internal/releaseverify extract \
@@ -47,7 +47,7 @@ for target in "${ONPREST_RELEASE_TARGETS[@]}"; do
 done
 
 go run ./internal/releaseverify extract \
-	"$RELEASE_DIR/onprest-$VERSION-quickstart.tar.gz" "$tmp_dir/quickstart" \
+	"$RELEASE_DIR/onprest-quickstart.tar.gz" "$tmp_dir/quickstart" \
 	"$VERSION" "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_READY_URL" \
 	quickstart "$archive_digests"
 

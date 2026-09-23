@@ -49,7 +49,7 @@ jobs:
         run: |
           package_root="$RUNNER_TEMP/onprest-package"
           go run ./internal/releaseverify extract \
-            "release-dist/onprest-$PACKAGE_VERSION-linux-amd64.tar.gz" "$package_root" \
+            "release-dist/onprest-linux-amd64.tar.gz" "$package_root" \
             "$PACKAGE_VERSION" "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_READY_URL" \
             linux/amd64 release-dist/SHA256SUMS
           echo "LINUX_PACKAGE_ROOT=$package_root" >>"$GITHUB_ENV"
@@ -131,7 +131,7 @@ jobs:
           runtime_cwd="$RUNNER_TEMP/onprest-runtime"
           mkdir -p "$runtime_cwd"
           go run ./internal/releaseverify extract \
-            "release-dist/onprest-$PACKAGE_VERSION-$target.tar.gz" "$package_root" \
+            "release-dist/onprest-$target.tar.gz" "$package_root" \
             "$PACKAGE_VERSION" "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_READY_URL" \
             "darwin/${target#darwin-}" release-dist/SHA256SUMS
           install_dir="$package_root/onprest-$PACKAGE_VERSION-$target"
@@ -172,7 +172,7 @@ jobs:
           $runtimeCwd = Join-Path $env:RUNNER_TEMP 'onprest-runtime'
           New-Item -ItemType Directory -Force $runtimeCwd | Out-Null
           go run ./internal/releaseverify extract `
-            "release-dist/onprest-$($env:PACKAGE_VERSION)-windows-amd64.zip" $packageRoot `
+            "release-dist/onprest-windows-amd64.zip" $packageRoot `
             $env:PACKAGE_VERSION $env:RELEASE_TAG $env:RELEASE_SHA $env:RELEASE_READY_URL `
             windows/amd64 release-dist/SHA256SUMS
           if ($LASTEXITCODE -ne 0) { throw 'safe archive extraction failed' }

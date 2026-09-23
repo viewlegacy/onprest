@@ -5,7 +5,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"io/fs"
@@ -122,7 +121,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 		if strings.HasPrefix(target, "windows-") {
 			ext = ".zip"
 		}
-		archivePath := filepath.Join(releaseDir, "onprest-1.2.12-"+target+ext)
+		archivePath := filepath.Join(releaseDir, "onprest-"+target+ext)
 		entries := releaseArchiveEntries(t, archivePath)
 		rootName := "onprest-1.2.12-" + target + "/"
 		binaryExt := ""
@@ -158,7 +157,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 			}
 		}
 	}
-	quickstartArchive := filepath.Join(releaseDir, "onprest-1.2.12-quickstart.tar.gz")
+	quickstartArchive := filepath.Join(releaseDir, "onprest-quickstart.tar.gz")
 	quickstartRoot := "onprest-1.2.12-quickstart/"
 	quickstartEntries := releaseArchiveEntries(t, quickstartArchive)
 	for archiveName, sourceName := range map[string]string{
@@ -194,7 +193,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 
 	if runtime.GOOS != "windows" {
 		native := runtime.GOOS + "-" + runtime.GOARCH
-		archivePath := filepath.Join(releaseDir, "onprest-1.2.12-"+native+".tar.gz")
+		archivePath := filepath.Join(releaseDir, "onprest-"+native+".tar.gz")
 		extractDir := t.TempDir()
 		runRepoCommand(t, root, nil, "tar", "-xzf", archivePath, "-C", extractDir)
 		for _, binary := range []string{"onprest-gateway", "onprest-agent"} {
@@ -221,7 +220,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 	}
 	extracted := t.TempDir()
 	runRepoCommand(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
-		filepath.Join(releaseDir, "onprest-1.2.12-"+nativeName+nativeExt), extracted,
+		filepath.Join(releaseDir, "onprest-"+nativeName+nativeExt), extracted,
 		"1.2.12", "v1.2.12", sha, "https://github.com/viewlegacy/onprest/actions/runs/123",
 		nativeTarget, filepath.Join(releaseDir, "SHA256SUMS"))
 	for _, binary := range []string{"onprest-gateway", "onprest-agent"} {
@@ -242,60 +241,12 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 		}
 	}
 	checksum := readText(t, filepath.Join(releaseDir, "SHA256SUMS"))
-	if strings.Count(strings.TrimSpace(checksum), "\n")+1 != 15 {
-		t.Fatalf("SHA256SUMS entries=%d, want 15", strings.Count(strings.TrimSpace(checksum), "\n")+1)
+	if strings.Count(strings.TrimSpace(checksum), "\n")+1 != 9 {
+		t.Fatalf("SHA256SUMS entries=%d, want 9", strings.Count(strings.TrimSpace(checksum), "\n")+1)
 	}
-	for _, pair := range [][2]string{
-		{"onprest-linux-amd64.tar.gz", "onprest-1.2.12-linux-amd64.tar.gz"},
-		{"onprest-linux-arm64.tar.gz", "onprest-1.2.12-linux-arm64.tar.gz"},
-		{"onprest-darwin-amd64.tar.gz", "onprest-1.2.12-darwin-amd64.tar.gz"},
-		{"onprest-darwin-arm64.tar.gz", "onprest-1.2.12-darwin-arm64.tar.gz"},
-		{"onprest-windows-amd64.zip", "onprest-1.2.12-windows-amd64.zip"},
-		{"onprest-quickstart.tar.gz", "onprest-1.2.12-quickstart.tar.gz"},
-	} {
-		alias, err := os.ReadFile(filepath.Join(releaseDir, pair[0]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		canonical, err := os.ReadFile(filepath.Join(releaseDir, pair[1]))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(alias, canonical) {
-			t.Fatalf("latest alias %s differs from %s", pair[0], pair[1])
-		}
+	if strings.Contains(checksum, "onprest-1.2.12-") {
+		t.Fatal("release asset names must not include the version")
 	}
-	t.Run("latest alias mismatch despite regenerated checksum", func(t *testing.T) {
-		mutatedDir := cloneReleaseAssets(t, releaseDir)
-		aliasName := "onprest-linux-amd64.tar.gz"
-		aliasPath := filepath.Join(mutatedDir, aliasName)
-		if err := os.Remove(aliasPath); err != nil {
-			t.Fatal(err)
-		}
-		body := []byte("not the versioned release archive")
-		if err := os.WriteFile(aliasPath, body, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		lines := strings.Split(strings.TrimSpace(readText(t, filepath.Join(mutatedDir, "SHA256SUMS"))), "\n")
-		replaced := false
-		for i, line := range lines {
-			if strings.HasSuffix(line, "  "+aliasName) {
-				lines[i] = fmt.Sprintf("%x  %s", sha256.Sum256(body), aliasName)
-				replaced = true
-			}
-		}
-		if !replaced {
-			t.Fatalf("checksum for latest alias %s missing", aliasName)
-		}
-		checksumPath := filepath.Join(mutatedDir, "SHA256SUMS")
-		if err := os.Remove(checksumPath); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(checksumPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		runRepoCommandMustFail(t, root, replaceEnv(env, "RELEASE_DIR", mutatedDir), "make", "verify-release-artifacts")
-	})
 
 	for _, mutation := range []struct {
 		name     string
@@ -303,24 +254,24 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 		kind     string
 		injected string
 	}{
-		{name: "manifest mismatch after checksum regeneration", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "manifest"},
-		{name: "Unix binary loses executable mode", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "mode"},
-		{name: "required entry missing", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "missing"},
-		{name: "symlink entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "symlink"},
-		{name: "hardlink entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "hardlink"},
-		{name: "relative traversal entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "relative", injected: "../onprest-verifier-escape"},
-		{name: "absolute tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
-		{name: "duplicate tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "duplicate"},
-		{name: "extra tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "extra"},
-		{name: "quickstart required entry missing", archive: "onprest-1.2.12-quickstart.tar.gz", kind: "quickstart-missing"},
-		{name: "quickstart extra entry", archive: "onprest-1.2.12-quickstart.tar.gz", kind: "quickstart-extra"},
-		{name: "quickstart traversal entry", archive: "onprest-1.2.12-quickstart.tar.gz", kind: "relative", injected: "../onprest-quickstart-escape"},
-		{name: "relative traversal zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "relative", injected: "../onprest-verifier-escape"},
-		{name: "absolute zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
-		{name: "zip symlink entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "symlink"},
-		{name: "zip special mode entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "mode"},
-		{name: "duplicate zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "duplicate"},
-		{name: "extra zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "extra"},
+		{name: "manifest mismatch after checksum regeneration", archive: "onprest-linux-amd64.tar.gz", kind: "manifest"},
+		{name: "Unix binary loses executable mode", archive: "onprest-linux-amd64.tar.gz", kind: "mode"},
+		{name: "required entry missing", archive: "onprest-linux-amd64.tar.gz", kind: "missing"},
+		{name: "symlink entry", archive: "onprest-linux-amd64.tar.gz", kind: "symlink"},
+		{name: "hardlink entry", archive: "onprest-linux-amd64.tar.gz", kind: "hardlink"},
+		{name: "relative traversal entry", archive: "onprest-linux-amd64.tar.gz", kind: "relative", injected: "../onprest-verifier-escape"},
+		{name: "absolute tar entry", archive: "onprest-linux-amd64.tar.gz", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
+		{name: "duplicate tar entry", archive: "onprest-linux-amd64.tar.gz", kind: "duplicate"},
+		{name: "extra tar entry", archive: "onprest-linux-amd64.tar.gz", kind: "extra"},
+		{name: "quickstart required entry missing", archive: "onprest-quickstart.tar.gz", kind: "quickstart-missing"},
+		{name: "quickstart extra entry", archive: "onprest-quickstart.tar.gz", kind: "quickstart-extra"},
+		{name: "quickstart traversal entry", archive: "onprest-quickstart.tar.gz", kind: "relative", injected: "../onprest-quickstart-escape"},
+		{name: "relative traversal zip entry", archive: "onprest-windows-amd64.zip", kind: "relative", injected: "../onprest-verifier-escape"},
+		{name: "absolute zip entry", archive: "onprest-windows-amd64.zip", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
+		{name: "zip symlink entry", archive: "onprest-windows-amd64.zip", kind: "symlink"},
+		{name: "zip special mode entry", archive: "onprest-windows-amd64.zip", kind: "mode"},
+		{name: "duplicate zip entry", archive: "onprest-windows-amd64.zip", kind: "duplicate"},
+		{name: "extra zip entry", archive: "onprest-windows-amd64.zip", kind: "extra"},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			mutatedDir := cloneReleaseAssets(t, releaseDir)
@@ -373,7 +324,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 			runRepoCommandMustFail(t, root, mutatedEnv, "make", "verify-release-artifacts")
 		})
 	}
-	archiveToCorrupt := filepath.Join(releaseDir, "onprest-1.2.12-linux-amd64.tar.gz")
+	archiveToCorrupt := filepath.Join(releaseDir, "onprest-linux-amd64.tar.gz")
 	f, err := os.OpenFile(archiveToCorrupt, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -1130,9 +1081,9 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	}
 	for _, invocation := range []string{
 		"Extract Linux release archive outside the repository",
-		"onprest-$PACKAGE_VERSION-linux-amd64.tar.gz",
-		"onprest-$PACKAGE_VERSION-$target.tar.gz",
-		"onprest-$($env:PACKAGE_VERSION)-windows-amd64.zip",
+		"release-dist/onprest-linux-amd64.tar.gz",
+		"release-dist/onprest-$target.tar.gz",
+		"release-dist/onprest-windows-amd64.zip",
 		"run_service_lifecycle_sanitized_unix.sh",
 		"development tool remains on service test PATH",
 		"LINUX_PACKAGE_ROOT",
