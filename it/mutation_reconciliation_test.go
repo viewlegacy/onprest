@@ -88,7 +88,7 @@ func TestContainerDBDriverMutationReconciliation(t *testing.T) {
 			waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
 
 			proxy := newMutationReconciliationHTTPProxy(t, baseURL)
-			runReconciliationScenarios(t, driver, dbCfg, baseURL, proxy, secrets.APIKey)
+			runReconciliationScenarios(t, driver, dbCfg, baseURL, proxy, secrets.APIKey, agentBin)
 
 			t.Run("read-capability-unavailable", func(t *testing.T) {
 				// Read unavailability is tested after all writes have completed. The
@@ -109,7 +109,7 @@ func TestContainerDBDriverMutationReconciliation(t *testing.T) {
 	}
 }
 
-func runReconciliationScenarios(t *testing.T, driver string, cfg postgresConfig, baseURL string, proxy *mutationReconciliationHTTPProxy, apiKey string) {
+func runReconciliationScenarios(t *testing.T, driver string, cfg postgresConfig, baseURL string, proxy *mutationReconciliationHTTPProxy, apiKey, agentBin string) {
 	t.Helper()
 
 	fixtures := mutationReconciliationRequests()
@@ -139,15 +139,16 @@ func runReconciliationScenarios(t *testing.T, driver string, cfg postgresConfig,
 		// waiting before the response is cut. The read is performed while the
 		// earlier transaction is unfinished, so an empty result is not treated as
 		// proof that the INSERT rolled back.
+		pendingPayload := reconciliationPayload{
+			ExternalRequestID: reconciliationPendingID,
+			ProductCode:       "SKU-PENDING",
+			Quantity:          3,
+			CustomerCode:      "CUST-PENDING",
+		}
 		blocker := lockReconciliationGate(t, driver, cfg)
 		pendingDone := make(chan mutationHTTPResult, 1)
 		go func() {
-			status, body, err := postMutationCapability(proxy.client(), proxy.URL(), apiKey, "create_order", reconciliationPayload{
-				ExternalRequestID: reconciliationPendingID,
-				ProductCode:       "SKU-PENDING",
-				Quantity:          3,
-				CustomerCode:      "CUST-PENDING",
-			}, "normal")
+			status, body, err := postMutationCapability(proxy.client(), proxy.URL(), apiKey, "create_order", pendingPayload, "normal")
 			pendingDone <- mutationHTTPResult{status: status, body: body, err: err}
 		}()
 		waitForMutationReconciliationQuery(t, driver, cfg, reconciliationMutationMarker)
@@ -173,7 +174,13 @@ func runReconciliationScenarios(t *testing.T, driver string, cfg postgresConfig,
 		if err := blocker.Rollback(); err != nil {
 			t.Fatalf("release pre-commit gate: %v", err)
 		}
-		waitForReconciliationRows(t, driver, cfg, reconciliationPendingID, nil)
+		// A Gateway timeout does not establish whether the Agent committed.
+		// Wait for either a visible full row or the Agent's terminal error,
+		// then remove a committed trial row before the next scenario.
+		if waitForResponseCutReconciliationOutcome(t, driver, cfg, agentBin, pendingPayload) {
+			deleteReconciliationOrder(t, driver, cfg, reconciliationPendingID)
+			waitForReconciliationRows(t, driver, cfg, reconciliationPendingID, nil)
+		}
 	})
 
 	t.Run("postcommit-response-cut-all-fields-match", func(t *testing.T) {
@@ -1039,6 +1046,65 @@ func waitForReconciliationRows(t *testing.T, driver string, cfg postgresConfig, 
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for reconciliation row %q, want=%#v", requestID, want)
+}
+
+func waitForResponseCutReconciliationOutcome(t *testing.T, driver string, cfg postgresConfig, agentBin string, payload reconciliationPayload) bool {
+	t.Helper()
+	logPath := agentBin + ".log"
+	deadline := time.Now().Add(20 * time.Second)
+	want := reconciliationRow{
+		ExternalRequestID: payload.ExternalRequestID,
+		ProductCode:       payload.ProductCode,
+		Quantity:          payload.Quantity,
+		CustomerCode:      payload.CustomerCode,
+	}
+	for time.Now().Before(deadline) {
+		content, err := os.ReadFile(logPath)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read Agent reconciliation detail log: %v", err)
+		}
+		errorCode := ""
+		for _, line := range bytes.Split(content, []byte{'\n'}) {
+			var entry struct {
+				Capability string `json:"capability"`
+				ErrorCode  string `json:"error_code"`
+			}
+			if json.Unmarshal(line, &entry) != nil || entry.Capability != "create_order" {
+				continue
+			}
+			errorCode = entry.ErrorCode
+			if errorCode != "AGENT_QUERY_TIMEOUT" && errorCode != "AGENT_TRANSACTION_OUTCOME_UNKNOWN" {
+				t.Fatalf("response-cut reconciliation mutation ended with %s", errorCode)
+			}
+			break
+		}
+		var rows []reconciliationRow
+		if driver == "sqlserver" {
+			rows = readUnfinishedReconciliationRows(t, driver, cfg, payload.ExternalRequestID)
+		} else {
+			rows = readReconciliationRows(t, driver, cfg, payload.ExternalRequestID)
+		}
+		if len(rows) > 1 {
+			t.Fatalf("response-cut reconciliation returned multiple rows: %#v", rows)
+		}
+		if len(rows) == 1 {
+			if rows[0] != want {
+				t.Fatalf("response-cut reconciliation payload=%#v, want %#v", rows[0], want)
+			}
+			if errorCode == "AGENT_QUERY_TIMEOUT" {
+				t.Fatal("mutation committed after Agent reported confirmed rollback")
+			}
+			t.Log("response-cut mutation committed; independent DB read matched the full payload")
+			return true
+		}
+		if errorCode != "" {
+			t.Logf("response-cut mutation ended with %s and no committed row", errorCode)
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting to reconcile response-cut mutation outcome")
+	return false
 }
 
 func readReconciliationRows(t *testing.T, driver string, cfg postgresConfig, requestID string) []reconciliationRow {
