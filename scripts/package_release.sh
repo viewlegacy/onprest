@@ -100,9 +100,9 @@ agent=onprest-agent$ext
 release_ready_url=$RELEASE_READY_URL
 EOF
 	if [[ $archive_ext == zip ]]; then
-		(cd "$stage_dir" && zip -q -r "$release_asset_dir/$root_name.zip" "$root_name")
+		(cd "$stage_dir" && zip -q -r "$release_asset_dir/onprest-$target_name.zip" "$root_name")
 	else
-		tar -C "$stage_dir" -czf "$RELEASE_DIR/$root_name.tar.gz" "$root_name"
+		tar -C "$stage_dir" -czf "$RELEASE_DIR/onprest-$target_name.tar.gz" "$root_name"
 	fi
 	rm -rf "$package_dir"
 done
@@ -115,7 +115,7 @@ cp examples/capability.postgres.yaml "$quickstart_dir/capability.postgres.yaml"
 cp examples/postgres.compose.yml "$quickstart_dir/postgres.compose.yml"
 cp examples/postgres-init.sql "$quickstart_dir/postgres-init.sql"
 cp release/QUICKSTART.md "$quickstart_dir/README.md"
-tar -C "$stage_dir" -czf "$RELEASE_DIR/$quickstart_name.tar.gz" "$quickstart_name"
+tar -C "$stage_dir" -czf "$RELEASE_DIR/onprest-quickstart.tar.gz" "$quickstart_name"
 
 cat >"$RELEASE_DIR/RELEASE-EVIDENCE.txt" <<EOF
 release_tag=$RELEASE_TAG
@@ -133,9 +133,9 @@ EOF
 		target_name=${target//\//-}
 		ext="tar.gz"
 		if [[ $target_name == windows-* ]]; then ext="zip"; fi
-		archives+=("onprest-$VERSION-$target_name.$ext")
+		archives+=("onprest-$target_name.$ext")
 	done
-	archives+=("$quickstart_name.tar.gz")
+	archives+=("onprest-quickstart.tar.gz")
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "${archives[@]}" >.archive-digests
 	else

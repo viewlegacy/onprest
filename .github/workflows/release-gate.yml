@@ -60,11 +60,11 @@ jobs:
         run: |
           package_root="$RUNNER_TEMP/onprest-integration-package"
           go run ./internal/releaseverify extract \
-            release-dist/onprest-0.0.0-linux-amd64.tar.gz "$package_root" \
+            release-dist/onprest-linux-amd64.tar.gz "$package_root" \
             0.0.0 v0.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" linux/amd64 release-dist/SHA256SUMS
           quickstart_root="$RUNNER_TEMP/onprest-quickstart"
           go run ./internal/releaseverify extract \
-            release-dist/onprest-0.0.0-quickstart.tar.gz "$quickstart_root" \
+            release-dist/onprest-quickstart.tar.gz "$quickstart_root" \
             0.0.0 v0.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" quickstart release-dist/SHA256SUMS
           install_dir="$package_root/onprest-0.0.0-linux-amd64"
           ONPREST_IT_GATEWAY_BINARY="$install_dir/onprest-gateway" \

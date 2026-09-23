@@ -10,7 +10,7 @@ verification; see <https://docs.onprest.viewlegacy.com/operations/deployment#bin
 The templates in this archive are intentionally incomplete. Add at least one
 reviewed capability to `capabilities: {}` and replace every placeholder before
 validating or starting the Agent. For a local trial, download the separate
-`onprest-X.Y.Z-quickstart.tar.gz` asset from the same release and follow:
+`onprest-quickstart.tar.gz` asset from the same release and follow:
 <https://docs.onprest.viewlegacy.com/quick-start>
 
 After extracting the archive for production:
