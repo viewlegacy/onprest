@@ -50,9 +50,18 @@ points to the latest release.
 
 Download the archive for your host from the
 [GitHub Releases](https://github.com/viewlegacy/onprest/releases) page and
-extract it. The published `SHA256SUMS` and GitHub artifact attestations are
-available if you want to verify your download; verification is optional for
-installation.
+extract it. To verify a download, save `SHA256SUMS` from the same release next
+to it and run:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS   # macOS: shasum -a 256 --check --ignore-missing SHA256SUMS
+gh attestation verify onprest-X.Y.Z-linux-amd64.tar.gz --repo viewlegacy/onprest
+```
+
+On Windows, compare `(Get-FileHash onprest-X.Y.Z-windows-amd64.zip).Hash` with
+the matching line in `SHA256SUMS`. Attestation verification uses the
+[GitHub CLI](https://cli.github.com/) and can run on any computer, not only the
+installation host.
 
 After extraction, continue with the bundled `INSTALL.md`. It maps the generated
 keys into the two configuration files and gives Unix and Windows commands for

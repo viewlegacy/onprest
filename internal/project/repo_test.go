@@ -797,7 +797,7 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 	root := repoRoot(t)
 	gatewayEnv := readText(t, filepath.Join(root, "examples", "gateway.env"))
 	for _, want := range []string{
-		"GATEWAY_ADDR=:8080",
+		"GATEWAY_ADDR=127.0.0.1:8080",
 		"GATEWAY_AGENT_PUBLIC_KEY=",
 		"GATEWAY_API_KEYS_JSON=",
 		"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10",
