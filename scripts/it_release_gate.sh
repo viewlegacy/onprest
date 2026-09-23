@@ -13,6 +13,35 @@ else
 fi
 KEEP_LOGS="${ONPREST_IT_GATE_KEEP_LOGS:-0}"
 
+assert_prebuilt_distribution() {
+	local gateway="${ONPREST_IT_GATEWAY_BINARY:-}"
+	local agent="${ONPREST_IT_AGENT_BINARY:-}"
+	local version="${ONPREST_IT_DISTRIBUTION_VERSION:-}"
+	if [[ -z $gateway && -z $agent ]]; then
+		return
+	fi
+	if [[ -z $gateway || -z $agent || -z $version ]]; then
+		echo "gateway, agent, and distribution version must be provided together" >&2
+		exit 1
+	fi
+	for binary in "$gateway" "$agent"; do
+		if [[ ! -x $binary ]]; then
+			echo "prebuilt distribution binary is missing or not executable: $binary" >&2
+			exit 1
+		fi
+		absolute="$(cd "$(dirname "$binary")" && pwd -P)/$(basename "$binary")"
+		if [[ $absolute == "$ROOT_DIR"/* ]]; then
+			echo "prebuilt distribution binary must be extracted outside the source tree: $absolute" >&2
+			exit 1
+		fi
+		if [[ $(cd / && "$absolute" --version) != "$version" ]]; then
+			echo "prebuilt distribution binary version does not match $version: $absolute" >&2
+			exit 1
+		fi
+	done
+	echo "PASS: source-free distribution binaries ($version)"
+}
+
 cleanup_logs() {
 	if [[ "$LOG_DIR_CREATED" == "1" && "$KEEP_LOGS" != "1" && -d "$LOG_DIR" ]]; then
 		rm -rf "$LOG_DIR"
@@ -73,7 +102,16 @@ assert_no_testcontainers_left() {
 mkdir -p "$LOG_DIR"
 echo "integration release gate logs: $LOG_DIR"
 
+assert_prebuilt_distribution
 assert_docker_available
+
+if [[ -n "${ONPREST_IT_GATEWAY_BINARY:-}" ]]; then
+	if [[ -z "${ONPREST_IT_QUICKSTART_DIR:-}" ]]; then
+		echo "ONPREST_IT_QUICKSTART_DIR is required with distribution binaries" >&2
+		exit 1
+	fi
+	bash scripts/quickstart_smoke.sh "$(dirname "$ONPREST_IT_GATEWAY_BINARY")" "$ONPREST_IT_QUICKSTART_DIR"
+fi
 
 echo "==> govulncheck"
 make vulncheck
@@ -101,9 +139,17 @@ run_go_json_no_skip "mysql-special-credentials" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
 	go test -json -tags=integration ./it/... -run '^TestMySQLDSNSpecialCredentialsConnectToRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=mysql
 
+run_go_json_no_skip "mysql-tls-contract" \
+	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
+	go test -json -tags=integration ./it/... -run '^TestMySQLTLSModesClientCertificateRotationAndReconnectAgainstRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=mysql
+
 run_go_json_no_skip "sqlserver-tls" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
 	go test -json -tags=integration ./it/... -run '^TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=sqlserver
+
+run_go_json_no_skip "oracle-tls-contract" \
+	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
+	go test -json -tags=integration ./it/... -run '^TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase$' -timeout 15m -count=1 -args -onprest-it-db=oracle
 
 run_go_json_no_skip "docker-image-ops" \
 	env ONPREST_IT_DOCKER=1 \

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -78,6 +79,47 @@ func TestLoadConfigFallsBackToEnvThenDefault(t *testing.T) {
 func TestLoadConfigRejectsUnexpectedArgs(t *testing.T) {
 	if _, err := loadConfig([]string{"unexpected"}, func(string) string { return "" }); err == nil {
 		t.Fatal("loadConfig accepted unexpected arg")
+	}
+}
+
+func TestLoadCapabilityDatabaseTLSMatrixFromYAML(t *testing.T) {
+	base := `gateway:
+  url: ws://localhost:8080/ws/agent
+  agent_private_key: ` + testAgentPrivateKey + `
+database:
+  driver: %s
+  host: db.example
+  port: %d
+  name: legacy
+  user: readonly
+  tls:
+    mode: %s
+%s
+capabilities:
+  ping:
+    sql: select 1 as value
+    result:
+      value: {type: integer}
+`
+	ports := map[string]int{"postgres": 5432, "mysql": 3306, "sqlserver": 1433, "oracle": 1521}
+	for driver, port := range ports {
+		for _, mode := range []string{"disable", "require", "verify-full"} {
+			extra := ""
+			if mode == "verify-full" {
+				extra = "    server_name: " + driver + ".internal\n"
+			}
+			t.Run(driver+"/"+mode, func(t *testing.T) {
+				path := writeCapabilityFixture(t, fmt.Sprintf(base, driver, port, mode, extra))
+				if _, err := LoadCapabilityFile(path); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+
+	invalid := fmt.Sprintf(base, "oracle", 1521, "verify-ca", "")
+	if _, err := LoadCapabilityFile(writeCapabilityFixture(t, invalid)); err == nil {
+		t.Fatal("Oracle verify-ca unexpectedly loaded")
 	}
 }
 

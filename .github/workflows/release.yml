@@ -1,0 +1,175 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify_release_ready:
+    runs-on: ubuntu-latest
+    outputs:
+      release_ready_url: ${{ steps.gate.outputs.run_url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify tag, commit, and successful exact-SHA release-ready
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          [[ "$GITHUB_REF_TYPE" = tag ]]
+          [[ "$GITHUB_REF_NAME" = "v$version" ]]
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse "$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+
+          runs_json="$RUNNER_TEMP/release-gate-runs.json"
+          jobs_dir="$RUNNER_TEMP/release-gate-jobs"
+          mkdir -p "$jobs_dir"
+          gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/release-gate.yml/runs?head_sha=$GITHUB_SHA&status=completed&per_page=100" >"$runs_json"
+          while read -r run_id; do
+            gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100" >"$jobs_dir/$run_id.json"
+          done < <(jq -r '.workflow_runs[].id' "$runs_json")
+          selection=$(ruby scripts/select_release_ready_run.rb "$GITHUB_SHA" "$runs_json" "$jobs_dir")
+          IFS=$'\t' read -r run_id run_url <<<"$selection"
+          echo "run_url=$run_url" >>"$GITHUB_OUTPUT"
+
+  build:
+    needs: verify_release_ready
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build, scan, and package the exact tag commit
+        env:
+          VERSION: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_READY_URL: ${{ needs.verify_release_ready.outputs.release_ready_url }}
+        run: |
+          VERSION=${VERSION#v}
+          export VERSION
+          make release-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ github.sha }}
+          path: release-dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release_archive_integration:
+    needs:
+      - build
+      - verify_release_ready
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-assets-${{ github.sha }}
+          path: release-dist
+      - name: Exercise direct, proxy, source-free, and key-rotation paths
+        env:
+          VERSION: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_READY_URL: ${{ needs.verify_release_ready.outputs.release_ready_url }}
+        run: |
+          VERSION=${VERSION#v}
+          package_root="$RUNNER_TEMP/onprest-release-integration"
+          go run ./internal/releaseverify extract \
+            "release-dist/onprest-$VERSION-linux-amd64.tar.gz" "$package_root" \
+            "$VERSION" "v$VERSION" "$RELEASE_SHA" "$RELEASE_READY_URL" linux/amd64 release-dist/SHA256SUMS
+          quickstart_root="$RUNNER_TEMP/onprest-quickstart"
+          go run ./internal/releaseverify extract \
+            "release-dist/onprest-$VERSION-quickstart.tar.gz" "$quickstart_root" \
+            "$VERSION" "v$VERSION" "$RELEASE_SHA" "$RELEASE_READY_URL" quickstart release-dist/SHA256SUMS
+          install_dir="$package_root/onprest-$VERSION-linux-amd64"
+          test "$(cd / && "$install_dir/onprest-gateway" --version)" = "$VERSION"
+          test "$(cd / && "$install_dir/onprest-agent" --version)" = "$VERSION"
+          bash scripts/quickstart_smoke.sh "$install_dir" "$quickstart_root/onprest-$VERSION-quickstart"
+          ONPREST_IT_REQUIRE_CONTAINERS=1 \
+            ONPREST_IT_GATEWAY_BINARY="$install_dir/onprest-gateway" \
+            ONPREST_IT_AGENT_BINARY="$install_dir/onprest-agent" \
+            go test -tags=integration ./it/... \
+              -run '^(TestDistributionBinariesDirectAndGenericProxyHTTPAndWebSocket|TestGatewayProcessTrustedProxyIPAllowAndRateLimit|TestGatewayDistLikeBinariesRunOutsideSourceTree|TestOperationalAgentSecretRotationWithRealBinaries)$' \
+              -count=1 -args -onprest-it-db=postgres
+
+  release_archive_service_lifecycle:
+    needs:
+      - build
+      - verify_release_ready
+    uses: ./.github/workflows/service-lifecycle.yml
+    with:
+      artifact-name: release-assets-${{ github.sha }}
+      version: ${{ github.ref_name }}
+      release-tag: ${{ github.ref_name }}
+      release-sha: ${{ github.sha }}
+      release-ready-url: ${{ needs.verify_release_ready.outputs.release_ready_url }}
+
+  attest:
+    needs:
+      - build
+      - release_archive_integration
+      - release_archive_service_lifecycle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-assets-${{ github.sha }}
+          path: release-dist
+      - uses: actions/attest@v4
+        with:
+          subject-path: release-dist/*
+
+  publish:
+    needs:
+      - verify_release_ready
+      - attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-assets-${{ github.sha }}
+          path: release-dist
+      - name: Refuse overwrite and publish the attested byte set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; refusing to overwrite it" >&2
+            exit 1
+          fi
+          (cd release-dist && sha256sum --check SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" release-dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

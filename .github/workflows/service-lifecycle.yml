@@ -2,20 +2,57 @@ name: service-lifecycle
 
 on:
   workflow_call:
-  workflow_dispatch:
+    inputs:
+      artifact-name:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      release-tag:
+        required: true
+        type: string
+      release-sha:
+        required: true
+        type: string
+      release-ready-url:
+        required: true
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   linux-systemd:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Validate release version input
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version=$(bash scripts/normalize_release_version.sh "$INPUT_VERSION")
+          echo "PACKAGE_VERSION=$version" >>"$GITHUB_ENV"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: make build
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: release-dist
+      - name: Extract Linux release archive outside the repository
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_SHA: ${{ inputs.release-sha }}
+          RELEASE_READY_URL: ${{ inputs.release-ready-url }}
+        run: |
+          package_root="$RUNNER_TEMP/onprest-package"
+          go run ./internal/releaseverify extract \
+            "release-dist/onprest-$PACKAGE_VERSION-linux-amd64.tar.gz" "$package_root" \
+            "$PACKAGE_VERSION" "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_READY_URL" \
+            linux/amd64 release-dist/SHA256SUMS
+          echo "LINUX_PACKAGE_ROOT=$package_root" >>"$GITHUB_ENV"
       - name: Validate crash recovery and path safety on Linux host
         run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1
       - name: Build isolated systemd environment
@@ -25,6 +62,7 @@ jobs:
           docker run --privileged --cgroupns=host -d --name onprest-service-test \
             --tmpfs /run --tmpfs /run/lock \
             -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v "$LINUX_PACKAGE_ROOT:/opt/onprest-release" \
             -v "$PWD:/workspace" onprest-service-test-systemd
           for _ in {1..30}; do
             state=$(docker exec onprest-service-test systemctl is-system-running 2>/dev/null || true)
@@ -40,7 +78,14 @@ jobs:
           docker exec onprest-service-test runuser -u postgres -- psql -c "ALTER USER postgres PASSWORD 'onprest';"
       - name: Exercise actual systemd lifecycle
         run: |
-          docker exec onprest-service-test bash -ec 'chmod +x /workspace/scripts/test_service_lifecycle_unix.sh && /workspace/scripts/test_service_lifecycle_unix.sh /workspace/dist/onprest-agent /workspace/dist/onprest-gateway /workspace/scripts/service-test-capability.yaml'
+          docker exec --env "PACKAGE_VERSION=$PACKAGE_VERSION" onprest-service-test bash -ec '
+            mkdir -p /tmp/onprest-runtime &&
+            cp /workspace/scripts/service-test-capability.yaml /opt/onprest-release/capability.input.yaml &&
+            bash /workspace/scripts/run_service_lifecycle_sanitized_unix.sh \
+              /tmp/onprest-runtime \
+              "/opt/onprest-release/onprest-$PACKAGE_VERSION-linux-amd64/onprest-agent" \
+              "/opt/onprest-release/onprest-$PACKAGE_VERSION-linux-amd64/onprest-gateway" \
+              /opt/onprest-release/capability.input.yaml'
       - if: always()
         run: docker rm -f onprest-service-test || true
 
@@ -48,10 +93,19 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Validate release version input
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version=$(bash scripts/normalize_release_version.sh "$INPUT_VERSION")
+          echo "PACKAGE_VERSION=$version" >>"$GITHUB_ENV"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: make build
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: release-dist
       - name: Validate crash recovery and path safety on macOS host
         run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1
       - name: Start PostgreSQL
@@ -62,26 +116,68 @@ jobs:
           for _ in {1..40}; do "$pg_bin/pg_isready" && break; sleep 0.5; done
           "$pg_bin/psql" postgres -c "CREATE ROLE onprest LOGIN PASSWORD 'onprest';"
       - name: Exercise actual launchd lifecycle
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_SHA: ${{ inputs.release-sha }}
+          RELEASE_READY_URL: ${{ inputs.release-ready-url }}
         run: |
-          sed -e 's/user: postgres/user: onprest/' scripts/service-test-capability.yaml > dist/capability.input.yaml
-          chmod +x scripts/test_service_lifecycle_unix.sh
-          ./scripts/test_service_lifecycle_unix.sh ./dist/onprest-agent ./dist/onprest-gateway ./dist/capability.input.yaml
+          arch=$(uname -m)
+          case "$arch" in
+            arm64) target=darwin-arm64 ;;
+            x86_64) target=darwin-amd64 ;;
+            *) echo "unsupported macOS runner architecture: $arch" >&2; exit 1 ;;
+          esac
+          package_root="$RUNNER_TEMP/onprest-package"
+          runtime_cwd="$RUNNER_TEMP/onprest-runtime"
+          mkdir -p "$runtime_cwd"
+          go run ./internal/releaseverify extract \
+            "release-dist/onprest-$PACKAGE_VERSION-$target.tar.gz" "$package_root" \
+            "$PACKAGE_VERSION" "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_READY_URL" \
+            "darwin/${target#darwin-}" release-dist/SHA256SUMS
+          install_dir="$package_root/onprest-$PACKAGE_VERSION-$target"
+          sed -e 's/user: postgres/user: onprest/' scripts/service-test-capability.yaml > "$package_root/capability.input.yaml"
+          bash ./scripts/run_service_lifecycle_sanitized_unix.sh "$runtime_cwd" \
+            "$install_dir/onprest-agent" "$install_dir/onprest-gateway" "$package_root/capability.input.yaml"
 
   windows-service:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Validate release version input
+        shell: powershell
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = $env:INPUT_VERSION
+          if ($version.StartsWith('v')) { $version = $version.Substring(1) }
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw 'release version must be X.Y.Z or vX.Y.Z'
+          }
+          "PACKAGE_VERSION=$version" >> $env:GITHUB_ENV
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Build Windows binaries
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: release-dist
+      - name: Extract Windows release archive outside the repository
         shell: powershell
+        env:
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          RELEASE_SHA: ${{ inputs.release-sha }}
+          RELEASE_READY_URL: ${{ inputs.release-ready-url }}
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          $version = if ($env:VERSION) { $env:VERSION } else { "dev" }
-          $ldflags = "-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=$version"
-          go build -trimpath -ldflags $ldflags -o dist/onprest-gateway.exe ./cmd/gateway
-          go build -trimpath -ldflags $ldflags -o dist/onprest-agent.exe ./cmd/agent
+          $packageRoot = Join-Path $env:RUNNER_TEMP 'onprest-package'
+          $runtimeCwd = Join-Path $env:RUNNER_TEMP 'onprest-runtime'
+          New-Item -ItemType Directory -Force $runtimeCwd | Out-Null
+          go run ./internal/releaseverify extract `
+            "release-dist/onprest-$($env:PACKAGE_VERSION)-windows-amd64.zip" $packageRoot `
+            $env:PACKAGE_VERSION $env:RELEASE_TAG $env:RELEASE_SHA $env:RELEASE_READY_URL `
+            windows/amd64 release-dist/SHA256SUMS
+          if ($LASTEXITCODE -ne 0) { throw 'safe archive extraction failed' }
+          "PACKAGE_ROOT=$packageRoot" >> $env:GITHUB_ENV
+          "RUNTIME_CWD=$runtimeCwd" >> $env:GITHUB_ENV
       - name: Validate crash recovery and path safety on Windows host
         shell: powershell
         run: go test ./internal/agent -run '^(TestValidateLatestLogCrashRecoveryProcess|TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths|TestValidationRejectsInvalidFixedPathsWithoutMutation)$' -count=1
@@ -114,4 +210,30 @@ jobs:
       - name: Exercise actual Windows Service lifecycle
         shell: powershell
         run: |
-          .\scripts\test_service_lifecycle_windows.ps1 -AgentBin .\dist\onprest-agent.exe -GatewayBin .\dist\onprest-gateway.exe -CapabilityFile .\scripts\service-test-capability.yaml
+          $installDir = Join-Path $env:PACKAGE_ROOT "onprest-$($env:PACKAGE_VERSION)-windows-amd64"
+          $capability = Join-Path $env:PACKAGE_ROOT 'capability.input.yaml'
+          Copy-Item .\scripts\service-test-capability.yaml $capability
+          $runtimeTools = Join-Path $env:RUNNER_TEMP 'onprest-runtime-tools'
+          New-Item -ItemType Directory -Force $runtimeTools | Out-Null
+          Copy-Item (Join-Path $env:SystemRoot 'System32\sc.exe') (Join-Path $runtimeTools 'sc.exe')
+          $scLanguage = 'en-US'
+          $scResources = Join-Path $runtimeTools $scLanguage
+          New-Item -ItemType Directory -Force $scResources | Out-Null
+          Copy-Item (Join-Path $env:SystemRoot "System32\$scLanguage\sc.exe.mui") (Join-Path $scResources 'sc.exe.mui')
+          $env:Path = $runtimeTools
+          foreach ($tool in @('go', 'git', 'make', 'docker')) {
+            if (Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue) { throw "development tool remains on service test PATH: $tool" }
+          }
+          $scStatus = & (Join-Path $runtimeTools 'sc.exe') query EventLog
+          if ($LASTEXITCODE -ne 0 -or ($scStatus -join "`n") -notmatch '(?m)^\s*STATE\s*:') {
+            throw "isolated sc.exe could not report a native service state: $($scStatus -join ' | ')"
+          }
+          $scConfig = & (Join-Path $runtimeTools 'sc.exe') qc EventLog
+          if ($LASTEXITCODE -ne 0 -or ($scConfig -join "`n") -notmatch '(?m)^\s*BINARY_PATH_NAME\s*:') {
+            throw "isolated sc.exe could not report a native service configuration: $($scConfig -join ' | ')"
+          }
+          Set-Location $env:RUNTIME_CWD
+          & "$env:GITHUB_WORKSPACE\scripts\test_service_lifecycle_windows.ps1" `
+            -AgentBin (Join-Path $installDir 'onprest-agent.exe') `
+            -GatewayBin (Join-Path $installDir 'onprest-gateway.exe') `
+            -CapabilityFile $capability

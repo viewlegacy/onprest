@@ -26,7 +26,7 @@ PostgreSQL operation-readiness gate. This runs the PostgreSQL integration suite 
 make test-it-release-gate
 ```
 
-Final OSS core release gate. In addition to unit, PostgreSQL CI, and interruption stability checks, it runs all-DB conformance, PostgreSQL and SQL Server real TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. The canonical step-by-step coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
+Final OSS core release gate. In addition to unit, PostgreSQL CI, and interruption stability checks, it runs all-DB conformance, all four real-DB TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. The canonical step-by-step coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
 
 ## Support Commands
 
@@ -51,6 +51,12 @@ Runs all `TestContainerDBDriver*` cases for PostgreSQL, MySQL, SQL Server, and O
 This adds real Oracle transaction-start cancellation, real Agent nullable-response/OpenAPI 3.1 validation, and the PostgreSQL timestamp JSON/timezone compatibility contract to the four-driver matrix. SQL Server and Oracle can take a long time, especially on first image pull.
 
 The four-driver scope includes SELECT compatibility and int64 transport, INSERT/UPDATE/DELETE through Gateway REST and MCP, driver-native affected counts including zero rows, constraint-to-409 normalization with rollback and persisted-state checks, agent-policy timeout rollback, gateway-timeout cancellation/state verification, startup DML EXPLAIN and runtime least-privilege failures, SQL lint bypass resistance, output limits, private driver errors, and unreachable-DB startup failure. Broader Gateway authentication, reconnect, OpenAPI, Docker packaging, and process-lifecycle depth remains in the PostgreSQL and operational suites.
+
+```bash
+make test-it-database-tls
+```
+
+Runs `TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification`, `TestMySQLTLSModesClientCertificateRotationAndReconnectAgainstRealDatabase`, `TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase`, and `TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase` with required containers. These verify the driver-specific mode matrix, private/wrong CA and hostname behavior, supported client certificates, certificate replacement, reconnect, and no plaintext fallback.
 
 ```bash
 make test-it-docker-ops
@@ -90,7 +96,7 @@ It also does not cover:
 
 ## Release Gate Details
 
-`make test-it-release-gate` executes the steps documented in [Release Gate](../docs/app/operations/release-gate/page.mdx). Notably, `all-db-conformance` uses the selection above, while `postgres-tls-contract` runs `TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification` to cover PostgreSQL `disable`, `require`, `verify-ca`, and `verify-full`, private/wrong CA, hostname mismatch, and client-certificate authentication. The gate reads Go test JSON output and fails on test/subtest skips, then checks for leftover testcontainers resources. Logs are temporary by default; `ONPREST_IT_GATE_KEEP_LOGS=1` retains them and `ONPREST_IT_GATE_LOG_DIR` selects their directory.
+`make test-it-release-gate` executes the steps documented in [Release Gate](../docs/app/operations/release-gate/page.mdx). Notably, `all-db-conformance` uses the selection above, while the four TLS steps run the exact tests listed under `make test-it-database-tls`. The gate reads Go test JSON output and fails on test/subtest skips, then checks for leftover testcontainers resources. Logs are temporary by default; `ONPREST_IT_GATE_KEEP_LOGS=1` retains them and `ONPREST_IT_GATE_LOG_DIR` selects their directory.
 
 ## Skip Policy
 

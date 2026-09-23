@@ -31,6 +31,12 @@ func TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification(t *te
 	caFile, serverCert, serverKey := createPostgresTLSFiles(t, certDir, "trusted-ca")
 	clientCert, clientKey := createPostgresClientTLSFiles(t, certDir, "clientcert_user")
 	wrongCA, _, _ := createPostgresTLSFiles(t, filepath.Join(certDir, "wrong"), "wrong-ca")
+	renewedAuthority := newTestTLSAuthority(t, "postgres-renewed-tls-root")
+	renewed := renewedAuthority.issueServer(t, "localhost", time.Now().Add(-time.Hour), time.Now().Add(48*time.Hour))
+	expired := renewedAuthority.issueServer(t, "localhost", time.Now().Add(-48*time.Hour), time.Now().Add(-24*time.Hour))
+	renewedCert, renewedKey := renewed.writeFiles(t, certDir, "renewed")
+	expiredCert, expiredKey := expired.writeFiles(t, certDir, "expired")
+	trustBundle := writeCertificateBundle(t, certDir, "trust-bundle.pem", caFile, renewedAuthority.caFile)
 	hbaFile := filepath.Join(certDir, "pg_hba.conf")
 	writeFile(t, hbaFile, `local all all trust
 hostssl all clientcert_user all scram-sha-256 clientcert=verify-full
@@ -63,9 +69,9 @@ hba_file = '/tmp/testcontainers-go/postgres/pg_hba.conf'
 	)
 	if err != nil {
 		if os.Getenv("ONPREST_IT_REQUIRE_CONTAINERS") == "1" {
-			t.Fatalf("start TLS PostgreSQL container: %v", err)
+			t.Fatal("start TLS PostgreSQL container failed")
 		}
-		t.Skipf("skip TLS PostgreSQL container: %v", err)
+		t.Skip("skip TLS PostgreSQL container: unavailable")
 	}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -95,8 +101,12 @@ hba_file = '/tmp/testcontainers-go/postgres/pg_hba.conf'
 	assertPostgresTLSConnection(t, verifyCADef, true)
 
 	verifyFullDef := baseDef
-	verifyFullDef.TLS = agentpkg.DatabaseTLSDef{Mode: "verify-full", CAFile: caFile}
+	verifyFullDef.TLS = agentpkg.DatabaseTLSDef{Mode: "verify-full", CAFile: trustBundle}
 	assertPostgresTLSConnection(t, verifyFullDef, true)
+	overrideDef := verifyFullDef
+	overrideDef.Host = "127.0.0.1"
+	overrideDef.TLS.ServerName = "localhost"
+	assertPostgresTLSConnection(t, overrideDef, true)
 
 	wrongCADef := verifyCADef
 	wrongCADef.TLS.CAFile = wrongCA
@@ -108,12 +118,14 @@ hba_file = '/tmp/testcontainers-go/postgres/pg_hba.conf'
 	hostnameMismatchDef := verifyFullDef
 	hostnameMismatchDef.Host = "127.0.0.1"
 	assertPostgresTLSPingFails(t, hostnameMismatchDef, "verify-full hostname mismatch")
+	hostnameMismatchDef.TLS.ServerName = "wrong.example.invalid"
+	assertPostgresTLSPingFails(t, hostnameMismatchDef, "verify-full server_name mismatch")
 
 	adminDB := openPostgresTLSDB(t, verifyFullDef)
+	defer adminDB.Close()
 	if _, err := adminDB.ExecContext(t.Context(), `create role clientcert_user login password 'clientcert-password'`); err != nil {
-		t.Fatal(err)
+		t.Fatal("PostgreSQL client-certificate role setup failed")
 	}
-	adminDB.Close()
 	clientDef := verifyFullDef
 	clientDef.User = "clientcert_user"
 	clientDef.Password = "clientcert-password"
@@ -123,13 +135,99 @@ hba_file = '/tmp/testcontainers-go/postgres/pg_hba.conf'
 	clientDef.TLS.CertFile = ""
 	clientDef.TLS.KeyFile = ""
 	assertPostgresTLSPingFails(t, clientDef, "client certificate required by pg_hba")
+
+	rotationDB := openPostgresTLSDB(t, verifyFullDef)
+	defer rotationDB.Close()
+	rotationDB.SetMaxOpenConns(1)
+	rotationDB.SetMaxIdleConns(1)
+	oldBackendPID := postgresBackendPID(t, rotationDB)
+	ctxCopy, copyCancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer copyCancel()
+	replacePostgresServerCertificate(t, ctxCopy, ctr, renewedCert, renewedKey)
+	reloadPostgresTLS(t, ctxCopy, adminDB)
+	terminatePostgresBackend(t, ctxCopy, adminDB, oldBackendPID)
+	newBackendPID := waitForPostgresNewBackend(t, rotationDB, oldBackendPID)
+	if newBackendPID == oldBackendPID {
+		t.Fatal("PostgreSQL TLS rotation reused the terminated physical connection")
+	}
+	assertPostgresTLSActive(t, rotationDB, true)
+	renewedOnlyDef := verifyFullDef
+	renewedOnlyDef.TLS.CAFile = renewedAuthority.caFile
+	assertPostgresTLSConnection(t, renewedOnlyDef, true)
+	oldOnlyDef := verifyFullDef
+	oldOnlyDef.TLS.CAFile = caFile
+	assertPostgresTLSPingFails(t, oldOnlyDef, "verify-full old CA after renewed certificate")
+
+	replacePostgresServerCertificate(t, ctxCopy, ctr, expiredCert, expiredKey)
+	reloadPostgresTLS(t, ctxCopy, adminDB)
+	terminatePostgresBackend(t, ctxCopy, adminDB, newBackendPID)
+	assertOpenDatabaseTLSPingFails(t, rotationDB, "PostgreSQL expired certificate after forced reconnect")
+	rotationDB.Close()
+	assertPostgresTLSConnection(t, requireDef, true)
+}
+
+func postgresBackendPID(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	var pid int64
+	if err := db.QueryRowContext(ctx, "select pg_backend_pid()").Scan(&pid); err != nil {
+		t.Fatal("PostgreSQL backend PID query failed")
+	}
+	return pid
+}
+
+func terminatePostgresBackend(t *testing.T, ctx context.Context, admin *sql.DB, pid int64) {
+	t.Helper()
+	var terminated bool
+	if err := admin.QueryRowContext(ctx, "select pg_terminate_backend($1)", pid).Scan(&terminated); err != nil || !terminated {
+		t.Fatal("PostgreSQL physical connection termination failed")
+	}
+}
+
+func waitForPostgresNewBackend(t *testing.T, db *sql.DB, previousPID int64) int64 {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		var pid int64
+		err := db.QueryRowContext(ctx, "select pg_backend_pid()").Scan(&pid)
+		cancel()
+		if err == nil && pid != previousPID {
+			return pid
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("PostgreSQL verify-full pool did not establish a new physical connection")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func replacePostgresServerCertificate(t *testing.T, ctx context.Context, ctr *postgres.PostgresContainer, certFile, keyFile string) {
+	t.Helper()
+	for source, target := range map[string]string{certFile: "/tmp/testcontainers-go/postgres/server.cert", keyFile: "/tmp/testcontainers-go/postgres/server.key"} {
+		if err := ctr.CopyFileToContainer(ctx, source, target, 0o600); err != nil {
+			t.Fatal("PostgreSQL TLS certificate replacement failed")
+		}
+	}
+	if exit, _, err := ctr.Exec(ctx, []string{"sh", "-c", "chown postgres:postgres /tmp/testcontainers-go/postgres/server.cert /tmp/testcontainers-go/postgres/server.key"}); err != nil || exit != 0 {
+		t.Fatal("PostgreSQL TLS certificate ownership update failed")
+	}
+}
+
+func reloadPostgresTLS(t *testing.T, ctx context.Context, admin *sql.DB) {
+	t.Helper()
+	var reloaded bool
+	if err := admin.QueryRowContext(ctx, "select pg_reload_conf()").Scan(&reloaded); err != nil || !reloaded {
+		t.Fatal("PostgreSQL TLS certificate reload failed")
+	}
 }
 
 func openPostgresTLSDB(t *testing.T, def agentpkg.DatabaseDef) *sql.DB {
 	t.Helper()
-	db, err := sql.Open(sqlDriverName("postgres"), def.DSN())
+	db, err := agentpkg.OpenDatabase(def)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("PostgreSQL %s TLS adapter creation failed", def.TLS.Mode)
 	}
 	return db
 }
@@ -141,14 +239,21 @@ func assertPostgresTLSConnection(t *testing.T, def agentpkg.DatabaseDef, wantTLS
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
-		t.Fatalf("PostgreSQL %s connection failed: %v", def.TLS.Mode, err)
+		t.Fatalf("PostgreSQL %s TLS connection failed", def.TLS.Mode)
 	}
+	assertPostgresTLSActive(t, db, wantTLS)
+}
+
+func assertPostgresTLSActive(t *testing.T, db *sql.DB, wantTLS bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
 	var tlsActive bool
 	if err := db.QueryRowContext(ctx, `select ssl from pg_stat_ssl where pid = pg_backend_pid()`).Scan(&tlsActive); err != nil {
-		t.Fatal(err)
+		t.Fatal("PostgreSQL TLS state query failed")
 	}
 	if tlsActive != wantTLS {
-		t.Fatalf("PostgreSQL %s TLS active=%t, want %t", def.TLS.Mode, tlsActive, wantTLS)
+		t.Fatalf("PostgreSQL TLS active=%t, want %t", tlsActive, wantTLS)
 	}
 }
 
@@ -260,6 +365,49 @@ func createPostgresClientTLSFiles(t *testing.T, dir, commonName string) (string,
 	return certPath, keyPath
 }
 
+func createPostgresServerTLSFiles(t *testing.T, caDir, outputDir string, notBefore, notAfter time.Time) (string, string) {
+	t.Helper()
+	if err := os.MkdirAll(outputDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	caCertPEM, err := os.ReadFile(filepath.Join(caDir, "ca.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	caBlock, _ := pem.Decode(caCertPEM)
+	caCert, err := x509.ParseCertificate(caBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caKeyPEM, err := os.ReadFile(filepath.Join(caDir, "ca.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	caKeyBlock, _ := pem.Decode(caKeyPEM)
+	caKey, err := x509.ParsePKCS1PrivateKey(caKeyBlock.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: "localhost"},
+		NotBefore: notBefore, NotAfter: notAfter, DNSNames: []string{"localhost"},
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath, keyPath := filepath.Join(outputDir, "server.pem"), filepath.Join(outputDir, "server.key")
+	writePEMFile(t, certPath, "CERTIFICATE", der, 0o600)
+	writePEMFile(t, keyPath, "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(serverKey), 0o600)
+	return certPath, keyPath
+}
+
 func writePEMFile(t *testing.T, path, typ string, data []byte, mode os.FileMode) {
 	t.Helper()
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
@@ -273,4 +421,22 @@ func writePEMFile(t *testing.T, path, typ string, data []byte, mode os.FileMode)
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeCertificateBundle(t *testing.T, dir, name string, paths ...string) string {
+	t.Helper()
+	var bundle []byte
+	for _, path := range paths {
+		certificate, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal("TLS CA bundle source read failed")
+		}
+		bundle = append(bundle, certificate...)
+		bundle = append(bundle, '\n')
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, bundle, 0o600); err != nil {
+		t.Fatal("TLS CA bundle write failed")
+	}
+	return path
 }

@@ -30,6 +30,7 @@ The runtime Agent writes `onprest-agent.log` detail when:
 - SQL EXPLAIN fails at startup.
 - Runtime capability execution fails.
 - DB permissions, syntax, timeout, or connectivity errors occur.
+- `AGENT_RATE_LIMITED` rejections are sampled at most once per minute per capability. A sample records the fixed code, message, detail, and request ID when present; it never includes params or values.
 
 `validate` records local preparation failures after configuration load. It returns a log path only after the current failure record has been committed. `doctor` records the same preparation failures plus Gateway diagnostic failures in its own fixed log and never changes the runtime or validation logs.
 

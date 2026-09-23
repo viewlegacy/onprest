@@ -441,7 +441,7 @@ func TestGatewayProcessDirectHTTPIgnoresForwardedHeaders(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("direct process status=%d body=%s output=%s", resp.StatusCode, string(body), output.String())
 	}
-	assertMCPInitializeResponse(t, body, "dev")
+	assertMCPInitializeResponse(t, body, expectedGatewayBuildVersion(t))
 }
 
 func TestOperationalSensitiveDataAuditAcrossArtifacts(t *testing.T) {

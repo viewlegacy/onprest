@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
-	"github.com/jackc/pgx/v5"
+	goora "github.com/sijms/go-ora/v2"
 	"github.com/viewlegacy/onprest/internal/protocol"
 )
 
@@ -176,6 +176,28 @@ capabilities:
 		{name: "overflow max affected rows", policy: "      max_affected_rows: 9223372036854775808", want: "max_affected_rows must be an int64"},
 		{name: "zero timeout", policy: "      timeout: 0s", want: "timeout must be > 0"},
 		{name: "negative timeout", policy: "      timeout: -1s", want: "timeout must be > 0"},
+		{name: "rate limit null", policy: "      rate_limit: null", want: "rate_limit must be an object"},
+		{name: "rate limit missing requests", policy: "      rate_limit: {per: 1s, burst: 1}", want: "requests must be > 0"},
+		{name: "rate limit missing per", policy: "      rate_limit: {requests: 1, burst: 1}", want: "per is required"},
+		{name: "rate limit missing burst", policy: "      rate_limit: {requests: 1, per: 1s}", want: "burst must be > 0"},
+		{name: "rate limit zero requests", policy: "      rate_limit: {requests: 0, per: 1s, burst: 1}", want: "requests must be > 0"},
+		{name: "rate limit negative requests", policy: "      rate_limit: {requests: -1, per: 1s, burst: 1}", want: "requests must be > 0"},
+		{name: "rate limit zero per", policy: "      rate_limit: {requests: 1, per: 0s, burst: 1}", want: "per must be > 0"},
+		{name: "rate limit negative per", policy: "      rate_limit: {requests: 1, per: -1s, burst: 1}", want: "per must be > 0"},
+		{name: "rate limit invalid per", policy: "      rate_limit: {requests: 1, per: soon, burst: 1}", want: "per is invalid"},
+		{name: "rate limit duration overflow", policy: "      rate_limit: {requests: 1, per: 2562048h, burst: 1}", want: "per is invalid"},
+		{name: "rate limit zero burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: 0}", want: "burst must be > 0"},
+		{name: "rate limit negative burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: -1}", want: "burst must be > 0"},
+		{name: "rate limit derived overflow", policy: "      rate_limit: {requests: 1, per: 2ns, burst: 9223372036854775807}", want: "burst and per are too large"},
+		{name: "rate limit sequence", policy: "      rate_limit: [1, 1s, 1]", want: "rate_limit must be an object"},
+		{name: "rate limit unknown field", policy: "      rate_limit: {requests: 1, per: 1s, burst: 1, window: fixed}", want: "field window not found"},
+		{name: "rate limit fractional requests", policy: "      rate_limit: {requests: 1.5, per: 1s, burst: 1}", want: "rate_limit.requests must be an integer"},
+		{name: "rate limit string requests", policy: `      rate_limit: {requests: "1", per: 1s, burst: 1}`, want: "rate_limit.requests must be an integer"},
+		{name: "rate limit requests overflow", policy: "      rate_limit: {requests: 9223372036854775808, per: 1s, burst: 1}", want: "rate_limit.requests must be an int64"},
+		{name: "rate limit numeric per", policy: "      rate_limit: {requests: 1, per: 1, burst: 1}", want: "per is invalid"},
+		{name: "rate limit fractional burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: 1.5}", want: "rate_limit.burst must be an integer"},
+		{name: "rate limit string burst", policy: `      rate_limit: {requests: 1, per: 1s, burst: "1"}`, want: "rate_limit.burst must be an integer"},
+		{name: "rate limit burst overflow", policy: "      rate_limit: {requests: 1, per: 1ns, burst: 9223372036854775808}", want: "rate_limit.burst must be an int64"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "capability.yaml")
@@ -187,6 +209,48 @@ capabilities:
 				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestCapabilityRateLimitDefaultsAndObjectOverride(t *testing.T) {
+	path := writeCapabilityFixture(t, `
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: test
+database: {driver: postgres, host: localhost, port: 5432, name: test, user: test}
+defaults:
+  rate_limit: {requests: 60, per: 1m, burst: 10}
+capabilities:
+  inherited:
+    sql: select 1 as id
+    result: {id: {type: integer}}
+  overridden:
+    sql: select 2 as id
+    policy:
+      rate_limit: {requests: 2, per: 1s, burst: 1}
+    result: {id: {type: integer}}
+`)
+	cf, err := LoadCapabilityFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inherited := cf.Capabilities["inherited"].Policy.RateLimit
+	if inherited == nil || inherited.Requests != 60 || inherited.Per != "1m" || inherited.Burst != 10 {
+		t.Fatalf("inherited rate limit = %#v", inherited)
+	}
+	overridden := cf.Capabilities["overridden"].Policy.RateLimit
+	if overridden == nil || overridden.Requests != 2 || overridden.Per != "1s" || overridden.Burst != 1 {
+		t.Fatalf("overridden rate limit = %#v", overridden)
+	}
+
+	without := validCapabilityFile()
+	if err := without.Lint(); err != nil {
+		t.Fatal(err)
+	}
+	for name, capability := range without.Capabilities {
+		if capability.Policy.RateLimit != nil {
+			t.Fatalf("%s unexpectedly has rate limit %#v", name, capability.Policy.RateLimit)
+		}
 	}
 }
 
@@ -502,6 +566,51 @@ func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
 	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
 		t.Fatalf("example runtime.max_concurrent_requests = %v, want 16", cf.Runtime.MaxConcurrentRequests)
 	}
+	for name, capability := range cf.Capabilities {
+		rate := capability.Policy.RateLimit
+		if rate == nil || rate.Requests != 60 || rate.Per != "1m" || rate.Burst != 10 {
+			t.Fatalf("example %s rate limit = %#v, want 60/1m burst 10", name, rate)
+		}
+	}
+}
+
+func TestReleaseCapabilityTemplateIsIntentionallyIncompleteAndBecomesValid(t *testing.T) {
+	templatePath := filepath.Join("..", "..", "release", "capability.yaml.example")
+	content, err := os.ReadFile(templatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "get_customer:") || strings.Contains(string(content), "\ndefaults:") {
+		t.Fatal("production template must not contain an application-specific capability or policy defaults")
+	}
+	configured := strings.ReplaceAll(string(content), "replace-with-create-agent-secret-private-key", testAgentPrivateKey)
+	path := filepath.Join(t.TempDir(), "capability.yaml")
+	if err := os.WriteFile(path, []byte(configured), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "at least one capability is required") {
+		t.Fatalf("LoadCapabilityFile(incomplete release template) error=%v, want missing capability", err)
+	}
+	configured = strings.Replace(configured, "capabilities: {}", `capabilities:
+  replace_with_capability_name:
+    sql: select 1 as ok
+    result:
+      ok:
+        type: integer`, 1)
+	if err := os.WriteFile(path, []byte(configured), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cf, err := LoadCapabilityFile(path)
+	if err != nil {
+		t.Fatalf("LoadCapabilityFile(completed release template): %v", err)
+	}
+	if cf.Service.Title != "replace-with-service-title" || cf.Database.Driver != "postgres" {
+		t.Fatalf("release example loaded unexpected contract: service=%q driver=%q", cf.Service.Title, cf.Database.Driver)
+	}
+	policy := cf.Capabilities["replace_with_capability_name"].Policy
+	if policy.Timeout != "5s" || policy.MaxRows == nil || *policy.MaxRows != 100 || policy.MaxBytes != "1MB" || !readonly(policy) {
+		t.Fatalf("release template built-in policy defaults=%#v", policy)
+	}
 }
 
 func TestCapabilityFileRuntimeMaxConcurrentRequests(t *testing.T) {
@@ -746,9 +855,19 @@ func TestDatabaseDSNConnectionPolicy(t *testing.T) {
 		{
 			name: "postgres verify full TLS",
 			db: DatabaseDef{Driver: "postgres", Host: "db.example", Port: 5432, Name: "legacy", User: "readonly", Password: "secret", TLS: DatabaseTLSDef{
-				Mode: "verify-full", CAFile: "/certs/ca.pem", CertFile: "/certs/client.pem", KeyFile: "/certs/client.key",
+				Mode: "verify-full", CAFile: "/certs/ca.pem", CertFile: "/certs/client.pem", KeyFile: "/certs/client.key", ServerName: "postgres.internal",
 			}},
 			want: "postgres://readonly:secret@db.example:5432/legacy?sslcert=%2Fcerts%2Fclient.pem&sslkey=%2Fcerts%2Fclient.key&sslmode=verify-full&sslrootcert=%2Fcerts%2Fca.pem",
+		},
+		{
+			name: "mysql require TLS",
+			db:   DatabaseDef{Driver: "mysql", Host: "db.example", Port: 3306, Name: "legacy", User: "readonly", Password: "secret", TLS: DatabaseTLSDef{Mode: "require"}},
+			want: "readonly:secret@tcp(db.example:3306)/legacy?tls=skip-verify",
+		},
+		{
+			name: "mysql verified TLS",
+			db:   DatabaseDef{Driver: "mysql", Host: "db.example", Port: 3306, Name: "legacy", User: "readonly", Password: "secret", TLS: DatabaseTLSDef{Mode: "verify-full", ServerName: "mysql.internal"}},
+			want: "readonly:secret@tcp(db.example:3306)/legacy?tls=true",
 		},
 		{
 			name: "sqlserver disables encrypt",
@@ -762,6 +881,16 @@ func TestDatabaseDSNConnectionPolicy(t *testing.T) {
 			}},
 			want: "sqlserver://readonly:secret@db.example:1433?TrustServerCertificate=false&certificate=%2Fcerts%2Fca.pem&database=legacy&encrypt=true&hostNameInCertificate=sql.internal.example",
 		},
+		{
+			name: "oracle require TLS",
+			db:   DatabaseDef{Driver: "oracle", Host: "db.example", Port: 1521, Name: "legacy", User: "readonly", Password: "secret", TLS: DatabaseTLSDef{Mode: "require"}},
+			want: "oracle://readonly:secret@db.example:1521/legacy?SSL=enable&SSL+VERIFY=false",
+		},
+		{
+			name: "oracle verified TLS",
+			db:   DatabaseDef{Driver: "oracle", Host: "db.example", Port: 1521, Name: "legacy", User: "readonly", Password: "secret", TLS: DatabaseTLSDef{Mode: "verify-full", ServerName: "oracle.internal"}},
+			want: "oracle://readonly:secret@db.example:1521/legacy?SSL=enable&SSL+VERIFY=true",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -773,7 +902,7 @@ func TestDatabaseDSNConnectionPolicy(t *testing.T) {
 }
 
 func TestMySQLDSNRoundTripsSpecialCredentials(t *testing.T) {
-	db := DatabaseDef{Driver: "mysql", Host: "db.example", Port: 3306, Name: "legacy/name", User: "reader@domain/name", Password: `p@ss:/word?&=#`}
+	db := DatabaseDef{Driver: "mysql", Host: "db.example", Port: 3306, Name: `legacy name;"日本`, User: `reader name;"日本`, Password: "p@ss:/word?&=# ;\"日本"}
 	dsn := db.DSN()
 	parsed, err := mysql.ParseDSN(dsn)
 	if err != nil {
@@ -784,16 +913,31 @@ func TestMySQLDSNRoundTripsSpecialCredentials(t *testing.T) {
 	}
 }
 
+func TestOracleDSNRoundTripsSpecialCredentialsAndTLS(t *testing.T) {
+	db := DatabaseDef{
+		Driver: "oracle", Host: "db.example", Port: 1521, Name: `legacy name;"日本`,
+		User: `reader name;"日本`, Password: "p@ss:/word?&=# ;\"日本",
+		TLS: DatabaseTLSDef{Mode: "verify-full", ServerName: "oracle.internal"},
+	}
+	config, err := goora.ParseConfig(db.DSN())
+	if err != nil {
+		t.Fatalf("ParseConfig(%q): %v", db.DSN(), err)
+	}
+	if config.UserID != db.User || config.Password != db.Password || config.ServiceName != db.Name || len(config.Servers) != 1 || config.Servers[0].Addr != db.Host || config.Servers[0].Port != db.Port || !config.SSL || config.SSLVerify != true {
+		t.Fatalf("round-trip config = %#v", config)
+	}
+}
+
 func TestPostgresPublicDriverAndDSNRoundTripToPGX(t *testing.T) {
-	db := DatabaseDef{Driver: "postgres", Host: "db.example", Port: 5432, Name: "legacy/name", User: "reader@domain/name", Password: `p@ss:/word?&=#`, TLS: DatabaseTLSDef{Mode: "verify-full"}}
-	config, err := pgx.ParseConfig(db.DSN())
+	db := DatabaseDef{Driver: "postgres", Host: "db.example", Port: 5432, Name: "legacy/name", User: "reader@domain/name", Password: `p@ss:/word?&=#`, TLS: DatabaseTLSDef{Mode: "verify-full", ServerName: "postgres.internal"}}
+	config, err := postgresConnectionConfig(db)
 	if err != nil {
 		t.Fatalf("pgx ParseConfig(%q): %v", db.DSN(), err)
 	}
 	if driverName(db.Driver) != "pgx" || config.Config.Host != db.Host || config.Config.Port != uint16(db.Port) || config.Config.Database != db.Name || config.Config.User != db.User || config.Config.Password != db.Password {
 		t.Fatalf("driver=%q config=%#v", driverName(db.Driver), config.Config)
 	}
-	if config.Config.TLSConfig == nil || config.Config.TLSConfig.ServerName != db.Host {
+	if config.Config.TLSConfig == nil || config.Config.TLSConfig.ServerName != db.TLS.ServerName {
 		t.Fatalf("TLS config=%#v", config.Config.TLSConfig)
 	}
 	t.Run("TLS paths with spaces and literal plus", func(t *testing.T) {
@@ -829,7 +973,7 @@ func TestPostgresPublicDriverAndDSNRoundTripToPGX(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		config, err := pgx.ParseConfig(db.DSN())
+		config, err := postgresConnectionConfig(db)
 		if err != nil {
 			t.Fatalf("ParseConfig with TLS paths containing spaces and plus: %v", err)
 		}
@@ -843,15 +987,54 @@ func TestPostgresPublicDriverAndDSNRoundTripToPGX(t *testing.T) {
 }
 
 func TestDatabaseTLSLintRejectsInvalidOrUnsupportedConfiguration(t *testing.T) {
-	tests := []DatabaseDef{
-		{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "optional"}},
-		{Driver: "mysql", Host: "db", Port: 3306, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "require"}},
-		{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "verify-full", CertFile: "client.pem"}},
+	tests := []struct {
+		name string
+		db   DatabaseDef
+	}{
+		{name: "unknown mode", db: DatabaseDef{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "optional"}}},
+		{name: "mysql verify ca", db: DatabaseDef{Driver: "mysql", Host: "db", Port: 3306, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "verify-ca"}}},
+		{name: "incomplete client pair", db: DatabaseDef{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "verify-full", CertFile: "client.pem"}}},
+		{name: "sqlserver client cert", db: DatabaseDef{Driver: "sqlserver", Host: "db", Port: 1433, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "verify-full", CertFile: "client.pem", KeyFile: "client.key"}}},
+		{name: "oracle client cert", db: DatabaseDef{Driver: "oracle", Host: "db", Port: 1521, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "verify-full", CertFile: "client.pem", KeyFile: "client.key"}}},
+		{name: "server name without verification", db: DatabaseDef{Driver: "mysql", Host: "db", Port: 3306, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "require", ServerName: "db.internal"}}},
+		{name: "ca without verification", db: DatabaseDef{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "require", CAFile: "ca.pem"}}},
+		{name: "fields with disabled TLS", db: DatabaseDef{Driver: "oracle", Host: "db", Port: 1521, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "disable", CAFile: "ca.pem"}}},
 	}
-	for _, db := range tests {
-		if err := db.lint(); err == nil {
-			t.Fatalf("lint(%#v) error = nil", db.TLS)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.db.lint(); err == nil {
+				t.Fatalf("lint(%#v) error = nil", tc.db.TLS)
+			}
+		})
+	}
+}
+
+func TestDatabaseTLSLintAcceptanceMatrix(t *testing.T) {
+	ports := map[string]int{"postgres": 5432, "mysql": 3306, "sqlserver": 1433, "oracle": 1521}
+	for driver, port := range ports {
+		for _, mode := range []string{"disable", "require", "verify-full"} {
+			t.Run(driver+"/"+mode, func(t *testing.T) {
+				db := DatabaseDef{Driver: driver, Host: "db", Port: port, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: mode}}
+				if mode == "verify-full" {
+					db.TLS.ServerName = driver + ".internal"
+				}
+				if err := db.lint(); err != nil {
+					t.Fatal(err)
+				}
+			})
 		}
+	}
+	for _, driver := range []string{"postgres", "mysql"} {
+		t.Run(driver+"/client-certificate", func(t *testing.T) {
+			db := DatabaseDef{Driver: driver, Host: "db", Port: ports[driver], Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "require", CertFile: "client.pem", KeyFile: "client.key"}}
+			if err := db.lint(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	postgresVerifyCA := DatabaseDef{Driver: "postgres", Host: "db", Port: 5432, Name: "legacy", User: "user", TLS: DatabaseTLSDef{Mode: "verify-ca", CAFile: "ca.pem"}}
+	if err := postgresVerifyCA.lint(); err != nil {
+		t.Fatal(err)
 	}
 }
 

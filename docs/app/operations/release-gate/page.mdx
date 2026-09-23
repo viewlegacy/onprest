@@ -1,6 +1,6 @@
 # Release Gate
 
-Use the release gate before treating an OSS core change as operationally ready.
+Maintainers use the release gate before treating an OSS core change as operationally ready. Users install published releases without Go or the source repository; see [Binary Release Installation](/operations/deployment#binary-release-installation).
 
 The individual unit, integration, DB-selection, and make targets are documented once in [Test Commands](/reference/test-commands). This page covers only the release gate itself and its acceptance criteria.
 
@@ -18,12 +18,14 @@ This gate verifies:
 - PostgreSQL DB interruption stability 5 consecutive times
 - all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
 - MySQL special-character credential connection
-- PostgreSQL `disable` / `require` / `verify-ca` / `verify-full` TLS against a real database, including private/wrong CA, hostname mismatch, and client-certificate authentication
-- SQL Server `require` / `verify-full` TLS against a TLS-enabled real database, including wrong CA and hostname rejection
+- the four-database TLS contract against real databases: `disable`, `require`, and `verify-full` for PostgreSQL, MySQL, SQL Server, and Oracle, plus PostgreSQL `verify-ca`
+- encryption observation, private/wrong CA, hostname and `server_name`, expiry, certificate replacement/pool recreation, reconnect without plaintext downgrade, and supported PostgreSQL/MySQL client-certificate authentication
+- Oracle TCPS through the pure-Go driver without Oracle Instant Client
 - Docker image operational tests
 - Docker Compose env-file operational tests
 - test/subtest skip count is zero in required mode (`go test -json` package records with no `Test` field are not test skips)
 - testcontainers residue is zero
+- when given extracted release binaries, the Quick Start runs against those binaries outside the source tree
 
 ## GitHub Actions
 
@@ -33,15 +35,27 @@ Pull requests targeting `main` and pushes to `main` also run these checks:
 
 | Check | Scope |
 |---|---|
-| `release-gate / integration-linux` | Runs `make test-it-release-gate` once on Linux |
+| `release-gate / package-candidate` | Builds the five OS/CPU archives and the Quick Start archive, scans the ten distributed binaries, and verifies checksums |
+| `release-gate / integration-linux` | Runs `make test-it-release-gate` once on Linux with the binaries extracted from the Linux amd64 archive |
 | `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
 | `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
 | `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
-| `release-gate / release-ready` | Requires both Linux integration and the complete reusable service lifecycle workflow to succeed |
+| `release-gate / release-ready` | Requires packaging, Linux integration, and the complete reusable service lifecycle workflow to succeed |
 
-The three service checks use the native OS managers, a real Gateway, and a real PostgreSQL instance. Each host first runs the validation-log crash recovery and adversarial-path safety tests, including native symlink/reparse-point handling, then verifies service registration, actual runtime detail writes and rotation markers while production validation overlaps, latest-failure cleanup, and native file permissions. The reusable workflow fails if any OS job fails or is canceled; `release-ready` also fails unless both it and `integration-linux` succeed. General all-database and Docker coverage remains in `integration-linux`.
+The three service checks use binaries extracted from the release archives, the native OS managers, a real Gateway, and a real PostgreSQL instance. Each host first runs the validation-log crash recovery and adversarial-path safety tests, including native symlink/reparse-point handling, then verifies service registration, actual runtime detail writes and rotation markers while production validation overlaps, latest-failure cleanup, and native file permissions. The reusable workflow fails if any OS job fails or is canceled; `release-ready` also fails unless it, `package-candidate`, and `integration-linux` succeed. General all-database and Docker coverage remains in `integration-linux`.
+
+Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-operating-system-baseline); results from a newer OS do not establish minimum-version support.
 
 The release-gate caller owns concurrency cancellation. The called service lifecycle workflow deliberately has no competing concurrency group, so invoking it cannot cancel its own caller run.
+
+## Release Publication
+
+A semantic version tag (`vX.Y.Z`) starts the release workflow. Publication
+requires a successful `release-ready` result for the exact tagged commit SHA;
+missing, failed, canceled, or different-SHA results block the release. The
+workflow rebuilds and checks the tagged assets, attaches a GitHub artifact
+attestation to each asset, publishes `SHA256SUMS`, and creates the GitHub
+Release. It never overwrites an existing Release.
 
 ## Requirements
 

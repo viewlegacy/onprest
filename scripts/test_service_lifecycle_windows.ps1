@@ -8,6 +8,9 @@ $ErrorActionPreference = 'Stop'
 $AgentBin = (Resolve-Path $AgentBin).Path
 $GatewayBin = (Resolve-Path $GatewayBin).Path
 $CapabilityFile = (Resolve-Path $CapabilityFile).Path
+$systemDir = Join-Path $env:SystemRoot 'System32'
+$netExe = Join-Path $systemDir 'net.exe'
+$cmdExe = Join-Path $systemDir 'cmd.exe'
 $DefaultConfig = Join-Path (Split-Path $AgentBin) 'capability.yaml'
 $artifactDir = Split-Path $AgentBin
 $gatewayProcess = $null
@@ -356,20 +359,20 @@ function Assert-NewCapabilityAbsent {
   # pre-Windows 2000 compatibility in this non-interactive CI session.
   $readerName = "OnprestVal$([Guid]::NewGuid().ToString('N').Substring(0, 10))"
   $readerPasswordPlain = 'Onpr3st-Val42!'
-  & net.exe user $readerName $readerPasswordPlain /add 2>$null | Out-Null
+  & $netExe user $readerName $readerPasswordPlain /add 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "failed to create test reader account: exit $LASTEXITCODE" }
   $readerCreated = $true
   try {
     $readerPassword = ConvertTo-SecureString $readerPasswordPlain -AsPlainText -Force
     $credential = [pscredential]::new("$env:COMPUTERNAME\$readerName", $readerPassword)
     foreach ($privatePath in @($fixedLog, $temporaryLog.FullName, (Join-Path (Split-Path $AgentBin) '.onprest-agent.validate.lock'))) {
-      $probe = Start-Process -FilePath cmd.exe -ArgumentList @('/c', 'type', $privatePath) -Credential $credential -WindowStyle Hidden -Wait -PassThru
+      $probe = Start-Process -FilePath $cmdExe -ArgumentList @('/c', 'type', $privatePath) -Credential $credential -WindowStyle Hidden -Wait -PassThru
       if ($probe.ExitCode -eq 0) { throw "non-privileged user read $privatePath" }
     }
   }
   finally {
     if ($readerCreated) {
-      & net.exe user $readerName /delete 2>$null | Out-Null
+      & $netExe user $readerName /delete 2>$null | Out-Null
       if ($LASTEXITCODE -eq 0) {
         $readerCreated = $false
       }
@@ -458,7 +461,7 @@ finally {
     $gatewayProcess.WaitForExit()
   }
   if ($readerCreated) {
-    & net.exe user $readerName /delete 2>$null | Out-Null
+    & $netExe user $readerName /delete 2>$null | Out-Null
     if ($LASTEXITCODE -ne 0) {
       $cleanupFailure = "final test reader cleanup failed: exit $LASTEXITCODE"
       if ($null -ne $primaryFailure) {

@@ -90,13 +90,17 @@ This is expected. Do not look for SQL detail in gateway stdout or HTTP responses
 
 ## Rate Limited
 
-`GATEWAY_RATE_LIMITED` means the source IP exceeded configured rate or burst limits.
+Check the error code to identify which limiter rejected the request.
+
+`GATEWAY_RATE_LIMITED` means the source IP exceeded the Gateway rate or burst limits.
 
 Review:
 
 - `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND`
 - `GATEWAY_RATE_LIMIT_BURST`
 - trusted proxy source IP detection
+
+`AGENT_RATE_LIMITED` means the request exceeded the Agent policy for that capability. Check `policy.rate_limit` on the target capability, or under `defaults` when inherited, and compare it with the actual call rate. See [Capability YAML](/agent/capability-yaml#policy) for the policy fields and [Errors](/api/errors#rest-error-status-mappings) for the response contract.
 
 ## Docker or Testcontainers Issues
 

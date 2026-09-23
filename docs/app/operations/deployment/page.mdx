@@ -9,7 +9,63 @@ Onprest OSS deployment is the gateway binary plus the agent binary.
 | `onprest-gateway` | public or private server reachable by clients and agent | gateway env |
 | `onprest-agent` | on-prem or DB-adjacent environment | `capability.yaml` |
 
-The repository does not need to be deployed from source. Build artifacts can be copied to another directory or host.
+The repository does not need to be deployed from source. Release archives are the normal binary installation path; locally built artifacts can also be copied to another directory or host.
+
+## Supported Operating System Baseline
+
+| OS | Architectures | Minimum |
+|---|---|---|
+| Linux | `amd64`, `arm64` | A kernel supported by Go 1.26 |
+| Windows | `amd64` | Windows 10 or Windows Server 2016 |
+| macOS | `amd64`, `arm64` | macOS 12 |
+
+These are the officially supported baselines. Earlier versions may run, but they are not covered by the compatibility guarantee. Validate the exact release binary in the target environment before deploying to an older legacy system.
+
+Cross-building proves only that artifacts can be produced. See [Release Gate](/operations/release-gate) for the native runtime evidence required before release.
+
+## Binary Release Installation
+
+Each GitHub release provides one archive for every supported OS/CPU target. Unix
+archives use `.tar.gz`; Windows uses `.zip`. Every archive contains both
+`onprest-gateway` and `onprest-agent`, `LICENSE`, `INSTALL.md`, minimal
+`gateway.env.example` and `capability.yaml.example` files,
+`RELEASE-MANIFEST.txt`, and a dependency report for each binary. These
+configuration files are incomplete production templates: add a reviewed
+capability and replace all placeholders before using them.
+
+| Host | Architecture | Release asset |
+|---|---|---|
+| Linux | `amd64` | `onprest-X.Y.Z-linux-amd64.tar.gz` |
+| Linux | `arm64` | `onprest-X.Y.Z-linux-arm64.tar.gz` |
+| macOS | Intel (`amd64`) | `onprest-X.Y.Z-darwin-amd64.tar.gz` |
+| macOS | Apple silicon (`arm64`) | `onprest-X.Y.Z-darwin-arm64.tar.gz` |
+| Windows | `amd64` | `onprest-X.Y.Z-windows-amd64.zip` |
+
+Each release also provides `onprest-X.Y.Z-quickstart.tar.gz`, the example files
+for the [Quick Start](/quick-start). It contains public development credentials
+and is not used for production installation. Every archive is also published
+under a name without the version, such as `onprest-linux-amd64.tar.gz`, so
+`https://github.com/viewlegacy/onprest/releases/latest/download/<name>` always
+points to the latest release.
+
+Download the archive for your host from the
+[GitHub Releases](https://github.com/viewlegacy/onprest/releases) page and
+extract it. To verify a download, save `SHA256SUMS` from the same release next
+to it and run:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS   # macOS: shasum -a 256 --check --ignore-missing SHA256SUMS
+gh attestation verify onprest-X.Y.Z-linux-amd64.tar.gz --repo viewlegacy/onprest
+```
+
+On Windows, compare `(Get-FileHash onprest-X.Y.Z-windows-amd64.zip).Hash` with
+the matching line in `SHA256SUMS`. Attestation verification uses the
+[GitHub CLI](https://cli.github.com/) and can run on any computer, not only the
+installation host.
+
+After extraction, continue with the bundled [`INSTALL.md`](https://github.com/viewlegacy/onprest/blob/main/release/INSTALL.md). It maps the generated
+keys into the two configuration files and gives Unix and Windows commands for
+validation and startup.
 
 ## New Customer Setup
 
@@ -36,6 +92,23 @@ set +a
 
 ```bash
 ./onprest-agent --config ./capability.yaml
+```
+
+The Gateway reads process environment variables; it does not read
+`gateway.env` itself. On Windows PowerShell, copy the configured values into the
+process environment (or the service environment) before starting it:
+
+```powershell
+$env:GATEWAY_AGENT_PUBLIC_KEY = '<generated-agent-public-key>'
+$env:GATEWAY_API_KEYS_JSON = '[{"name":"operator","key_hash":"<generated-key-hash>","capabilities":["get_customer"]}]'
+.\onprest-gateway.exe
+```
+
+In another PowerShell session, validate and start the Agent:
+
+```powershell
+.\onprest-agent.exe validate --config .\capability.yaml
+.\onprest-agent.exe --config .\capability.yaml
 ```
 
 Keep the agent binary and `capability.yaml` together. Agent local logs are written next to the agent binary.
@@ -73,6 +146,14 @@ The challenge-based `onprest-agent-v2` handshake requires matching gateway and a
 For OS-managed binary operation, follow the separate [new-service installation and existing-service change procedures](/operations/capability-changes). They validate the exact registered file before starting or stopping a service and include post-start health, OpenAPI, REST, and MCP checks. See [CLI Reference](/reference/cli#agent-service-commands) for individual service command syntax and aliases. Service installation does not enable automatic start on OS boot; configure that separately with the host OS if required.
 
 When the agent runs as an OS service, stdout/stderr are handled by the service manager. On macOS service installs, process events go to `/var/log/onprest-agent.stdout.log` and fatal stderr output goes to `/var/log/onprest-agent.stderr.log`. DB-specific detail still belongs in `onprest-agent.log` next to the agent binary.
+
+### Database TLS certificate rotation
+
+Database TLS CA and client certificate files are loaded when the Agent creates the DB pool. Use an overlap period so the old and new material are both accepted until the new connection is verified.
+
+For a private-CA rotation, first deploy a trust bundle containing both the old and new CA, run `onprest-agent validate --config PATH`, and restart the Agent through the host service manager. Rotate the database server certificate, confirm a capability call, and only then remove the old CA from the bundle and validate and restart again. For a client-certificate rotation, configure the database to accept both the old and new certificates or issuing CAs during the overlap, atomically replace the Agent certificate and key, validate and restart, confirm a capability call, and then revoke the old certificate or CA. If the database cannot provide an overlap period, schedule a coordinated maintenance window instead.
+
+Do not retire old trust or credentials until the post-restart capability check succeeds. A failed CA, expiry, or hostname check stops the connection; the Agent does not retry with a weaker mode or plaintext.
 
 ## Docker Optional Usage
 

@@ -45,7 +45,7 @@ func TestGatewayProcessEnvFileMCPLogsAndShutdown(t *testing.T) {
 			t.Fatalf("MCP response missing result: %s", string(body))
 		}
 		if payload == validMCPInitializePayload {
-			assertMCPInitializeResponse(t, body, "dev")
+			assertMCPInitializeResponse(t, body, expectedGatewayBuildVersion(t))
 		}
 	}
 	status, body := postCapability(t, "http://"+addr, secrets.APIKey, "echo_customer", `{"secret":"must-not-log"}`)
@@ -167,6 +167,74 @@ func TestGatewayDistLikeBinariesRunOutsideSourceTree(t *testing.T) {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err == nil {
 		t.Fatal("agent with missing repo-external capability file succeeded, want failure proving binary executed")
+	}
+}
+
+func TestDistributionBinariesDirectAndGenericProxyHTTPAndWebSocket(t *testing.T) {
+	repo := repoRoot(t)
+	tmp := t.TempDir()
+	gatewayBin := filepath.Join(tmp, "onprest-gateway")
+	agentBin := filepath.Join(tmp, "onprest-agent")
+	buildBinary(t, repo, gatewayBin, "./cmd/gateway")
+	buildBinary(t, repo, agentBin, "./cmd/agent")
+
+	runtimePath := filepath.Join(tmp, "runtime-path")
+	if err := os.Mkdir(runtimePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pathCheck := exec.Command("/bin/sh", "-c", "for tool in go git make docker; do command -v \"$tool\" && exit 1; done; exit 0")
+	pathCheck.Env = []string{"PATH=" + runtimePath}
+	if output, err := pathCheck.CombinedOutput(); err != nil {
+		t.Fatalf("development tool remains on distribution process PATH: %v\n%s", err, output)
+	}
+	db := postgresContainerConfig(t)
+
+	for _, tc := range []struct {
+		name  string
+		proxy bool
+	}{
+		{name: "direct"},
+		{name: "generic-proxy", proxy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			secrets := newITSecrets(t)
+			addr := freeAddr(t)
+			runDir := filepath.Join(tmp, tc.name)
+			if err := os.Mkdir(runDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			gateway, gatewayOutput := startProcessWithOutput(t, runDir, gatewayBin, nil, []string{
+				"PATH=" + runtimePath,
+				"GATEWAY_ADDR=" + addr,
+				"GATEWAY_AGENT_PUBLIC_KEY=" + secrets.AgentPublicKey,
+				"GATEWAY_API_KEYS_JSON=" + secrets.APIKeysJSON,
+				"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=100",
+				"GATEWAY_RATE_LIMIT_BURST=100",
+			})
+			defer stopProcess(t, gateway)
+			waitForHTTP(t, "http://"+addr+"/healthz", "", http.StatusOK)
+
+			baseURL := "http://" + addr
+			gatewayURL := "ws://" + addr + "/ws/agent"
+			if tc.proxy {
+				proxy := startReverseProxy(t, baseURL, "203.0.113.9")
+				defer proxy.Close()
+				baseURL = proxy.URL
+				gatewayURL = "ws://" + strings.TrimPrefix(proxy.URL, "http://") + "/ws/agent"
+			}
+			capability := renderCapability(t, repo, runDir, db, gatewayURL, secrets.AgentPrivateKey)
+			agent, agentOutput := startProcessWithOutput(t, runDir, agentBin, nil, []string{
+				"PATH=" + runtimePath,
+				"AGENT_CAPABILITY_FILE=" + capability,
+			})
+			defer stopProcess(t, agent)
+			waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+			assertRESTCapability(t, baseURL, secrets.APIKey)
+			assertMCPTools(t, baseURL, secrets.APIKey)
+			if gateway.ProcessState != nil || agent.ProcessState != nil {
+				t.Fatalf("distribution process exited early: gateway=%s agent=%s", gatewayOutput.String(), agentOutput.String())
+			}
+		})
 	}
 }
 
@@ -297,7 +365,7 @@ func startProcessWithOutput(t *testing.T, dir, bin string, args []string, env []
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), env...)
+	cmd.Env = mergedProcessEnv(env)
 	output := &lockedBuffer{}
 	cmd.Stdout = output
 	cmd.Stderr = output

@@ -41,7 +41,7 @@ This separation is the core of Onprest.
 - The agent validates params and policy, then enforces the SELECT result allow-list or DML count-only contract from `capability.yaml`.
 - OpenAPI / MCP tools are generated from the agent definition.
 
-Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL and holds no DB credentials.
+Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL, holds no DB credentials, and cannot bypass the capability contract and execution policies enforced by the Agent.
 
 ## Responsibility Split
 
@@ -51,7 +51,7 @@ Even if the gateway is compromised, the attacker can learn the Agent-defined pub
 | WebSocket edge | Yes | Outbound client |
 | API key authentication | Yes | No |
 | Capability authorization | Yes | Yes |
-| Rate limiting | Yes | No |
+| Rate limiting | Yes (per source IP) | Yes (per capability) |
 | Request observability | Yes | No |
 | OpenAPI/MCP filtering by API key | Yes | No |
 | Public capability metadata | Cache and API-key-filtered serving | Source |
@@ -90,7 +90,7 @@ The gateway is a Go single binary and does not persist application state. It rea
 - Per-API-key capability-level authorization
 - IP allow list
 - trusted proxy handling
-- rate limiting
+- per-source HTTP rate limiting
 - REST endpoint
 - MCP endpoint
 - `/openapi.json`
@@ -115,6 +115,7 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - SQL EXPLAIN verification
 - params validation
 - policy enforcement
+- optional per-capability Agent rate limiting before execution admission
 - prepared statement execution
 - SELECT result allow-list and DML count-only response enforcement
 - OpenAPI spec generation
@@ -125,8 +126,6 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 Normal startup and `onprest-agent validate` share the same configuration and database preparation. Validation closes those resources and exits without connecting to the Gateway or executing a capability. `onprest-agent doctor` reuses that preparation to diagnose Gateway connectivity and Agent-key authentication without changing the running connection. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
-
-Request IDs correlate responses, so concurrent responses may arrive out of request order. Execution workers do not own the WebSocket reader, allowing ping/pong processing while all workers are busy. One bounded writer sends response frames in sequence; each network write has five seconds to finish after it starts. A full execution wait queue returns `AGENT_BUSY`. The transport handles fragmentation, ping/pong/close control frames, mask-direction validation, bounded messages, and handshake deadlines.
 
 ## Capability Tunnel
 
@@ -154,7 +153,7 @@ In this model, API keys, the agent public key, OpenAPI cache, and stdout logs ar
 
 Network-edge infrastructure and TLS termination are environment-owned. The gateway can be exposed directly or placed behind an optional compatible reverse proxy or load balancer. See [Reverse Proxy](/gateway/reverse-proxy) when using one.
 
-Database TLS is independent from gateway-edge TLS. PostgreSQL can use `require`, `verify-ca`, or `verify-full` (and optional client certificates); SQL Server can use `require` or `verify-full`. The default is `disable`. Unsupported MySQL/Oracle TLS requests are rejected instead of silently downgraded.
+Database TLS is independent from gateway-edge TLS. PostgreSQL, MySQL, SQL Server, and Oracle support `require` and `verify-full`; PostgreSQL additionally supports `verify-ca`. The default is `disable`. `verify-full` authenticates the trust chain and configured host name, while `require` provides encryption only. Optional client certificates are supported for PostgreSQL and MySQL. Unsupported combinations and verification failures are rejected instead of silently downgraded. See [Database configuration](/agent/capability-yaml#database) and the [database-specific guides](/databases) for field-level configuration.
 
 ## Product Boundary
 

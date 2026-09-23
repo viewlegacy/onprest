@@ -11,13 +11,37 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  package-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build and scan the canonical archive matrix
+        env:
+          VERSION: 0.0.0
+          RELEASE_TAG: v0.0.0
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_READY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: make release-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: release-dist/*
+          if-no-files-found: error
+          retention-days: 7
+
   integration-linux:
+    needs: package-candidate
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -25,22 +49,54 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: make test-it-release-gate
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: release-dist
+      - name: Run the canonical gate with extracted distribution binaries
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_READY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          package_root="$RUNNER_TEMP/onprest-integration-package"
+          go run ./internal/releaseverify extract \
+            release-dist/onprest-0.0.0-linux-amd64.tar.gz "$package_root" \
+            0.0.0 v0.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" linux/amd64 release-dist/SHA256SUMS
+          quickstart_root="$RUNNER_TEMP/onprest-quickstart"
+          go run ./internal/releaseverify extract \
+            release-dist/onprest-0.0.0-quickstart.tar.gz "$quickstart_root" \
+            0.0.0 v0.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" quickstart release-dist/SHA256SUMS
+          install_dir="$package_root/onprest-0.0.0-linux-amd64"
+          ONPREST_IT_GATEWAY_BINARY="$install_dir/onprest-gateway" \
+            ONPREST_IT_AGENT_BINARY="$install_dir/onprest-agent" \
+            ONPREST_IT_QUICKSTART_DIR="$quickstart_root/onprest-0.0.0-quickstart" \
+            ONPREST_IT_DISTRIBUTION_VERSION=0.0.0 \
+            make test-it-release-gate
 
   service-lifecycle:
+    needs: package-candidate
     uses: ./.github/workflows/service-lifecycle.yml
+    with:
+      artifact-name: release-candidate-${{ github.sha }}
+      version: 0.0.0
+      release-tag: v0.0.0
+      release-sha: ${{ github.sha }}
+      release-ready-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
   release-ready:
     if: always()
     runs-on: ubuntu-latest
     needs:
       - integration-linux
+      - package-candidate
       - service-lifecycle
     steps:
       - name: Require Linux integration and every service lifecycle job
         env:
           INTEGRATION_RESULT: ${{ needs.integration-linux.result }}
+          PACKAGE_RESULT: ${{ needs.package-candidate.result }}
           SERVICE_RESULT: ${{ needs.service-lifecycle.result }}
         run: |
           test "$INTEGRATION_RESULT" = success
+          test "$PACKAGE_RESULT" = success
           test "$SERVICE_RESULT" = success

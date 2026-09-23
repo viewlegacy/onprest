@@ -285,8 +285,8 @@ func (s *Server) writeAgent(ac *agentConn) {
 		}
 		select {
 		case <-write.ctx.Done():
-			write.result <- write.ctx.Err()
 			ac.finishSendState(write.id)
+			write.result <- write.ctx.Err()
 			if write.cancel != nil {
 				write.cancel()
 			}
@@ -298,14 +298,18 @@ func (s *Server) writeAgent(ac *agentConn) {
 		default:
 		}
 		err := ac.conn.WriteTextWithDeadline(write.payload, s.cfg.AgentWriteTimeout)
-		write.result <- err
-		if write.cancel != nil {
-			write.cancel()
-		}
 		if err != nil {
 			ac.finishSendState(write.id)
+			write.result <- err
+			if write.cancel != nil {
+				write.cancel()
+			}
 			_ = ac.conn.Close()
 			return
+		}
+		write.result <- nil
+		if write.cancel != nil {
+			write.cancel()
 		}
 		if write.control {
 			ac.finishSendState(write.id)

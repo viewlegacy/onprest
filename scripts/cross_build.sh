@@ -3,17 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/release_targets.sh"
 DIST_DIR="${DIST_DIR:-dist}"
 VERSION="${VERSION:-dev}"
-VERSION_LDFLAGS="-s -w -X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION}"
-
-TARGETS=(
-	"linux/amd64"
-	"linux/arm64"
-	"darwin/amd64"
-	"darwin/arm64"
-	"windows/amd64"
-)
+VERSION_LDFLAGS="-X github.com/viewlegacy/onprest/internal/buildinfo.Version=${VERSION} -X github.com/viewlegacy/onprest/internal/buildinfo.ReleaseMarker=onprest-release-version:${VERSION}"
 
 build_one() {
 	local goos="$1"
@@ -28,10 +21,10 @@ build_one() {
 	mkdir -p "$out_dir"
 	echo "==> $goos/$goarch $name"
 	CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
-		go build -trimpath -ldflags="$VERSION_LDFLAGS" -o "$out_dir/$name$ext" "./cmd/$cmd"
+		go build -buildvcs=false -trimpath -ldflags="$VERSION_LDFLAGS" -o "$out_dir/$name$ext" "./cmd/$cmd"
 }
 
-for target in "${TARGETS[@]}"; do
+for target in "${ONPREST_RELEASE_TARGETS[@]}"; do
 	IFS=/ read -r goos goarch <<<"$target"
 	build_one "$goos" "$goarch" gateway
 	build_one "$goos" "$goarch" agent

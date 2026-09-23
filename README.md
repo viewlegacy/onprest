@@ -11,7 +11,7 @@ Most AI/database integrations start from the wrong primitive: database access.
 
 Onprest starts from a smaller primitive: a named business capability. AI agents, SaaS products, internal tools, and partner systems call explicit operations such as `get_customer`, `search_orders`, or `check_inventory`. They never receive a DSN, raw SQL access, or a schema-wide CRUD surface.
 
-The public gateway handles routing, identity, rate limits, and observability. The on-prem agent owns SQL, credentials, validation, execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
+The public gateway handles routing, identity, edge rate limits, and observability. The on-prem agent owns SQL, credentials, validation, per-capability execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
@@ -93,7 +93,7 @@ onprest-agent + capability.yaml
 legacy database
 ```
 
-The gateway knows routing, identity, rate limits, and which API keys may call which capability names.
+The gateway knows routing, identity, edge rate limits, and which API keys may call which capability names.
 
 The agent knows what each capability means, how parameters are validated, which prepared SQL is executed, and—for SELECT—which result fields are allowed to leave the customer environment. Mutations return affected count only.
 
@@ -107,7 +107,7 @@ The gateway can be useful without being trusted with meaning.
 | WebSocket edge | Yes | Outbound client |
 | API key authentication | Yes | No |
 | Capability authorization | Yes | Yes |
-| Rate limiting | Yes | No |
+| Rate limiting | Yes (per source IP) | Yes (per capability) |
 | Request observability | Yes | No |
 | OpenAPI/MCP filtering by API key | Yes | No |
 | SQL text | No | Yes |
@@ -128,7 +128,7 @@ This split is the core of Onprest. The gateway is public and operationally usefu
 
 Onprest assumes the public gateway may be observed or compromised.
 
-That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or capability execution rules. It can authenticate callers, apply rate limits, check whether an API key may call a capability name, serve the agent-defined public contract, and forward the request to the connected agent.
+That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or capability execution rules. It can authenticate callers, apply edge rate limits, check whether an API key may call a capability name, serve the agent-defined public contract, and forward the request to the connected agent.
 
 The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes prepared SQL, filters SELECT output or returns DML affected count, and keeps detailed DB errors local.
 
@@ -204,7 +204,7 @@ capabilities:
 
 The agent loads and validates this file at startup, including checks for each SQL statement, before connecting to the gateway. Changes require an agent restart.
 
-For the full schema, policy options, logging settings, and examples, see the documentation.
+For the full schema, policy options, logging settings, and examples, see [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml).
 
 ## Security Model at a Glance
 
@@ -230,29 +230,35 @@ For production deployments, use a read-only database user whenever the intended 
 
 ### Prerequisites
 
-- A Go toolchain compatible with the version declared in [`go.mod`](go.mod), to build the binaries.
-- Docker with Compose, used only to start the disposable example PostgreSQL database in this guide. Docker is not required to run Onprest itself.
-- A Linux or macOS host. `make build` builds natively for the host you run it on, so on Linux it produces Linux binaries and on macOS it produces macOS binaries. Use `make build-cross` to produce binaries for other targets (additional Linux/macOS architectures and Windows).
+- A Linux or macOS host. Windows PowerShell steps are in the [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start).
+- Docker with Compose, used only to start the disposable example PostgreSQL database in this guide. Onprest itself needs no Docker, Go toolchain, or source checkout.
 
-Quick Start assumes you are running from the repository root, and uses the repository example files so you do not have to generate keys yet.
+Download the binary archive for your host and the Quick Start files. These links follow the latest GitHub Release:
 
-Build the two binaries:
+| Host | Download |
+|---|---|
+| Linux x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-amd64.tar.gz) |
+| Linux ARM64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-arm64.tar.gz) |
+| macOS Intel | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-amd64.tar.gz) |
+| macOS Apple silicon | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-arm64.tar.gz) |
+| Windows x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-windows-amd64.zip) |
+| All hosts | [⬇ Quick Start files](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-quickstart.tar.gz) |
+
+Save both files in one directory and extract them into a working directory. Replace `linux-amd64` with your host:
 
 ```sh
-make build
+mkdir -p onprest/examples
+cd onprest
+tar -xzf ../onprest-linux-amd64.tar.gz --strip-components=1
+tar -xzf ../onprest-quickstart.tar.gz --strip-components=1 -C examples
 ```
 
-This creates:
-
-```text
-dist/onprest-gateway
-dist/onprest-agent
-```
+The working directory now contains `onprest-gateway`, `onprest-agent`, and the example files under `examples/`. The example files contain a matching agent key pair and API key hash, so you do not have to generate keys yet. Run the remaining commands from this directory.
 
 Start the example PostgreSQL database with Docker Compose:
 
 ```sh
-make quickstart-db
+docker compose -f examples/postgres.compose.yml up -d --wait
 ```
 
 This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the
@@ -266,7 +272,7 @@ Validate the Agent configuration and database preflight before starting either
 process:
 
 ```sh
-./dist/onprest-agent validate --config examples/capability.postgres.yaml
+./onprest-agent validate --config examples/capability.postgres.yaml
 ```
 
 Success confirms full YAML lint, database Ping, and every capability's
@@ -279,13 +285,13 @@ Start the gateway:
 set -a
 . examples/gateway.env
 set +a
-./dist/onprest-gateway
+./onprest-gateway
 ```
 
-Start the agent in another shell:
+Start the agent in another shell from the same directory:
 
 ```sh
-./dist/onprest-agent --config examples/capability.postgres.yaml
+./onprest-agent --config examples/capability.postgres.yaml
 ```
 
 Set the example API key in the shell that will call the gateway. This is the plaintext key that matches the bcrypt hash already present in `examples/gateway.env`. For your own deployment, generate keys with `onprest-gateway create-key` (see [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)).
@@ -372,17 +378,17 @@ docker compose -f examples/postgres.compose.yml exec -T postgres \
 
 This also prints `Ada MCP`.
 
-Stop and remove the example database when finished:
+Stop both binaries with Ctrl+C, then stop and remove the example database:
 
 ```sh
-make quickstart-db-down
+docker compose -f examples/postgres.compose.yml down -v
 ```
 
-For real deployments, edit `capability.yaml` and place it beside `onprest-agent`.
+The example keys and database password are public; never reuse them. For real deployments, start from the production templates and `INSTALL.md` in the binary archive.
 
-## Build
+## Build from Source
 
-Use a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
+Building from source is optional. Use a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
 
 Build the two binaries:
 

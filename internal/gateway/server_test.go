@@ -507,6 +507,7 @@ func TestAgentErrorCodeAndMessagePassThroughForRESTAndMCPHTTP(t *testing.T) {
 		{errAgentQueryTimeout, "query exceeded policy.timeout", http.StatusGatewayTimeout},
 		{errAgentDBUnreachable, "database is unreachable", http.StatusBadGateway},
 		{errAgentInternal, "agent internal error", http.StatusBadGateway},
+		{errAgentRateLimited, "agent rate limit exceeded", http.StatusTooManyRequests},
 		{errAgentAffectedRowsExceeded, "affected rows exceed policy.max_affected_rows", http.StatusConflict},
 		{"AGENT_NEW_PUBLIC_ERROR", "future public message", http.StatusBadGateway},
 	}
@@ -1111,6 +1112,7 @@ func TestAgentErrorStatusMapping(t *testing.T) {
 		{errAgentQueryTimeout, http.StatusGatewayTimeout, errAgentQueryTimeout},
 		{errAgentDBUnreachable, http.StatusBadGateway, errAgentDBUnreachable},
 		{errAgentInternal, http.StatusBadGateway, errAgentInternal},
+		{errAgentRateLimited, http.StatusTooManyRequests, errAgentRateLimited},
 		{errAgentConstraintViolation, http.StatusConflict, errAgentConstraintViolation},
 		{errAgentAffectedRowsExceeded, http.StatusConflict, errAgentAffectedRowsExceeded},
 		{errAgentTransactionOutcomeUnknown, http.StatusBadGateway, errAgentTransactionOutcomeUnknown},

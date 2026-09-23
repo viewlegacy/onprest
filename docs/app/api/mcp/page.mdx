@@ -117,4 +117,4 @@ A valid notification returns HTTP 202 with an empty body. Invalid parameters on 
 
 JSON parse/shape errors, unsupported JSON-RPC methods, and unknown tool names are JSON-RPC errors with HTTP 200. `tools/list` without usable Agent metadata also returns HTTP 200 with JSON-RPC error `-32000` and `error.data.code: GATEWAY_AGENT_OFFLINE`.
 
-Once a known tool has been invoked, an agent/runtime failure is a normal JSON-RPC result with HTTP 200 and `isError: true`. Authentication, source-IP/rate-limit checks, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.
+Once a known tool has been invoked, an agent/runtime failure—including `AGENT_RATE_LIMITED`—is a normal JSON-RPC result with HTTP 200 and `isError: true`. Authentication, the Gateway's source-IP rate limit, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.

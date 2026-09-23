@@ -27,6 +27,10 @@ defaults:
   timeout: 30s
   max_rows: 1000
   max_bytes: 1MB
+  rate_limit:
+    requests: 60
+    per: 1m
+    burst: 10
 
 capabilities:
   get_customer:
