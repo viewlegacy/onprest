@@ -105,6 +105,14 @@ echo "integration release gate logs: $LOG_DIR"
 assert_prebuilt_distribution
 assert_docker_available
 
+if [[ -n "${ONPREST_IT_GATEWAY_BINARY:-}" ]]; then
+	if [[ -z "${ONPREST_IT_QUICKSTART_DIR:-}" ]]; then
+		echo "ONPREST_IT_QUICKSTART_DIR is required with distribution binaries" >&2
+		exit 1
+	fi
+	bash scripts/quickstart_smoke.sh "$(dirname "$ONPREST_IT_GATEWAY_BINARY")" "$ONPREST_IT_QUICKSTART_DIR"
+fi
+
 echo "==> govulncheck"
 make vulncheck
 echo "PASS: govulncheck"

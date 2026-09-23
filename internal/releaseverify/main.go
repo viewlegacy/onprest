@@ -66,6 +66,13 @@ func runExtract(args []string) error {
 	if err := verifyChecksumSubject(args[7], archivePath); err != nil {
 		return err
 	}
+	if args[6] == "quickstart" {
+		entries, root, err := loadAndVerifyQuickstart(cfg, archivePath)
+		if err != nil {
+			return err
+		}
+		return extractQuickstart(entries, root, output)
+	}
 	entries, root, binaryExt, err := loadAndVerifyArchive(cfg, args[6], archivePath)
 	if err != nil {
 		return err
@@ -92,15 +99,19 @@ func run(args []string) error {
 			return fmt.Errorf("%s: %w", target, err)
 		}
 	}
+	if _, _, err := loadAndVerifyQuickstart(cfg, filepath.Join(cfg.dir, "onprest-"+cfg.version+"-quickstart.tar.gz")); err != nil {
+		return fmt.Errorf("quickstart: %w", err)
+	}
 	return nil
 }
 
 func verifyTopLevel(cfg config) error {
 	expected := map[string]bool{
-		"DEPENDENCIES.txt":           true,
-		"RELEASE-EVIDENCE.txt":       true,
-		"VULNERABILITY-EVIDENCE.txt": true,
-		"SHA256SUMS":                 true,
+		"DEPENDENCIES.txt":                              true,
+		"RELEASE-EVIDENCE.txt":                          true,
+		"VULNERABILITY-EVIDENCE.txt":                    true,
+		"SHA256SUMS":                                    true,
+		"onprest-" + cfg.version + "-quickstart.tar.gz": true,
 	}
 	for _, target := range cfg.targets {
 		name := strings.ReplaceAll(target, "/", "-")
@@ -374,7 +385,9 @@ func loadAndVerifyArchive(cfg config, target, archivePath string) (map[string]ar
 			return nil, "", "", fmt.Errorf("%s dependency report mismatch", binaryName)
 		}
 	}
-	for _, name := range []string{"LICENSE", "gateway.env.example", "capability.yaml.example", "INSTALL.md"} {
+	for _, name := range []string{
+		"LICENSE", "gateway.env.example", "capability.yaml.example", "INSTALL.md",
+	} {
 		if len(entries[root+"/"+name].data) == 0 {
 			return nil, "", "", fmt.Errorf("%s is empty", name)
 		}
@@ -388,21 +401,7 @@ func loadAndVerifyArchive(cfg config, target, archivePath string) (map[string]ar
 }
 
 func extractFixedFiles(entries map[string]archiveEntry, root, binaryExt, output string) error {
-	if info, err := os.Lstat(output); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("extract output must not be a symlink: %s", output)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("extract output is not a directory: %s", output)
-		}
-		entries, err := os.ReadDir(output)
-		if err != nil {
-			return err
-		}
-		if len(entries) != 0 {
-			return fmt.Errorf("extract output must be new or empty: %s", output)
-		}
-	} else if !os.IsNotExist(err) {
+	if err := validateExtractOutput(output); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(output, root, "dependencies"), 0o755); err != nil {
@@ -426,6 +425,74 @@ func extractFixedFiles(entries map[string]archiveEntry, root, binaryExt, output 
 			mode = 0o755
 		}
 		if err := os.WriteFile(filepath.Join(output, root, filepath.FromSlash(relative)), entry.data, mode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateExtractOutput(output string) error {
+	if info, err := os.Lstat(output); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("extract output must not be a symlink: %s", output)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("extract output is not a directory: %s", output)
+		}
+		entries, err := os.ReadDir(output)
+		if err != nil {
+			return err
+		}
+		if len(entries) != 0 {
+			return fmt.Errorf("extract output must be new or empty: %s", output)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func quickstartFiles() []string {
+	return []string{"README.md", "gateway.env", "capability.postgres.yaml", "postgres.compose.yml", "postgres-init.sql"}
+}
+
+func loadAndVerifyQuickstart(cfg config, archivePath string) (map[string]archiveEntry, string, error) {
+	root := "onprest-" + cfg.version + "-quickstart"
+	if filepath.Base(archivePath) != root+".tar.gz" {
+		return nil, "", fmt.Errorf("quickstart archive name=%q, want %q", filepath.Base(archivePath), root+".tar.gz")
+	}
+	entries, err := readTarGz(archivePath)
+	if err != nil {
+		return nil, "", err
+	}
+	want := map[string]bool{root + "/": true}
+	for _, name := range quickstartFiles() {
+		want[root+"/"+name] = false
+	}
+	if len(entries) != len(want) {
+		return nil, "", fmt.Errorf("quickstart entry count=%d, want %d", len(entries), len(want))
+	}
+	for name, entry := range entries {
+		directory, ok := want[name]
+		if !ok || directory != entry.directory {
+			return nil, "", fmt.Errorf("unexpected quickstart entry %q", name)
+		}
+		if !directory && len(entry.data) == 0 {
+			return nil, "", fmt.Errorf("quickstart entry %q is empty", name)
+		}
+	}
+	return entries, root, nil
+}
+
+func extractQuickstart(entries map[string]archiveEntry, root, output string) error {
+	if err := validateExtractOutput(output); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(output, root), 0o755); err != nil {
+		return err
+	}
+	for _, name := range quickstartFiles() {
+		if err := os.WriteFile(filepath.Join(output, root, name), entries[root+"/"+name].data, 0o644); err != nil {
 			return err
 		}
 	}

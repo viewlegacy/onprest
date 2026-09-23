@@ -29,7 +29,11 @@ Each GitHub release provides one archive for every supported OS/CPU target. Unix
 archives use `.tar.gz`; Windows uses `.zip`. Every archive contains both
 `onprest-gateway` and `onprest-agent`, `LICENSE`, `INSTALL.md`, minimal
 `gateway.env.example` and `capability.yaml.example` files,
-`RELEASE-MANIFEST.txt`, and a dependency report for each binary.
+`RELEASE-MANIFEST.txt`, and a dependency report for each binary. These
+configuration files are incomplete production templates: add a reviewed
+capability and replace all placeholders before using them. The known-key
+evaluation files are distributed separately as
+`onprest-X.Y.Z-quickstart.tar.gz`; see [Quick Start](/quick-start).
 
 | Host | Architecture | Release asset |
 |---|---|---|
@@ -39,11 +43,22 @@ archives use `.tar.gz`; Windows uses `.zip`. Every archive contains both
 | macOS | Apple silicon (`arm64`) | `onprest-X.Y.Z-darwin-arm64.tar.gz` |
 | Windows | `amd64` | `onprest-X.Y.Z-windows-amd64.zip` |
 
+The OS-independent Quick Start archive is an additional release asset and
+contains public development credentials, a disposable database Compose file,
+and its SQL setup. It is not required for production installation.
+
 Download the archive together with `SHA256SUMS`, then verify both its digest and
 the GitHub artifact attestation before extraction. The verification tools run on
 the operator's verification machine; they are not Agent runtime dependencies.
 The commands below require the GitHub CLI (`gh`) on that verification machine.
 Replace `X.Y.Z` with the release version you intend to install.
+For the Quick Start archive, repeat the download and verification with
+`ASSET=onprest-${VERSION}-quickstart.tar.gz` (or the equivalent PowerShell
+value) in a fresh download directory. Repeat only the download, checksum, and
+attestation commands; the Quick Start archive contains no binaries for the
+`--version` checks below. Both archives are covered by `SHA256SUMS` and GitHub
+artifact attestations. Local evaluation may skip this verification; production
+installation must not.
 
 ### Linux
 
@@ -138,7 +153,8 @@ matches the host and that both binaries print the manifest version with
 
 The release also publishes aggregate `DEPENDENCIES.txt`,
 `VULNERABILITY-EVIDENCE.txt`, and `RELEASE-EVIDENCE.txt` assets. `SHA256SUMS`
-covers the five archives and those three evidence files. Do not install a
+covers the five binary archives, the Quick Start archive, and those three
+evidence files. Do not install a
 release when an expected asset is absent, a digest differs, or attestation
 verification reports another repository, workflow, or source ref.
 

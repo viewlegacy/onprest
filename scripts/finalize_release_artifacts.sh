@@ -19,6 +19,7 @@ for target in "${ONPREST_RELEASE_TARGETS[@]}"; do
 	if [[ $target_name == windows-* ]]; then ext="zip"; fi
 	test -s "$RELEASE_DIR/onprest-$VERSION-$target_name.$ext"
 done
+test -s "$RELEASE_DIR/onprest-$VERSION-quickstart.tar.gz"
 for evidence in DEPENDENCIES.txt RELEASE-EVIDENCE.txt VULNERABILITY-EVIDENCE.txt; do
 	test -s "$RELEASE_DIR/$evidence"
 done

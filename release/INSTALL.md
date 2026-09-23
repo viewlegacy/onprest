@@ -4,11 +4,17 @@ This archive contains the `onprest-gateway` and `onprest-agent` binaries for the
 target named in `RELEASE-MANIFEST.txt`. It does not require a source checkout,
 Go, Docker, or a native database client runtime.
 
-Before extraction, verify the checksum and GitHub artifact attestation by
-following the public deployment procedure:
+For production, verify the downloaded archive before extraction. The checksum
+and GitHub artifact attestation procedure is at:
 <https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation>
 
-After extracting a verified archive:
+The templates in this archive are intentionally incomplete. Add at least one
+reviewed capability to `capabilities: {}` and replace every placeholder before
+validating or starting the Agent. For a local trial, download the separate
+`onprest-X.Y.Z-quickstart.tar.gz` asset from the same release and follow:
+<https://docs.onprest.viewlegacy.com/quick-start>
+
+After extracting the archive for production:
 
 1. Copy `gateway.env.example` to a protected `gateway.env`, and copy
    `capability.yaml.example` to a protected `capability.yaml`.
@@ -16,7 +22,7 @@ After extracting a verified archive:
 
    ```sh
    ./onprest-gateway create-agent-secret
-   ./onprest-gateway create-key --name operator --capabilities get_customer
+   ./onprest-gateway create-key --name operator --capabilities YOUR_CAPABILITY_NAME
    ```
 
    On Windows, use the same commands with `.\onprest-gateway.exe`. Put the
@@ -24,8 +30,9 @@ After extracting a verified archive:
    `gateway.agent_private_key`, and the generated `key_hash` and capability list
    in `GATEWAY_API_KEYS_JSON`. Deliver the plaintext `api_key` to its caller; do
    not put it in `gateway.env`.
-3. Replace every example URL, database address, credential, SQL statement, and
-   capability contract in `capability.yaml` with deployment-specific values.
+3. Replace every example URL, database address, and credential in
+   `capability.yaml`, then add at least one reviewed SQL capability. Update the
+   API key capability allow-list to match the capabilities you added.
 4. Validate the completed file against its database before starting the Agent:
 
    ```sh
@@ -49,7 +56,7 @@ After extracting a verified archive:
 
    ```powershell
    $env:GATEWAY_AGENT_PUBLIC_KEY = '<generated-agent-public-key>'
-   $env:GATEWAY_API_KEYS_JSON = '[{"name":"operator","key_hash":"<generated-key-hash>","capabilities":["get_customer"]}]'
+   $env:GATEWAY_API_KEYS_JSON = '[{"name":"operator","key_hash":"<generated-key-hash>","capabilities":["YOUR_CAPABILITY_NAME"]}]'
    .\onprest-gateway.exe
    ```
 6. Start the Agent in another session, or install it with the OS service manager:

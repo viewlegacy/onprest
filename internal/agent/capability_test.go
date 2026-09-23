@@ -574,26 +574,42 @@ func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
 	}
 }
 
-func TestReleaseCapabilityExampleLoads(t *testing.T) {
+func TestReleaseCapabilityTemplateIsIntentionallyIncompleteAndBecomesValid(t *testing.T) {
 	templatePath := filepath.Join("..", "..", "release", "capability.yaml.example")
 	content, err := os.ReadFile(templatePath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(string(content), "get_customer:") || strings.Contains(string(content), "\ndefaults:") {
+		t.Fatal("production template must not contain an application-specific capability or policy defaults")
 	}
 	configured := strings.ReplaceAll(string(content), "replace-with-create-agent-secret-private-key", testAgentPrivateKey)
 	path := filepath.Join(t.TempDir(), "capability.yaml")
 	if err := os.WriteFile(path, []byte(configured), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "at least one capability is required") {
+		t.Fatalf("LoadCapabilityFile(incomplete release template) error=%v, want missing capability", err)
+	}
+	configured = strings.Replace(configured, "capabilities: {}", `capabilities:
+  replace_with_capability_name:
+    sql: select 1 as ok
+    result:
+      ok:
+        type: integer`, 1)
+	if err := os.WriteFile(path, []byte(configured), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cf, err := LoadCapabilityFile(path)
 	if err != nil {
-		t.Fatalf("LoadCapabilityFile(release example): %v", err)
+		t.Fatalf("LoadCapabilityFile(completed release template): %v", err)
 	}
-	if cf.Service.Title != "Example Onprest Service" || cf.Database.Driver != "postgres" {
+	if cf.Service.Title != "replace-with-service-title" || cf.Database.Driver != "postgres" {
 		t.Fatalf("release example loaded unexpected contract: service=%q driver=%q", cf.Service.Title, cf.Database.Driver)
 	}
-	if _, ok := cf.Capabilities["get_customer"]; !ok {
-		t.Fatal("release example missing get_customer capability")
+	policy := cf.Capabilities["replace_with_capability_name"].Policy
+	if policy.Timeout != "5s" || policy.MaxRows == nil || *policy.MaxRows != 100 || policy.MaxBytes != "1MB" || !readonly(policy) {
+		t.Fatalf("release template built-in policy defaults=%#v", policy)
 	}
 }
 

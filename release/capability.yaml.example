@@ -1,37 +1,19 @@
+# Production template. This file is intentionally incomplete: replace every
+# placeholder and add at least one reviewed capability before validation.
 service:
-  title: Example Onprest Service
+  title: replace-with-service-title
   version: 1.0.0
 
 gateway:
-  url: wss://gateway.example.com/ws/agent
+  url: wss://replace-with-gateway-host/ws/agent
   agent_private_key: replace-with-create-agent-secret-private-key
 
 database:
   driver: postgres
-  host: database.example.com
+  host: replace-with-database-host
   port: 5432
-  name: application
-  user: onprest_readonly
+  name: replace-with-database-name
+  user: replace-with-database-user
   password: replace-with-database-password
 
-defaults:
-  readonly: true
-  timeout: 30s
-  max_rows: 100
-  max_bytes: 1MB
-
-capabilities:
-  get_customer:
-    sql: select id, name from customers where id = :id
-    params:
-      id:
-        type: integer
-        required: true
-    policy:
-      max_rows: 1
-      expose_in_openapi: true
-    result:
-      id:
-        type: integer
-      name:
-        type: string
+capabilities: {}

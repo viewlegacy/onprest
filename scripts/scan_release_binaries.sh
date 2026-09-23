@@ -46,4 +46,9 @@ for target in "${ONPREST_RELEASE_TARGETS[@]}"; do
 	done
 done
 
+go run ./internal/releaseverify extract \
+	"$RELEASE_DIR/onprest-$VERSION-quickstart.tar.gz" "$tmp_dir/quickstart" \
+	"$VERSION" "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_READY_URL" \
+	quickstart "$archive_digests"
+
 rm -f "$archive_digests"

@@ -1,332 +1,161 @@
 # Quick Start
 
-This guide starts the gateway and agent as separate processes and verifies REST API, MCP, OpenAPI, and healthz.
+Try the prebuilt Gateway and Agent without a source checkout, Go, or `make`.
+This guide uses public development credentials and must run only on a trusted
+local computer. For production configuration, follow [Deployment](/operations/deployment).
 
-## 1. Build Binaries
+## 1. Download the two release assets
 
-Build from the repository root.
+From the same [GitHub Release](https://github.com/viewlegacy/onprest/releases),
+download the archive for your OS/CPU and the matching
+`onprest-X.Y.Z-quickstart.tar.gz`. The binary archive contains
+`onprest-gateway` and `onprest-agent`; the Quick Start archive contains the
+example env, YAML, database Compose file, and SQL initialization file.
 
-```bash
-make build
-```
+For a production installation, verify downloads with the published checksum
+and artifact attestation before extracting them; see
+[Binary Release Installation](/operations/deployment#binary-release-installation).
+Verification is optional for this disposable local trial. Extract both
+archives before continuing.
 
-This produces two deployable units.
-
-```text
-dist/onprest-gateway
-dist/onprest-agent
-```
-
-Docker is optional for the Onprest OSS core. This guide uses Docker only to provide a disposable local PostgreSQL database for the repository example capability.
-
-## Repository Example Files
-
-The repository includes matching example files for local evaluation:
-
-- `examples/gateway.env`
-- `examples/capability.postgres.yaml`
-- `examples/postgres.compose.yml`
-- `examples/postgres-init.sql`
-
-Those files contain a matching agent key pair and API key hash. If you use them, use the example plaintext API key in the verification steps and skip the key/config creation steps below.
-
-Start the example PostgreSQL database.
+The following commands assume the two extracted directories are siblings and
+use Linux/macOS shell syntax. Replace `X.Y.Z` and `<os>-<arch>` with the names
+you downloaded:
 
 ```bash
-make quickstart-db
+cd onprest-X.Y.Z-<os>-<arch>
+QUICKSTART=../onprest-X.Y.Z-quickstart
 ```
 
-This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the `legacy` database, creates the `capability_user` account used by `examples/capability.postgres.yaml`, and seeds the `customers` table. The role has `SELECT` plus column-level `UPDATE (name)` on `customers`; it has no INSERT, DELETE, or DDL privilege. If `127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml` to use the same alternate port.
+## 2. Prepare PostgreSQL
 
-For real deployments, generate fresh keys and edit your own `capability.yaml`. The example's `ws://localhost` URL is for loopback development only; a non-loopback deployment must use `wss://` as described in [Deployment](/operations/deployment).
+Choose one of these options:
 
-## 2. Generate Agent Keys
+- If you need a disposable database, use Docker Compose:
 
-> Steps 2–5 create your own keys and config. **If you are using the repository example files, skip steps 2–5 and continue at step 6.**
+  ```bash
+  docker compose -f "$QUICKSTART/postgres.compose.yml" up -d --wait
+  ```
 
-The agent holds an Ed25519 private key. The gateway holds only the public key.
+  This creates `legacy` on `127.0.0.1:5432`, seeds `customers`, and creates a
+  `capability_user` with `SELECT` and column-level `UPDATE (name)` only.
+- If you already have PostgreSQL, create an empty disposable `legacy` database
+  and run `postgres-init.sql` with an account allowed to create roles and grant
+  permissions. Then adjust the host, port, database name, and credentials in
+  `capability.postgres.yaml`. If the database is not named `legacy`, also change
+  the `GRANT CONNECT ON DATABASE legacy` line in the SQL file. This route needs
+  no Docker. Do not run the SQL against a production database.
+
+  For example, after creating the empty database, an administrator can run:
+
+  ```bash
+  psql -h localhost -p 5432 -U YOUR_ADMIN_USER -d legacy \
+    -v ON_ERROR_STOP=1 -f "$QUICKSTART/postgres-init.sql"
+  ```
+
+If port 5432 is occupied, use another port and update both the Compose file
+and Agent YAML. Docker is only a way to supply an evaluation database; it is
+not an Onprest runtime dependency.
+
+## 3. Validate and start the binaries
 
 ```bash
-./dist/onprest-gateway create-agent-secret
+./onprest-agent validate --config "$QUICKSTART/capability.postgres.yaml"
 ```
 
-Put the generated private key in `gateway.agent_private_key` in `capability.yaml`, and put the public key in `GATEWAY_AGENT_PUBLIC_KEY` in `gateway.env`.
+Validation checks the YAML, DB connection, and SQL preparation. If it fails,
+see [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure).
 
-The shorter command alias is also available.
-
-```bash
-./dist/onprest-gateway create-agent
-```
-
-## 3. Generate API Key
-
-Create API keys for API users or MCP clients.
-
-```bash
-./dist/onprest-gateway create-key --name internal --capabilities "get_customer,update_customer"
-./dist/onprest-gateway create-key --name partner-a --capabilities "get_customer,get_orders"
-```
-
-`"*"` grants all capabilities. Omitted or empty capabilities mean zero permissions.
-
-## 4. Create `gateway.env`
-
-`gateway.env` configures the gateway process.
-
-```env
-# Required.
-GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
-GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["get_customer","update_customer"]}]'
-
-# Optional. Omit these to use defaults or disabled behavior.
-# GATEWAY_ADDR=:8080
-# GATEWAY_PUBLIC_URL=http://localhost:8080
-# GATEWAY_CORS_ALLOWED_ORIGINS=http://localhost:8090
-# GATEWAY_IP_ALLOW_LIST=203.0.113.0/24
-# GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12
-# GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
-# GATEWAY_RATE_LIMIT_BURST=20
-# GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
-# GATEWAY_MAX_REQUEST_BODY_BYTES=1048576
-```
-
-The `key_hash` value in `GATEWAY_API_KEYS_JSON` is a bcrypt hash, so it contains `$`. Single-quote the whole JSON value when loading it through a shell.
-
-## 5. Create `capability.yaml`
-
-The agent treats `capability.yaml` as the only capability definition.
-
-```yaml
-service:
-  title: Example CRM Capabilities
-  version: 0.1.0
-  description: Example agent-defined capabilities for a legacy CRM database.
-
-runtime:
-  max_concurrent_requests: 16
-
-gateway:
-  url: ws://localhost:8080/ws/agent
-  agent_private_key: base64url-ed25519-private-key
-
-database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy
-  user: capability_user
-  password: onprest-example-password
-
-logging:
-  max_size: 10MB
-  max_files: 3
-
-defaults:
-  readonly: true
-  timeout: 30s
-  max_rows: 1000
-  max_bytes: 1MB
-
-capabilities:
-  get_customer:
-    description: Fetch one customer by id.
-    sql: select id, name, email from customers where id = :customer_id
-    params:
-      customer_id:
-        type: integer
-        required: true
-        minimum: 1
-        description: Customer ID.
-    policy:
-      timeout: 3s
-      max_rows: 1
-      max_bytes: 256KB
-      expose_in_openapi: true
-    result:
-      id:
-        type: integer
-        description: Customer ID.
-      name:
-        type: string
-        description: Customer name.
-      email:
-        type: string
-        description: Customer email address.
-  update_customer:
-    description: Update one customer's name.
-    sql: update customers set name = :name where id = :customer_id
-    params:
-      customer_id: { type: integer, required: true }
-      name: { type: string, required: true, minLength: 1, maxLength: 200 }
-    policy:
-      readonly: false
-      timeout: 3s
-      max_affected_rows: 1
-      max_bytes: 256KB
-```
-
-The example API key explicitly allows only `get_customer` and `update_customer`. Mutation success is `{"count": n}`. Zero affected rows is still success; decide whether that is a business error in the caller. See [Capability YAML](/agent/capability-yaml#policy) for policy options.
-
-## 6. Validate the Agent Configuration
-
-Validate the exact configuration file that the Agent will start with. For the repository example, run:
-
-```bash
-./dist/onprest-agent validate --config ./examples/capability.postgres.yaml
-```
-
-If you created your own file in step 5, run this instead:
-
-```bash
-./dist/onprest-agent validate --config ./capability.yaml
-```
-
-Validation performs YAML lint, DB Ping, and SQL EXPLAIN preparation without connecting to the Gateway or executing a capability. If it fails, do not start the Agent; follow [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure).
-
-## 7. Start Gateway and Agent
-
-The commands below use the repository example files. If you created your own files in steps 2-5, replace `./examples/gateway.env` with `./gateway.env` and `./examples/capability.postgres.yaml` with `./capability.yaml`.
-
-Start the gateway.
+Start the Gateway:
 
 ```bash
 set -a
-. ./examples/gateway.env
+. "$QUICKSTART/gateway.env"
 set +a
-./dist/onprest-gateway
+./onprest-gateway
 ```
 
-Start the Agent in another terminal, passing the same configuration path that succeeded in step 6. For the repository example, run:
+In another terminal, start the Agent using the absolute path of the extracted
+Quick Start directory (or set `QUICKSTART` again there):
 
 ```bash
-./dist/onprest-agent --config ./examples/capability.postgres.yaml
+./onprest-agent --config "$QUICKSTART/capability.postgres.yaml"
 ```
 
-If you validated your own file, run this instead:
+### Windows PowerShell
+
+After extracting the Windows binary zip and Quick Start tarball as sibling
+directories, run these commands in PowerShell. Use a new terminal for the Agent
+and repeat the first three assignments there:
+
+```powershell
+$Version = 'X.Y.Z'
+$BinaryDir = (Resolve-Path ".\onprest-$Version-windows-amd64").Path
+$QuickStartDir = (Resolve-Path ".\onprest-$Version-quickstart").Path
+docker compose -f "$QuickStartDir\postgres.compose.yml" up -d --wait
+& "$BinaryDir\onprest-agent.exe" validate --config "$QuickStartDir\capability.postgres.yaml"
+Get-Content "$QuickStartDir\gateway.env" |
+  Where-Object { $_ -match '^GATEWAY_[A-Z_]+=' } |
+  ForEach-Object {
+    $name, $value = $_ -split '=', 2
+    [Environment]::SetEnvironmentVariable($name, $value.Trim("'"), 'Process')
+  }
+& "$BinaryDir\onprest-gateway.exe"
+```
+
+In the second terminal:
+
+```powershell
+$Version = 'X.Y.Z'
+$BinaryDir = (Resolve-Path ".\onprest-$Version-windows-amd64").Path
+$QuickStartDir = (Resolve-Path ".\onprest-$Version-quickstart").Path
+& "$BinaryDir\onprest-agent.exe" --config "$QuickStartDir\capability.postgres.yaml"
+```
+
+Use the health, REST, OpenAPI, and MCP URLs below with PowerShell's
+`Invoke-RestMethod` or another HTTP client.
+
+## 4. Verify health, REST, OpenAPI, and MCP
 
 ```bash
-./dist/onprest-agent --config ./capability.yaml
+curl -sS http://localhost:8080/healthz
 ```
 
-If `--config` and `AGENT_CAPABILITY_FILE` are both omitted, the agent reads `capability.yaml` next to the `onprest-agent` binary.
-
-The agent connects outbound to `/ws/agent`. During connection, the gateway verifies the signature with the agent public key. After connection, the gateway calls the internal `meta` capability to fetch the agent-generated OpenAPI spec and caches it in memory (see [OpenAPI](/api/openapi)).
-
-## 8. Verify Health
-
-```bash
-curl -s http://localhost:8080/healthz
-```
-
-`/healthz` can be called without an API key. It monitors the gateway process and agent connection state, while still honoring the gateway IP allow list and per-source rate limit when those controls are configured.
-
-```json
-{
-  "ok": true,
-  "agent_connected": true
-}
-```
-
-## 9. Verify REST Read and Mutation
-
-Set the plaintext API key in the shell that will call the gateway. If you are using the repository example files, use the example plaintext key.
+The response should include `"agent_connected":true`. The plaintext key below
+is public and works only with the bundled evaluation configuration:
 
 ```bash
 export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+curl -sS -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H 'Content-Type: application/json' -d '{"customer_id":1}' \
+  http://localhost:8080/api/v1/capabilities/get_customer
 ```
+
+The REST result contains Ada Lovelace. Check the API description and MCP tool
+list with the same key:
 
 ```bash
-curl -s \
-  -X POST http://localhost:8080/api/v1/capabilities/get_customer \
-  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":1}'
-```
-
-A successful call returns the rows the capability is allowed to expose:
-
-```json
-{
-  "rows": [
-    { "id": 1, "name": "Ada Lovelace", "email": "ada@example.com" }
-  ],
-  "count": 1
-}
-```
-
-The REST request body is the capability params object directly. Do not wrap it in `{"params": {...}}`.
-
-Update that customer through REST:
-
-```bash
-curl -s \
-  -X POST http://localhost:8080/api/v1/capabilities/update_customer \
-  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":1,"name":"Ada REST"}'
-```
-
-```json
-{ "count": 1 }
-```
-
-## 10. Verify OpenAPI
-
-```bash
-curl -s \
-  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
+curl -sS -H "Authorization: Bearer $ONPREST_API_KEY" \
   http://localhost:8080/openapi.json
+curl -sS -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://localhost:8080/mcp
 ```
 
-OpenAPI is fetched from agent metadata, cached by the gateway, and filtered by the API key's allowed capabilities. It does not include SQL text or DB connection information.
+You should see `get_customer` and `update_customer`. For the complete
+capability contract, see the example YAML in the Quick Start asset and
+[Capability YAML](/agent/capability-yaml).
 
-## 11. Verify MCP
+## 5. Clean up
+
+Stop the two binaries with Ctrl+C. If you used the disposable Docker database,
+remove its container and volume:
 
 ```bash
-curl -s \
-  -X POST http://localhost:8080/mcp \
-  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+docker compose -f "$QUICKSTART/postgres.compose.yml" down -v --remove-orphans
 ```
 
-```bash
-curl -s \
-  -X POST http://localhost:8080/mcp \
-  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"update_customer","arguments":{"customer_id":1,"name":"Ada MCP"}}}'
-```
-
-The tool result contains `structuredContent: {"count": 1}`. MCP `tools/list` is generated from the OpenAPI document and filtered by the API key's allowed capabilities.
-
-## 12. Verify Committed Database State
-
-Read through the capability boundary again:
-
-```bash
-curl -s \
-  -X POST http://localhost:8080/api/v1/capabilities/get_customer \
-  -H "Authorization: Bearer ${ONPREST_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":1}'
-```
-
-The returned name is `Ada MCP`. You can also verify the disposable database directly:
-
-```bash
-docker compose -f examples/postgres.compose.yml exec -T postgres \
-  psql -U onprest_admin -d legacy -Atc "SELECT name FROM customers WHERE id = 1"
-```
-
-The command prints `Ada MCP`, confirming the REST update and subsequent MCP update committed.
-
-## 13. Stop Example Database
-
-```bash
-make quickstart-db-down
-```
+To build from source instead, see [CLI Reference](/reference/cli#build-from-source).

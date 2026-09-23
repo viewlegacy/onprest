@@ -107,6 +107,16 @@ EOF
 	rm -rf "$package_dir"
 done
 
+quickstart_name="onprest-$VERSION-quickstart"
+quickstart_dir="$stage_dir/$quickstart_name"
+mkdir -p "$quickstart_dir"
+cp examples/gateway.env "$quickstart_dir/gateway.env"
+cp examples/capability.postgres.yaml "$quickstart_dir/capability.postgres.yaml"
+cp examples/postgres.compose.yml "$quickstart_dir/postgres.compose.yml"
+cp examples/postgres-init.sql "$quickstart_dir/postgres-init.sql"
+cp release/QUICKSTART.md "$quickstart_dir/README.md"
+tar -C "$stage_dir" -czf "$RELEASE_DIR/$quickstart_name.tar.gz" "$quickstart_name"
+
 cat >"$RELEASE_DIR/RELEASE-EVIDENCE.txt" <<EOF
 release_tag=$RELEASE_TAG
 version=$VERSION
@@ -125,6 +135,7 @@ EOF
 		if [[ $target_name == windows-* ]]; then ext="zip"; fi
 		archives+=("onprest-$VERSION-$target_name.$ext")
 	done
+	archives+=("$quickstart_name.tar.gz")
 	if command -v sha256sum >/dev/null 2>&1; then
 		sha256sum "${archives[@]}" >.archive-digests
 	else

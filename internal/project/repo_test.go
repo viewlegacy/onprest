@@ -143,6 +143,41 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 				t.Fatalf("%s missing %s", filepath.Base(archivePath), want)
 			}
 		}
+		for _, forbidden := range []string{"quickstart/gateway.env", "quickstart/capability.postgres.yaml", "quickstart/postgres.compose.yml", "quickstart/postgres-init.sql"} {
+			if entries[rootName+forbidden] {
+				t.Fatalf("production archive contains development-only %s", forbidden)
+			}
+		}
+		for _, template := range []string{"gateway.env.example", "capability.yaml.example"} {
+			body := releaseArchiveFile(t, archivePath, rootName+template)
+			for _, secret := range []string{"TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8", "onprest-example-password", "orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM"} {
+				if bytes.Contains(body, []byte(secret)) {
+					t.Fatalf("production archive %s includes public Quick Start credential", template)
+				}
+			}
+		}
+	}
+	quickstartArchive := filepath.Join(releaseDir, "onprest-1.2.12-quickstart.tar.gz")
+	quickstartRoot := "onprest-1.2.12-quickstart/"
+	quickstartEntries := releaseArchiveEntries(t, quickstartArchive)
+	for archiveName, sourceName := range map[string]string{
+		"gateway.env":              "examples/gateway.env",
+		"capability.postgres.yaml": "examples/capability.postgres.yaml",
+		"postgres.compose.yml":     "examples/postgres.compose.yml",
+		"postgres-init.sql":        "examples/postgres-init.sql",
+		"README.md":                "release/QUICKSTART.md",
+	} {
+		if !quickstartEntries[quickstartRoot+archiveName] {
+			t.Fatalf("quickstart archive missing %s", archiveName)
+		}
+		got := releaseArchiveFile(t, quickstartArchive, quickstartRoot+archiveName)
+		want, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(sourceName)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("quickstart %s differs from %s", archiveName, sourceName)
+		}
 	}
 
 	dependencies := readText(t, filepath.Join(releaseDir, "DEPENDENCIES.txt"))
@@ -196,9 +231,18 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 			t.Fatalf("safe extraction missing %s: %v", binary, err)
 		}
 	}
+	quickstartExtract := t.TempDir()
+	runRepoCommand(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
+		quickstartArchive, quickstartExtract, "1.2.12", "v1.2.12", sha,
+		"https://github.com/viewlegacy/onprest/actions/runs/123", "quickstart", filepath.Join(releaseDir, "SHA256SUMS"))
+	for _, name := range []string{"README.md", "gateway.env", "capability.postgres.yaml", "postgres.compose.yml", "postgres-init.sql"} {
+		if _, err := os.Stat(filepath.Join(quickstartExtract, "onprest-1.2.12-quickstart", name)); err != nil {
+			t.Fatalf("safe quickstart extraction missing %s: %v", name, err)
+		}
+	}
 	checksum := readText(t, filepath.Join(releaseDir, "SHA256SUMS"))
-	if strings.Count(strings.TrimSpace(checksum), "\n")+1 != 8 {
-		t.Fatalf("SHA256SUMS entries=%d, want 8", strings.Count(strings.TrimSpace(checksum), "\n")+1)
+	if strings.Count(strings.TrimSpace(checksum), "\n")+1 != 9 {
+		t.Fatalf("SHA256SUMS entries=%d, want 9", strings.Count(strings.TrimSpace(checksum), "\n")+1)
 	}
 
 	for _, mutation := range []struct {
@@ -216,6 +260,9 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 		{name: "absolute tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
 		{name: "duplicate tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "duplicate"},
 		{name: "extra tar entry", archive: "onprest-1.2.12-linux-amd64.tar.gz", kind: "extra"},
+		{name: "quickstart required entry missing", archive: "onprest-1.2.12-quickstart.tar.gz", kind: "quickstart-missing"},
+		{name: "quickstart extra entry", archive: "onprest-1.2.12-quickstart.tar.gz", kind: "quickstart-extra"},
+		{name: "quickstart traversal entry", archive: "onprest-1.2.12-quickstart.tar.gz", kind: "relative", injected: "../onprest-quickstart-escape"},
 		{name: "relative traversal zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "relative", injected: "../onprest-verifier-escape"},
 		{name: "absolute zip entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "absolute", injected: filepath.Join(t.TempDir(), "onprest-verifier-escape")},
 		{name: "zip symlink entry", archive: "onprest-1.2.12-windows-amd64.zip", kind: "symlink"},
@@ -237,6 +284,8 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 			target := "linux/amd64"
 			if strings.HasSuffix(archive, ".zip") {
 				target = "windows/amd64"
+			} else if strings.Contains(archive, "-quickstart.tar.gz") {
+				target = "quickstart"
 			}
 			extractOutput := t.TempDir()
 			runRepoCommandMustFail(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
@@ -357,6 +406,62 @@ func releaseArchiveEntries(t *testing.T, path string) map[string]bool {
 	return entries
 }
 
+func releaseArchiveFile(t *testing.T, archivePath, entryName string) []byte {
+	t.Helper()
+	if strings.HasSuffix(archivePath, ".zip") {
+		r, err := zip.OpenReader(archivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		for _, file := range r.File {
+			if file.Name != entryName {
+				continue
+			}
+			reader, err := file.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, readErr := io.ReadAll(reader)
+			closeErr := reader.Close()
+			if readErr != nil || closeErr != nil {
+				t.Fatalf("read %s: read=%v close=%v", entryName, readErr, closeErr)
+			}
+			return body
+		}
+		t.Fatalf("archive entry missing: %s", entryName)
+	}
+	f, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name == entryName {
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return body
+		}
+	}
+	t.Fatalf("archive entry missing: %s", entryName)
+	return nil
+}
+
 func fakeVulnerabilityEvidence(version, sha string) string {
 	var body strings.Builder
 	fmt.Fprintf(&body, "Onprest release vulnerability scans\nversion=%s\ncommit_sha=%s\n\n## source ./...\nNo vulnerabilities found.\n", version, sha)
@@ -452,6 +557,9 @@ func mutateTarArchive(t *testing.T, archivePath, kind, injected string) {
 		if kind == "missing" && strings.HasSuffix(header.Name, "/INSTALL.md") {
 			continue
 		}
+		if kind == "quickstart-missing" && strings.HasSuffix(header.Name, "/postgres-init.sql") {
+			continue
+		}
 		if kind == "symlink" && strings.HasSuffix(header.Name, "/INSTALL.md") {
 			header.Typeflag = tar.TypeSymlink
 			header.Linkname = "../outside"
@@ -480,7 +588,7 @@ func mutateTarArchive(t *testing.T, archivePath, kind, injected string) {
 			}
 		}
 	}
-	if kind == "relative" || kind == "absolute" || kind == "duplicate" || kind == "extra" {
+	if kind == "relative" || kind == "absolute" || kind == "duplicate" || kind == "extra" || kind == "quickstart-extra" {
 		body := []byte("must not be extracted")
 		name := injected
 		switch kind {
@@ -488,6 +596,8 @@ func mutateTarArchive(t *testing.T, archivePath, kind, injected string) {
 			name = "onprest-1.2.12-linux-amd64/LICENSE"
 		case "extra":
 			name = "onprest-1.2.12-linux-amd64/EXTRA"
+		case "quickstart-extra":
+			name = "onprest-1.2.12-quickstart/EXTRA"
 		}
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
 			t.Fatal(err)
@@ -772,7 +882,7 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		t.Fatal("release gate workflow does not aggregate Linux integration and reusable service lifecycle")
 	}
 	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
-	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "ONPREST_IT_DISTRIBUTION_VERSION", "must be extracted outside the source tree", `cd / && "$absolute" --version`} {
+	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "ONPREST_IT_DISTRIBUTION_VERSION", "must be extracted outside the source tree", `cd / && "$absolute" --version`, "scripts/quickstart_smoke.sh"} {
 		if !strings.Contains(releaseScript, marker) {
 			t.Fatalf("release gate script does not validate prebuilt archive binaries: missing %q", marker)
 		}
@@ -1039,6 +1149,7 @@ func TestTagReleaseWorkflowRequiresExactSuccessfulGateAndLeastPrivilege(t *testi
 		"make release-artifacts",
 		`test "$(cd / && "$install_dir/onprest-gateway" --version)" = "$VERSION"`,
 		`test "$(cd / && "$install_dir/onprest-agent" --version)" = "$VERSION"`,
+		`bash scripts/quickstart_smoke.sh "$install_dir"`,
 		"TestDistributionBinariesDirectAndGenericProxyHTTPAndWebSocket",
 		"TestOperationalAgentSecretRotationWithRealBinaries",
 		"uses: ./.github/workflows/service-lifecycle.yml",
@@ -1143,15 +1254,20 @@ func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
 		"TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase",
 	} {
 		for source, text := range map[string]string{
-			"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
+			"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme,
 		} {
 			if !strings.Contains(text, tlsContract) {
 				t.Fatalf("%s does not include database TLS contract %q", source, tlsContract)
 			}
 		}
 	}
+	for _, database := range []string{"PostgreSQL", "MySQL", "SQL Server", "Oracle"} {
+		if !strings.Contains(testCommands, database) {
+			t.Fatalf("test commands do not document the %s TLS contract", database)
+		}
+	}
 	for source, text := range map[string]string{"test commands": testCommands, "release gate": releaseDocs} {
-		for _, coverage := range []string{"private", "hostname", "client-certificate"} {
+		for _, coverage := range []string{"private", "hostname", "client"} {
 			if !strings.Contains(text, coverage) {
 				t.Fatalf("%s does not document PostgreSQL TLS %s coverage", source, coverage)
 			}
