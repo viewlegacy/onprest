@@ -42,11 +42,34 @@ fi
 gateway_pid=
 runtime_writer_pid=
 blocking_validate_pid=
+blocking_validate_launcher_pid=
 blackhole_pid=
 lock_holder_pid=
+lock_holder_launcher_pid=
+
+start_elevated_background() {
+  local pid_file=$1
+  shift
+  "${elevate[@]}" rm -f "$pid_file"
+  "${elevate[@]}" bash -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' _ "$pid_file" "$@" &
+  background_launcher_pid=$!
+  for _ in {1..100}; do
+    [[ -s $pid_file ]] && break
+    sleep 0.05
+  done
+  if [[ ! -s $pid_file ]]; then
+    echo "background process did not report its PID: $pid_file" >&2
+    return 1
+  fi
+  background_command_pid=$(<"$pid_file")
+  if [[ ! $background_command_pid =~ ^[0-9]+$ ]]; then
+    echo "background process reported an invalid PID: $pid_file" >&2
+    return 1
+  fi
+}
 
 cleanup() {
-  for pid in "$lock_holder_pid" "$blocking_validate_pid" "$blackhole_pid" "$runtime_writer_pid"; do
+  for pid in "$lock_holder_pid" "$blocking_validate_pid" "$blackhole_pid" "$runtime_writer_pid" "$lock_holder_launcher_pid" "$blocking_validate_launcher_pid"; do
     if [[ -n $pid ]]; then
       "${elevate[@]}" kill "$pid" >/dev/null 2>&1 || kill "$pid" >/dev/null 2>&1 || true
       wait "$pid" 2>/dev/null || true
@@ -67,6 +90,7 @@ cleanup() {
     "$artifact_dir/capability.validate-blocking.yaml" "$artifact_dir/capability.validate-blocking.yaml.out" "$artifact_dir/capability.validate-blocking.yaml.err" \
     "$artifact_dir/rollout-before-restart.json" "$artifact_dir/service-test-gateway.jsonl" \
     "$artifact_dir/.validate-lock-held" "$artifact_dir/.validate-lock-held.out" \
+    "$artifact_dir/.validate-blocking.pid" "$artifact_dir/.validate-lock-holder.pid" \
     "$artifact_dir/onprest-agent.validate.log" "$artifact_dir/.onprest-agent.validate.lock" \
     "$artifact_dir/onprest-agent.doctor.log" "$artifact_dir/.onprest-agent.doctor.lock" \
     "$agent_bin.log" "$agent_bin.log.1" "$agent_bin.log.2" >/dev/null 2>&1 || true
@@ -357,8 +381,10 @@ sed 's/port: 5432/port: 18081/' "$default_config" > "$blocking_config"
 perl -MIO::Socket::INET -e '$s=IO::Socket::INET->new(LocalAddr=>"127.0.0.1",LocalPort=>18081,Listen=>1,ReuseAddr=>1) or die $!; $c=$s->accept; sleep 15' &
 blackhole_pid=$!
 sleep 0.2
-"${elevate[@]}" "$agent_bin" validate --config "$blocking_config" --format json >"$blocking_config.out" 2>"$blocking_config.err" &
-blocking_validate_pid=$!
+blocking_pid_file="$artifact_dir/.validate-blocking.pid"
+start_elevated_background "$blocking_pid_file" "$agent_bin" validate --config "$blocking_config" --format json >"$blocking_config.out" 2>"$blocking_config.err"
+blocking_validate_pid=$background_command_pid
+blocking_validate_launcher_pid=$background_launcher_pid
 temporary_log=
 for _ in {1..100}; do
   temporary_log=$(find "$(dirname "$agent_bin")" -maxdepth 1 -type f -name '.onprest-agent.validate.*.tmp' -print -quit)
@@ -367,9 +393,12 @@ for _ in {1..100}; do
 done
 [[ -n $temporary_log ]]
 test "$(file_mode "$temporary_log")" = 600
+"${elevate[@]}" kill -0 "$blocking_validate_pid"
 "${elevate[@]}" kill "$blocking_validate_pid"
-wait "$blocking_validate_pid" 2>/dev/null || true
+wait "$blocking_validate_launcher_pid" 2>/dev/null || true
 blocking_validate_pid=
+blocking_validate_launcher_pid=
+"${elevate[@]}" rm -f "$blocking_pid_file"
 kill "$blackhole_pid" >/dev/null 2>&1 || true
 wait "$blackhole_pid" 2>/dev/null || true
 blackhole_pid=
@@ -379,8 +408,10 @@ blackhole_pid=
 # the completed fixed log or temporary-file set.
 lock_marker=$(dirname "$agent_bin")/.validate-lock-held
 rm -f "$lock_marker"
-"${elevate[@]}" perl -e 'open(my $f, "+<", $ARGV[0]) or die $!; flock($f, 2|4) or die $!; open(my $m, ">", $ARGV[1]) or die $!; close($m); sleep 30' "$lock_file" "$lock_marker" &
-lock_holder_pid=$!
+lock_pid_file="$artifact_dir/.validate-lock-holder.pid"
+start_elevated_background "$lock_pid_file" perl -e 'open(my $f, "+<", $ARGV[0]) or die $!; flock($f, 2|4) or die $!; open(my $m, ">", $ARGV[1]) or die $!; close($m); sleep 30' "$lock_file" "$lock_marker"
+lock_holder_pid=$background_command_pid
+lock_holder_launcher_pid=$background_launcher_pid
 for _ in {1..100}; do
   test -e "$lock_marker" && break
   sleep 0.05
@@ -396,8 +427,10 @@ grep -q '"stage":"busy"' "$lock_marker.out"
 test "$fixed_before_busy" = "$("${elevate[@]}" cksum "$fixed_log")"
 test "$temporary_before_busy" = "$(find "$(dirname "$agent_bin")" -maxdepth 1 -type f -name '.onprest-agent.validate.*.tmp' -print | sort)"
 "${elevate[@]}" kill "$lock_holder_pid"
-wait "$lock_holder_pid" 2>/dev/null || true
+wait "$lock_holder_launcher_pid" 2>/dev/null || true
 lock_holder_pid=
+lock_holder_launcher_pid=
+"${elevate[@]}" rm -f "$lock_pid_file"
 rm -f "$lock_marker" "$lock_marker.out"
 
 "${elevate[@]}" "$agent_bin" validate --config "$default_config" >/dev/null

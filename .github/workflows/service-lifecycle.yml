@@ -216,9 +216,21 @@ jobs:
           $runtimeTools = Join-Path $env:RUNNER_TEMP 'onprest-runtime-tools'
           New-Item -ItemType Directory -Force $runtimeTools | Out-Null
           Copy-Item (Join-Path $env:SystemRoot 'System32\sc.exe') (Join-Path $runtimeTools 'sc.exe')
+          $scLanguage = 'en-US'
+          $scResources = Join-Path $runtimeTools $scLanguage
+          New-Item -ItemType Directory -Force $scResources | Out-Null
+          Copy-Item (Join-Path $env:SystemRoot "System32\$scLanguage\sc.exe.mui") (Join-Path $scResources 'sc.exe.mui')
           $env:Path = $runtimeTools
           foreach ($tool in @('go', 'git', 'make', 'docker')) {
             if (Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue) { throw "development tool remains on service test PATH: $tool" }
+          }
+          $scStatus = & (Join-Path $runtimeTools 'sc.exe') query EventLog
+          if ($LASTEXITCODE -ne 0 -or ($scStatus -join "`n") -notmatch '(?m)^\s*STATE\s*:') {
+            throw "isolated sc.exe could not report a native service state: $($scStatus -join ' | ')"
+          }
+          $scConfig = & (Join-Path $runtimeTools 'sc.exe') qc EventLog
+          if ($LASTEXITCODE -ne 0 -or ($scConfig -join "`n") -notmatch '(?m)^\s*BINARY_PATH_NAME\s*:') {
+            throw "isolated sc.exe could not report a native service configuration: $($scConfig -join ' | ')"
           }
           Set-Location $env:RUNTIME_CWD
           & "$env:GITHUB_WORKSPACE\scripts\test_service_lifecycle_windows.ps1" `
