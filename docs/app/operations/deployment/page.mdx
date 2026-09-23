@@ -31,9 +31,7 @@ archives use `.tar.gz`; Windows uses `.zip`. Every archive contains both
 `gateway.env.example` and `capability.yaml.example` files,
 `RELEASE-MANIFEST.txt`, and a dependency report for each binary. These
 configuration files are incomplete production templates: add a reviewed
-capability and replace all placeholders before using them. The known-key
-evaluation files are distributed separately as
-`onprest-X.Y.Z-quickstart.tar.gz`; see [Quick Start](/quick-start).
+capability and replace all placeholders before using them.
 
 | Host | Architecture | Release asset |
 |---|---|---|
@@ -43,12 +41,12 @@ evaluation files are distributed separately as
 | macOS | Apple silicon (`arm64`) | `onprest-X.Y.Z-darwin-arm64.tar.gz` |
 | Windows | `amd64` | `onprest-X.Y.Z-windows-amd64.zip` |
 
-The OS-independent Quick Start archive is an additional release asset and
-contains public development credentials, a disposable database Compose file,
-and its SQL setup. It is not required for production installation.
-The [README](https://github.com/viewlegacy/onprest#quick-start) links to the
-latest release using stable download names; each stable asset contains the
-same archive as its versioned counterpart.
+Each release also provides `onprest-X.Y.Z-quickstart.tar.gz`, the example files
+for the [Quick Start](/quick-start). It contains public development credentials
+and is not used for production installation. Every archive is also published
+under a name without the version, such as `onprest-linux-amd64.tar.gz`, so
+`https://github.com/viewlegacy/onprest/releases/latest/download/<name>` always
+points to the latest release.
 
 Download the archive for your host from the
 [GitHub Releases](https://github.com/viewlegacy/onprest/releases) page and
@@ -72,7 +70,7 @@ validation and startup.
 8. Start the agent.
 9. Verify `/healthz`, `/openapi.json`, REST, and MCP.
 
-## Binary Operation
+## Binary Deployment
 
 This is the primary deployment path for legacy environments without Docker.
 

@@ -228,7 +228,12 @@ For production deployments, use a read-only database user whenever the intended 
 
 ## Quick Start
 
-Download the latest published binary for your host and the matching Quick Start files. These links follow the latest GitHub Release:
+### Prerequisites
+
+- A Linux or macOS host. Windows PowerShell steps are in the [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start).
+- Docker with Compose, used only to start the disposable example PostgreSQL database in this guide. Onprest itself needs no Docker, Go toolchain, or source checkout.
+
+Download the binary archive for your host and the Quick Start files. These links follow the latest GitHub Release:
 
 | Host | Download |
 |---|---|
@@ -239,46 +244,147 @@ Download the latest published binary for your host and the matching Quick Start 
 | Windows x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-windows-amd64.zip) |
 | All hosts | [⬇ Quick Start files](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-quickstart.tar.gz) |
 
-On Linux x64, save both downloads in one directory and run:
+Save both files in one directory and extract them into a working directory. Replace `linux-amd64` with your host:
 
 ```sh
-tar -xzf onprest-linux-amd64.tar.gz
-tar -xzf onprest-quickstart.tar.gz
-BINARY_DIR=$(tar -tzf onprest-linux-amd64.tar.gz | sed -n '1s#/$##p')
-cd "$BINARY_DIR"
-VERSION=$(./onprest-gateway --version)
-QUICKSTART="../onprest-${VERSION}-quickstart"
-docker compose -f "$QUICKSTART/postgres.compose.yml" up -d --wait
-./onprest-agent validate --config "$QUICKSTART/capability.postgres.yaml"
+mkdir -p onprest/examples
+cd onprest
+tar -xzf ../onprest-linux-amd64.tar.gz --strip-components=1
+tar -xzf ../onprest-quickstart.tar.gz --strip-components=1 -C examples
+```
+
+The working directory now contains `onprest-gateway`, `onprest-agent`, and the example files under `examples/`. The example files contain a matching agent key pair and API key hash, so you do not have to generate keys yet. Run the remaining commands from this directory.
+
+Start the example PostgreSQL database with Docker Compose:
+
+```sh
+docker compose -f examples/postgres.compose.yml up -d --wait
+```
+
+This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the
+`legacy` database, creates the least-privilege `capability_user` account used by
+`examples/capability.postgres.yaml`, and seeds the `customers` table. If
+`127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit
+both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml`
+to use the same alternate port.
+
+Validate the Agent configuration and database preflight before starting either
+process:
+
+```sh
+./onprest-agent validate --config examples/capability.postgres.yaml
+```
+
+Success confirms full YAML lint, database Ping, and every capability's
+driver-specific EXPLAIN. It does not connect to the Gateway or execute a
+business capability.
+
+Start the gateway:
+
+```sh
 set -a
-. "$QUICKSTART/gateway.env"
+. examples/gateway.env
 set +a
 ./onprest-gateway
 ```
 
-In a second terminal, change to the extracted binary directory and start the Agent:
+Start the agent in another shell from the same directory:
 
 ```sh
-VERSION=$(./onprest-gateway --version)
-./onprest-agent --config "../onprest-${VERSION}-quickstart/capability.postgres.yaml"
+./onprest-agent --config examples/capability.postgres.yaml
 ```
 
-After the Agent connects, check health and read a customer:
+Set the example API key in the shell that will call the gateway. This is the plaintext key that matches the bcrypt hash already present in `examples/gateway.env`. For your own deployment, generate keys with `onprest-gateway create-key` (see [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)).
 
 ```sh
-curl -fsS http://127.0.0.1:8080/healthz
-curl -fsS -H 'Authorization: Bearer orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM' \
-  -H 'Content-Type: application/json' -d '{"customer_id":1}' \
-  http://127.0.0.1:8080/api/v1/capabilities/get_customer
+export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
 ```
 
-You should see `"agent_connected":true` and a row for Ada Lovelace. Stop both binaries with Ctrl+C, then remove the disposable database from the first terminal:
+Confirm the gateway is up and the agent is connected before calling a capability:
 
 ```sh
-docker compose -f "$QUICKSTART/postgres.compose.yml" down -v --remove-orphans
+curl -sS http://localhost:8080/healthz
 ```
 
-No source checkout, Go, or `make` is needed. Docker is only for the disposable example database. The [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start) covers other hosts, MCP, and an existing evaluation PostgreSQL database. The included credentials are public examples; use fresh keys and the separate production templates for a real deployment.
+```json
+{ "ok": true, "agent_connected": true }
+```
+
+`/healthz` needs no API key, but it still uses the configured IP allow list and per-source rate limit. If `agent_connected` is `false`, wait for the agent to finish its startup checks and connect, then retry.
+
+Call a capability:
+
+```sh
+curl -sS \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1}' \
+  http://localhost:8080/api/v1/capabilities/get_customer
+```
+
+A successful call returns the rows the capability is allowed to expose:
+
+```json
+{
+  "rows": [
+    { "id": 1, "name": "Ada Lovelace", "email": "ada@example.com" }
+  ],
+  "count": 1
+}
+```
+
+Only the fields listed in the capability `result` allow-list are returned. The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
+
+Run the shipped mutation over REST:
+
+```sh
+curl -sS \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1,"name":"Ada REST"}' \
+  http://localhost:8080/api/v1/capabilities/update_customer
+```
+
+Then run the same capability through MCP:
+
+```sh
+curl -sS \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "MCP-Protocol-Version: 2025-11-25" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"update_customer","arguments":{"customer_id":1,"name":"Ada MCP"}}}' \
+  http://localhost:8080/mcp
+```
+
+Both calls return the driver's native affected count. Verify the committed state through the read capability:
+
+```sh
+curl -sS \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1}' \
+  http://localhost:8080/api/v1/capabilities/get_customer
+```
+
+The returned name is `Ada MCP`. The shipped API key allow-list contains only `get_customer` and `update_customer`; the DB role has only `SELECT` and column-level `UPDATE (name)` on `customers`.
+
+For a direct check of the disposable database:
+
+```sh
+docker compose -f examples/postgres.compose.yml exec -T postgres \
+  psql -U onprest_admin -d legacy -Atc "SELECT name FROM customers WHERE id = 1"
+```
+
+This also prints `Ada MCP`.
+
+Stop both binaries with Ctrl+C, then stop and remove the example database:
+
+```sh
+docker compose -f examples/postgres.compose.yml down -v
+```
+
+The example keys and database password are public; never reuse them. For real deployments, start from the production templates and `INSTALL.md` in the binary archive.
 
 ## Build from Source
 

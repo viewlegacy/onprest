@@ -1323,7 +1323,7 @@ func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
 			t.Fatalf("test commands do not document PostgreSQL TLS %s coverage", coverage)
 		}
 	}
-	if !strings.Contains(releaseDocs, "database TLS checks") {
+	if !strings.Contains(releaseDocs, "four-database TLS contract") {
 		t.Fatal("release gate does not summarize database TLS coverage")
 	}
 	if strings.Contains(testCommands, "exact filter `^TestContainerDBDriver`") || strings.Contains(releaseDocs, "all-DB smoke path") {
