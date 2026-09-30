@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/viewlegacy/onprest/internal/sqlsyntax"
 )
 
 func buildSQL(driver, query string, params map[string]any) (string, []any, error) {
@@ -46,16 +47,7 @@ func buildSQL(driver, query string, params map[string]any) (string, []any, error
 	return string(out), args, nil
 }
 
-func readParamName(s string) (string, int) {
-	if len(s) == 0 || !isIdent(s[0]) {
-		return "", 0
-	}
-	i := 1
-	for i < len(s) && (isIdent(s[i]) || isDigit(s[i])) {
-		i++
-	}
-	return s[:i], i
-}
+func readParamName(s string) (string, int) { return sqlsyntax.ParameterName(s) }
 
 func placeholder(driver string, idx int) string {
 	switch driver {
@@ -68,18 +60,6 @@ func placeholder(driver string, idx int) string {
 	default:
 		return "?"
 	}
-}
-
-func isIdent(b byte) bool {
-	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
-}
-
-func isDigit(b byte) bool {
-	return b >= '0' && b <= '9'
-}
-
-func hasPrefixAt(s string, idx int, prefix string) bool {
-	return idx+len(prefix) <= len(s) && s[idx:idx+len(prefix)] == prefix
 }
 
 func validateSQLShape(query string) error {
