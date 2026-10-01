@@ -1,0 +1,6 @@
+{
+  "name": "onprest-contract-schema-tests",
+  "private": true,
+  "type": "module",
+  "dependencies": {"ajv": "8.20.0"}
+}

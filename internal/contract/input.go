@@ -352,6 +352,9 @@ func (s *Schema) validate(v any, pointer string, defaults bool, leaves *[]FileLe
 		if s.Nullable {
 			return nil, nil
 		}
+		if s.output {
+			return fail("null is not allowed")
+		}
 		if len(s.Types) != 0 && !contains(s.Types, "null") {
 			return fail("null is not allowed")
 		}
@@ -443,7 +446,20 @@ func (s *Schema) validate(v any, pointer string, defaults bool, leaves *[]FileLe
 					v = n
 				}
 			} else {
-				v = n
+				// Output validation must not round a provider's int64 through
+				// float64 merely because the declaration also accepts numbers.
+				if s.output {
+					switch raw := v.(type) {
+					case int64:
+						v = raw
+					case int:
+						v = int64(raw)
+					default:
+						v = n
+					}
+				} else {
+					v = n
+				}
 			}
 		}
 	}

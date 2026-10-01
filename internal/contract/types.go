@@ -49,6 +49,7 @@ type Schema struct {
 	File              *FileConstraints
 	Pattern           *Pattern
 	normalized        map[string]any
+	output            bool
 }
 type FileConstraints struct {
 	Extensions, MIMETypes []string

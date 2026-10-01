@@ -356,19 +356,23 @@ func lintOutput(c *Capability) error {
 			if len(s.Types) > 0 && !contains(s.Types, "object") {
 				return errors.New("DML output schema must describe count object")
 			}
+			count := s.Properties["count"]
 			if s.PropertiesSet {
-				count, ok := s.Properties["count"]
-				if !ok {
+				if count == nil {
 					return errors.New("DML output cannot exclude count")
-				}
-				if len(count.Types) > 0 && !contains(count.Types, "integer") && !contains(count.Types, "number") {
-					return errors.New("DML count must be integer")
 				}
 				for name := range s.Properties {
 					if name != "count" {
 						return errors.New("DML output only provides count")
 					}
 				}
+			} else if contains(s.Types, "object") && !s.AdditionalAllowed {
+				return errors.New("DML output cannot exclude count")
+			} else {
+				count = s.Additional
+			}
+			if count != nil && len(count.Types) > 0 && !contains(count.Types, "integer") && !contains(count.Types, "number") {
+				return errors.New("DML count must be integer")
 			}
 		}
 	}
@@ -389,7 +393,7 @@ func lintOutput(c *Capability) error {
 			return errors.New("CSV elements must be objects")
 		}
 		cols, explicit := o.Files["columns"].([]string)
-		closed := rows.Items != nil && rows.Items.PropertiesSet && !rows.Items.AdditionalAllowed && o.Mode != "passthrough"
+		closed := rows.Items != nil && contains(rows.Items.Types, "object") && !rows.Items.AdditionalAllowed
 		if explicit && closed {
 			for _, name := range cols {
 				if _, ok := rows.Items.Properties[name]; !ok {

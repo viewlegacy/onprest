@@ -33,7 +33,7 @@ func compileSchema(m rawMap, input, root, passthrough bool, depth int) (*Schema,
 	if e := known(m, keys); e != nil {
 		return nil, e
 	}
-	s := &Schema{Properties: map[string]*Schema{}, Required: []string{}, Nullable: !input, Constraints: map[string]any{}, normalized: map[string]any{}}
+	s := &Schema{Properties: map[string]*Schema{}, Required: []string{}, Nullable: !input, Constraints: map[string]any{}, normalized: map[string]any{}, output: !input}
 	if m.has("description") {
 		v, e := str(m.get("description"), "description")
 		if e != nil {

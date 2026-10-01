@@ -2,8 +2,11 @@ package contract
 
 import "testing"
 
-func TestCommonPatternASTAndAgentSemantics(t *testing.T) {
-	cases := []struct {
+func commonPatternCases() []struct {
+	pattern string
+	yes, no []string
+} {
+	return []struct {
 		pattern string
 		yes, no []string
 	}{
@@ -17,7 +20,10 @@ func TestCommonPatternASTAndAgentSemantics(t *testing.T) {
 		{`^\\/$`, []string{"\\/"}, []string{"/"}}, {`^[\-a]+$`, []string{"-aa"}, []string{"b"}},
 		{`^\n\r\t\f\v$`, []string{"\n\r\t\f\v"}, []string{"nrtfv"}},
 	}
-	for _, c := range cases {
+}
+func TestCommonPatternASTAndAgentSemantics(t *testing.T) {
+
+	for _, c := range commonPatternCases() {
 		t.Run(c.pattern, func(t *testing.T) {
 			p, e := CompilePattern(c.pattern)
 			if e != nil {
