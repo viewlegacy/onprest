@@ -396,3 +396,9 @@ func ProcessEnvironment() map[string]string {
 	}
 	return out
 }
+
+// ReadProtectedConfiguration applies the same finite protected-file boundary to
+// the Agent signing key as to source secrets; values are never trimmed.
+func ReadProtectedConfiguration(ctx context.Context, path string) ([]byte, error) {
+	return readProtected(ctx, path)
+}

@@ -27,13 +27,13 @@ The agent verifies capabilities before connecting to the gateway.
 |---|---|
 | DB ping | Fail fast when the database is unreachable |
 | EXPLAIN | Catch invalid SQL before exposing the capability |
-| YAML lint | Reject invalid driver, policy, params, result, or logging settings |
+| YAML lint | Reject invalid source, executor, input, policy, output, or logging settings |
 
 Configuration load and lint failures are reported by the CLI or startup stderr before a runtime diagnostic log is opened. If normal startup reaches the runtime diagnostic sink and then fails during database open, ping, or EXPLAIN, recordable private details are written to `onprest-agent.log`. The standalone `onprest-agent validate` path performs the same DB checks but reports a separate `onprest-agent.validate.log` only after it commits a complete failure record.
 
 ## Connection Generation and TLS
 
-The agent creates each database connection from the `database` section of `capability.yaml`.
+The agent creates each database connection from `sources.databases.<name>` of `capability.yaml`.
 
 | Driver | TLS support |
 |---|---|
@@ -50,3 +50,9 @@ TLS defaults to `disable`. All four drivers support encryption-only `require` an
 - [MySQL](/databases/mysql)
 - [SQL Server](/databases/sqlserver)
 - [Oracle](/databases/oracle)
+
+## JSON values
+
+The DB adapter normalizes values before applying the declared output schema. Native signed integers keep int64 precision; finite numbers and booleans keep their types. Exact decimals are strings. Binary-identified columns use standard padded Base64; text bytes must be valid UTF-8. Timestamp strings keep the existing driver/session timezone representation and NULL is JSON null. Output schemas never coerce strings into numbers. See [Capability YAML](/agent/capability-yaml#output).
+
+If a driver supplies a DECIMAL/NUMERIC/NUMBER value as a floating-point number, the Agent rejects it with `OUTPUT_INVALID` because its original decimal precision cannot be recovered. Exact text and native integer representations remain supported. See [Oracle NUMBER results](/databases/oracle#number-results) for scale-zero columns.

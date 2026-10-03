@@ -77,7 +77,7 @@ func TestGatewayProcessAppliesEnvRequestBodyLimit(t *testing.T) {
 	if status, body := postCapability(t, baseURL, secrets.APIKey, "offline_capability", restExactBody+" "); status != http.StatusBadRequest {
 		t.Fatalf("REST over-limit status=%d, want 400; body=%s", status, body)
 	} else {
-		requireAPIErrorCode(t, body, "GATEWAY_INVALID_REQUEST")
+		requireAPIErrorCode(t, body, "INVALID_REQUEST")
 	}
 
 	prefix := `{"jsonrpc":"2.0","id":1,"method":"ping","padding":"`
@@ -116,7 +116,7 @@ func TestGatewayReturnsTimeoutWhenConnectedAgentDoesNotRespond(t *testing.T) {
 	if status != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want %d; body=%s", status, http.StatusGatewayTimeout, string(body))
 	}
-	requireAPIErrorCode(t, body, "GATEWAY_TIMEOUT")
+	requireAPIErrorCode(t, body, "EXECUTION_TIMEOUT")
 }
 
 func TestGatewayRejectsDuplicateAgentAndAcceptsReconnect(t *testing.T) {

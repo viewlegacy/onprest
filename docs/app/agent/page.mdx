@@ -36,8 +36,8 @@ When the gateway sends a capability request, the agent:
 2. Validates params against the YAML contract.
 3. Applies policy settings.
 4. Executes SQL with prepared parameters.
-5. Applies the SELECT `result` allow-list, or validates the native affected count for DML.
-6. Returns SELECT rows/count, DML count only, or a normalized agent error code.
+5. Applies the SELECT `output.items` schema, or validates the native affected count for DML.
+6. Returns the common `request_id/result` envelope with `result.data` and `result.files`. Enabled data output publishes SELECT rows/count or DML count; omitted output publishes null data. Failures return the common error envelope with an observed outcome.
 
 Error detail remains local to the agent side.
 

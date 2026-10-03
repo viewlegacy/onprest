@@ -31,7 +31,7 @@ The sections below explain the most operationally important variables in more de
 
 ## Request Body Limit
 
-`GATEWAY_MAX_REQUEST_BODY_BYTES` applies to both `POST /api/v1/capabilities/{name}` and `POST /mcp`. The default is `1048576` bytes (1 MiB). The value must be a positive base-10 integer; non-integers, zero, negative values, and values larger than a signed 64-bit integer are startup errors rather than silent fallback. A restart is required after changing the environment. Size it for the largest legitimate JSON request while keeping a finite ingress memory bound; capability result limits such as `policy.max_bytes` are separate agent-side output controls.
+`GATEWAY_MAX_REQUEST_BODY_BYTES` applies to both `POST /api/v1/capabilities/{name}` and `POST /mcp`. The default is `1048576` bytes (1 MiB). The value must be a positive base-10 integer; non-integers, zero, negative values, and values larger than a signed 64-bit integer are startup errors rather than silent fallback. A restart is required after changing the environment. Size it for the largest legitimate JSON request while keeping a finite ingress memory bound; capability result limits such as `policy.max_output_bytes` are separate agent-side output controls.
 
 ## Listen Address
 
@@ -82,7 +82,10 @@ The public key goes into `GATEWAY_AGENT_PUBLIC_KEY`. The private key goes into `
   {
     "name": "partner-a",
     "key_hash": "$2a$10$xxxxx",
-    "capabilities": ["get_customer", "get_orders"]
+    "capabilities": [
+      "get_customer",
+      "get_orders"
+    ]
   }
 ]
 ```

@@ -17,9 +17,10 @@ import (
 // supply column metadata even when Data is an empty row array. Files transfer
 // ownership of their readers to ProcessOutput, including on failure.
 type ProviderResult struct {
-	Data    any
-	Columns []string
-	Files   []ProviderFile
+	ReturnedRows, AffectedRows *int64
+	Data                       any
+	Columns                    []string
+	Files                      []ProviderFile
 }
 type ProviderFile struct {
 	Name, MIMEType string
@@ -58,10 +59,11 @@ type ArtifactStage interface {
 // must keep it alive until their consumer finishes; Close does not undo any
 // business effects performed by the provider.
 type PreparedOutput struct {
-	Data   any
-	Files  []OutputArtifact
-	stages []ArtifactStage
-	closed bool
+	ReturnedRows, AffectedRows *int64
+	Data                       any
+	Files                      []OutputArtifact
+	stages                     []ArtifactStage
+	closed                     bool
 }
 
 func (o *PreparedOutput) Close() error {
@@ -270,7 +272,7 @@ func nilInterface(v any) bool {
 // closed without reading. There is no URI, expiry, persistent spool, or transport
 // implementation in this package.
 func ProcessOutput(ctx context.Context, c *Capability, source ProviderResult, stager ArtifactStager) (out *PreparedOutput, err error) {
-	ready := &PreparedOutput{Files: []OutputArtifact{}}
+	ready := &PreparedOutput{Files: []OutputArtifact{}, ReturnedRows: source.ReturnedRows, AffectedRows: source.AffectedRows}
 	sourceClosed := make([]bool, len(source.Files))
 	closeSource := func(i int) error {
 		if sourceClosed[i] {

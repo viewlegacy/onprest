@@ -247,6 +247,11 @@ func startOracleContainer(ctx context.Context) (postgresConfig, func(context.Con
 		Started: true,
 	})
 	if err != nil {
+		if ctr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = ctr.Terminate(cleanupCtx)
+		}
 		return postgresConfig{}, nil, err
 	}
 	cleanup := func(ctx context.Context) error { return ctr.Terminate(ctx) }

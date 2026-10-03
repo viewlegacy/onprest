@@ -52,7 +52,7 @@ func TestGatewayProcessEnvFileMCPLogsAndShutdown(t *testing.T) {
 	if status != http.StatusServiceUnavailable {
 		t.Fatalf("offline REST status=%d body=%s", status, string(body))
 	}
-	requireAPIErrorCode(t, body, "GATEWAY_AGENT_OFFLINE")
+	requireAPIErrorCode(t, body, "AGENT_OFFLINE")
 
 	_ = cmd.Process.Signal(os.Interrupt)
 	if err := waitForExit(t, cmd, 5*time.Second); err != nil {
@@ -133,7 +133,7 @@ func TestGatewayProcessTrustedProxyIPAllowAndRateLimit(t *testing.T) {
 	waitForHTTPStatusWithHeaders(t, "http://"+addr+"/healthz", http.StatusOK, map[string]string{"X-Forwarded-For": "203.0.113.9"})
 	waitForHTTPStatusWithHeaders(t, "http://"+addr+"/healthz", http.StatusForbidden, map[string]string{"X-Forwarded-For": "198.51.100.10"})
 	waitForHTTPStatusWithHeaders(t, "http://"+addr+"/healthz", http.StatusTooManyRequests, map[string]string{"X-Forwarded-For": "203.0.113.9"})
-	waitForOutputContains(t, output, "GATEWAY_IP_DENIED", "GATEWAY_RATE_LIMITED")
+	waitForOutputContains(t, output, "PERMISSION_DENIED", "RATE_LIMITED")
 }
 
 func TestGatewayDistLikeBinariesRunOutsideSourceTree(t *testing.T) {
@@ -287,7 +287,7 @@ func TestGatewayProcessRollingShutdownDuringInFlightRequest(t *testing.T) {
 	}()
 	agentReq := readAgentRequest(t, conn, "slow_capability")
 	_ = cmd.Process.Signal(os.Interrupt)
-	if err := conn.WriteText(protocol.MustJSON(protocol.ResultResponse(agentReq.ID, map[string]any{"rows": []any{map[string]any{"id": 7}}, "count": 1}))); err != nil {
+	if err := conn.WriteText(protocol.MustJSON(currentDBFixtureResult(agentReq.ID, map[string]any{"rows": []any{map[string]any{"id": 7}}, "count": 1}))); err != nil {
 		t.Fatalf("write in-flight response: %v", err)
 	}
 	start := time.Now()

@@ -199,12 +199,12 @@ curl -fsS http://127.0.0.1:18080/healthz | grep -q '"agent_connected":true'
 assert_old_public_contract() {
   old_rest=$(curl -fsS -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' \
     -d '{"runtime_marker_a":"service-old"}' http://127.0.0.1:18080/api/v1/capabilities/runtime_marker_a)
-  jq -e '.count == 1 and .rows[0].value == "service-old"' <<<"$old_rest" >/dev/null
+  jq -e '.result.data.count == 1 and .result.data.rows[0].value == "service-old"' <<<"$old_rest" >/dev/null
   old_mcp=$(curl -fsS -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' \
     -H 'MCP-Protocol-Version: 2025-11-25' -H 'Accept: application/json, text/event-stream' \
     -d '{"jsonrpc":"2.0","id":"old-call","method":"tools/call","params":{"name":"runtime_marker_a","arguments":{"runtime_marker_a":"service-old"}}}' \
     http://127.0.0.1:18080/mcp)
-  jq -e '.result.isError != true and .result.structuredContent.count == 1 and .result.structuredContent.rows[0].value == "service-old"' <<<"$old_mcp" >/dev/null
+  jq -e '.result.isError != true and .result.structuredContent.result.data.count == 1 and .result.structuredContent.result.data.rows[0].value == "service-old"' <<<"$old_mcp" >/dev/null
   old_tools=$(curl -fsS -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' \
     -H 'MCP-Protocol-Version: 2025-11-25' -H 'Accept: application/json, text/event-stream' \
     -d '{"jsonrpc":"2.0","id":"old-list","method":"tools/list"}' http://127.0.0.1:18080/mcp)
@@ -248,12 +248,10 @@ cp "$initial_config" "$default_config"
 {
   printf '\n'
   printf '%s\n' '  rollout_marker_new:'
-  printf '%s\n' "    sql: select 'rollout-v2' as value"
+  printf '%s\n' '    executor:' '      type: db' '      source: primary' "      sql: select 'rollout-v2' as value"
   printf '%s\n' '    policy:'
   printf '%s\n' '      readonly: true'
-  printf '%s\n' '    result:'
-  printf '%s\n' '      value:'
-  printf '%s\n' '        type: string'
+  printf '%s\n' '    output:' '      data: {}' '      items:' '        properties:' '          value:' '            type: string'
 } >> "$default_config"
 "${elevate[@]}" "$agent_bin" validate --config "$default_config" --format json | grep -q '"valid":true'
 pre_restart_status=$("${elevate[@]}" "$agent_bin" service status)
@@ -280,7 +278,7 @@ done
 jq -e '.paths["/api/v1/capabilities/rollout_marker_new"] != null' <<<"$rollout_openapi" >/dev/null
 new_rest=$(curl -fsS -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' -d '{}' \
   http://127.0.0.1:18080/api/v1/capabilities/rollout_marker_new)
-jq -e '.count == 1 and .rows[0].value == "rollout-v2"' <<<"$new_rest" >/dev/null
+jq -e '.result.data.count == 1 and .result.data.rows[0].value == "rollout-v2"' <<<"$new_rest" >/dev/null
 new_tools=$(curl -fsS -H "Authorization: Bearer $api_key" -H 'Content-Type: application/json' \
   -H 'MCP-Protocol-Version: 2025-11-25' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":"new-list","method":"tools/list"}' http://127.0.0.1:18080/mcp)
@@ -289,7 +287,7 @@ new_mcp=$(curl -fsS -H "Authorization: Bearer $api_key" -H 'Content-Type: applic
   -H 'MCP-Protocol-Version: 2025-11-25' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":"new-call","method":"tools/call","params":{"name":"rollout_marker_new","arguments":{}}}' \
   http://127.0.0.1:18080/mcp)
-jq -e '.result.isError != true and .result.structuredContent.count == 1 and .result.structuredContent.rows[0].value == "rollout-v2"' <<<"$new_mcp" >/dev/null
+jq -e '.result.isError != true and .result.structuredContent.result.data.count == 1 and .result.structuredContent.result.data.rows[0].value == "rollout-v2"' <<<"$new_mcp" >/dev/null
 rm -f "$initial_config" "$default_config.invalid.out" "$(dirname "$agent_bin")/rollout-before-restart.json"
 
 runtime_request() {

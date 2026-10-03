@@ -1,11 +1,13 @@
 # Mutation Reconciliation
 
-For INSERT, UPDATE, and DELETE, `GATEWAY_TIMEOUT`, an in-flight Agent disconnect, or
-`AGENT_TRANSACTION_OUTCOME_UNKNOWN` does not prove commit or rollback. Check
-the database state through a separately defined read capability before deciding
-what to do next; do not resend the mutation automatically.
+For INSERT, UPDATE, and DELETE, inspect `error.outcome`. `unknown`, including an
+in-flight Agent disconnect without a terminal response, does not prove commit or
+rollback. Check the database state through a separately defined read capability
+before deciding what to do next; do not resend the mutation automatically.
+`rolled_back` confirms rollback of the business effects and `not_started` confirms
+execution did not begin. `EXECUTION_TIMEOUT` alone does not identify the outcome.
 
-See [Errors](/api/errors#rest-error-status-mappings) for the distinction between
+See [Errors](/api/errors#observed-outcome) for the distinction between
 an unknown transaction outcome and errors that confirm rollback.
 
 ## Order INSERT example
@@ -23,7 +25,7 @@ The request ID alone is insufficient to confirm business completion.
 | A row exists but any field differs | Investigate the existing order and other writers. |
 | The read is unavailable or its outcome is unknown | Restore read access or investigate the database; the INSERT remains unconfirmed. |
 
-An `AGENT_CONSTRAINT_VIOLATION` for the UNIQUE key confirms rollback of that
+A `CONFLICT` for the UNIQUE key with `error.outcome: rolled_back` confirms rollback of that
 attempt. Read the existing row and compare the full intended payload to
 determine what it means for the business operation.
 

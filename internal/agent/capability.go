@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os"
@@ -17,11 +15,14 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/viewlegacy/onprest/internal/contract"
 	"github.com/viewlegacy/onprest/internal/sqlsyntax"
 	"gopkg.in/yaml.v3"
 )
 
 type CapabilityFile struct {
+	Compiled     *contract.Config         `json:"-" yaml:"-"`
+	ConfigPath   string                   `json:"-" yaml:"-"`
 	Service      ServiceDef               `json:"service" yaml:"service"`
 	Runtime      RuntimeDef               `json:"runtime" yaml:"runtime"`
 	Gateway      GatewayDef               `json:"gateway" yaml:"gateway"`
@@ -58,14 +59,17 @@ type DatabaseDef struct {
 }
 
 type DatabaseTLSDef struct {
-	Mode       string `json:"mode,omitempty" yaml:"mode,omitempty"`
-	CAFile     string `json:"ca_file,omitempty" yaml:"ca_file,omitempty"`
-	CertFile   string `json:"cert_file,omitempty" yaml:"cert_file,omitempty"`
-	KeyFile    string `json:"key_file,omitempty" yaml:"key_file,omitempty"`
-	ServerName string `json:"server_name,omitempty" yaml:"server_name,omitempty"`
+	CABytes, CertBytes, KeyBytes []byte `json:"-" yaml:"-"`
+	Snapshot                     bool   `json:"-" yaml:"-"`
+	Mode                         string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	CAFile                       string `json:"ca_file,omitempty" yaml:"ca_file,omitempty"`
+	CertFile                     string `json:"cert_file,omitempty" yaml:"cert_file,omitempty"`
+	KeyFile                      string `json:"key_file,omitempty" yaml:"key_file,omitempty"`
+	ServerName                   string `json:"server_name,omitempty" yaml:"server_name,omitempty"`
 }
 
 type LoggingDef struct {
+	Level    string `json:"level" yaml:"level"`
 	MaxSize  string `json:"max_size" yaml:"max_size"`
 	MaxFiles int    `json:"max_files" yaml:"max_files"`
 }
@@ -732,23 +736,11 @@ func LoadCapabilityFile(path string) (*CapabilityFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	var cf CapabilityFile
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cf); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("parse capability.yaml: %w", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("parse capability.yaml: multiple YAML documents are not allowed")
-		}
-		return nil, fmt.Errorf("parse capability.yaml: %w", err)
-	}
-	if err := cf.Lint(); err != nil {
+	cfg, err := contract.Compile(b)
+	if err != nil {
 		return nil, err
 	}
-	return &cf, nil
+	return capabilityRuntimeView(cfg, path)
 }
 
 func (cf *CapabilityFile) Lint() error {
@@ -957,12 +949,21 @@ func (db DatabaseDef) DSN() string {
 		}
 		q := u.Query()
 		q.Set("sslmode", db.tlsMode())
-		if db.TLS.CAFile != "" {
+		if db.TLS.CAFile != "" && !db.TLS.Snapshot {
 			q.Set("sslrootcert", db.TLS.CAFile)
 		}
-		if db.TLS.CertFile != "" {
+		if db.TLS.CertFile != "" && !db.TLS.Snapshot {
 			q.Set("sslcert", db.TLS.CertFile)
 			q.Set("sslkey", db.TLS.KeyFile)
+		}
+		if db.TLS.Snapshot {
+			// Explicit empty settings override libpq environment/default file paths.
+			// Captured TLS material is injected into the connector after parsing.
+			q.Set("sslrootcert", "")
+			q.Set("sslcert", "")
+			q.Set("sslkey", "")
+			q.Set("passfile", "")
+			q.Set("password", db.Password)
 		}
 		// PostgreSQL URI query values use percent encoding, where '+' is
 		// literal data rather than the form-encoded representation of a space.
@@ -995,7 +996,7 @@ func (db DatabaseDef) DSN() string {
 		case "verify-ca", "verify-full":
 			q.Set("encrypt", "true")
 			q.Set("TrustServerCertificate", "false")
-			if db.TLS.CAFile != "" {
+			if db.TLS.CAFile != "" && !db.TLS.Snapshot {
 				q.Set("certificate", db.TLS.CAFile)
 			}
 			if db.tlsMode() == "verify-full" {

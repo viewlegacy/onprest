@@ -4,7 +4,7 @@ Onprest is an **agent-defined capability tunnel** for legacy databases.
 
 It exposes selected on-prem-defined business capabilities through REST and MCP, without exposing SQL, database credentials, raw schema access, cloud data replicas, or inbound firewall ports.
 
-> Keep the legacy system. Modernize the access layer.  
+> Keep the legacy system. Modernize the access layer.
 > Expose capabilities, not your database.
 
 Most AI/database integrations start from the wrong primitive: database access.
@@ -137,7 +137,7 @@ In short:
 - compromise the gateway: you do not get SQL or database credentials
 - compromise an API key: you only get the capabilities assigned to that key
 - ask for an unknown operation: the agent rejects it
-- return extra columns from SELECT: `result` filters them before they leave the agent; DML cannot define `result` and returns count only
+- declare SELECT output fields: normal output selects those fields; schema-free `output.data: {}` or passthrough may publish every returned field, as chosen by the configuration author. See [Output](https://docs.onprest.viewlegacy.com/agent/capability-yaml#output). DML validates configured output before commit
 - trigger a DB error: detailed DB error information stays in the agent-local log
 
 ## AI Agents and MCP
@@ -154,7 +154,7 @@ Instead of giving an AI agent a DSN, schema, or SQL executor, you give it narrow
 - `get_invoice_status`
 - `list_recent_shipments`
 
-Each tool is backed by a reviewed SQL statement, validated parameters, and execution limits. SELECT results use a field allow-list; mutations return affected count only.
+Each tool is backed by a reviewed SQL statement, validated parameters, and execution limits. Configured `output` selects and validates published data: SELECT rows or the native mutation affected count. Omitting output still executes and publishes null data.
 
 This makes MCP useful without turning the legacy database into an unrestricted AI-accessible surface.
 
@@ -181,25 +181,32 @@ A capability is a named business operation:
 capabilities:
   get_customer:
     description: Fetch one customer by id.
-    sql: select id, name, email from customers where id = :customer_id
-    params:
-      customer_id:
-        type: integer
-        required: true
-        minimum: 1
+    executor:
+      type: db
+      source: primary
+      sql: select id, name, email from customers where id = :customer_id
+    input:
+      properties:
+        customer_id:
+          type: integer
+          minimum: 1
+      required: [customer_id]
     policy:
       readonly: true
       timeout: 3s
       max_rows: 1
-      max_bytes: 256KB
+      max_output_bytes: 256KB
       expose_in_openapi: true
-    result:
-      id:
-        type: integer
-      name:
-        type: string
-      email:
-        type: string
+    output:
+      data: {}
+      items:
+        properties:
+          id:
+            type: integer
+          name:
+            type: string
+          email:
+            type: string
 ```
 
 The agent loads and validates this file at startup, including checks for each SQL statement, before connecting to the gateway. Changes require an agent restart.
@@ -219,7 +226,7 @@ Onprest is designed as if components may be compromised.
 - Parameters are validated before SQL runs.
 - SQL parameters are bound through `database/sql`.
 - Agent-owned policies restrict allowed operations, bound execution time, response size, and row counts, and control OpenAPI/MCP exposure.
-- SELECT output fields are constrained by the `result` allow-list. DML cannot define `result` and returns only `{"count": n}`.
+- Declared SELECT fields are selected in normal output mode. Schema-free data output or passthrough can publish all fields; review the [output configuration](https://docs.onprest.viewlegacy.com/agent/capability-yaml#output). DML data output publishes a validated native count object inside the common response envelope.
 - Only one agent connection is accepted at a time.
 - Gateway stdout logs do not include request params or agent error details.
 - Detailed runtime error information is kept in the agent-local log.
@@ -307,7 +314,10 @@ curl -sS http://localhost:8080/healthz
 ```
 
 ```json
-{ "ok": true, "agent_connected": true }
+{
+  "ok": true,
+  "agent_connected": true
+}
 ```
 
 `/healthz` needs no API key, but it still uses the configured IP allow list and per-source rate limit. If `agent_connected` is `false`, wait for the agent to finish its startup checks and connect, then retry.
@@ -326,14 +336,24 @@ A successful call returns the rows the capability is allowed to expose:
 
 ```json
 {
-  "rows": [
-    { "id": 1, "name": "Ada Lovelace", "email": "ada@example.com" }
-  ],
-  "count": 1
+  "request_id": "01J5ABCDEF1234567890ABCDEF01",
+  "result": {
+    "data": {
+      "rows": [
+        {
+          "id": 1,
+          "name": "Ada Lovelace",
+          "email": "ada@example.com"
+        }
+      ],
+      "count": 1
+    },
+    "files": []
+  }
 }
 ```
 
-Only the fields listed in the capability `result` allow-list are returned. The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
+Only the fields listed in the capability `output.items` schema are returned. The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
 
 Run the shipped mutation over REST:
 

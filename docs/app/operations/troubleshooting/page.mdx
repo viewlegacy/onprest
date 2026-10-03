@@ -10,7 +10,7 @@ Check:
 - agent host can make outbound connections to gateway.
 - timestamp skew is not outside the allowed signing window.
 
-The gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when signature validation fails.
+The gateway returns `AUTH_FAILED` before WebSocket establishment when signature validation fails.
 
 ## Run the doctor probe
 
@@ -31,13 +31,13 @@ Later dependent checks are shown as `skipped`. Doctor does not establish or repl
 
 ## OpenAPI Returns 503
 
-`GATEWAY_AGENT_OFFLINE` means gateway has no connected agent or no usable OpenAPI cache.
+`AGENT_OFFLINE` means gateway has no connected agent or no usable OpenAPI cache.
 
 ## Mutation outcome is unknown
 
-`AGENT_TRANSACTION_OUTCOME_UNKNOWN`, `GATEWAY_TIMEOUT`, or an in-flight agent disconnect means the caller cannot safely infer commit or rollback. Do not retry automatically. Check the target record using an independent read capability and inspect the agent-local detail log. By contrast, `AGENT_QUERY_TIMEOUT` means the agent confirmed rollback after its policy timeout.
+Inspect `error.outcome` rather than inferring transaction state from `EXECUTION_TIMEOUT` or another error code. `unknown` means completion is unconfirmed, including after an in-flight disconnect: do not retry automatically. Check the target record using an independent read capability and inspect the agent-local detail log. `rolled_back` means the Agent confirmed rollback of the business effects. `not_started` means execution did not begin.
 
-`AGENT_AFFECTED_ROWS_EXCEEDED` is different: it means the DML exceeded `policy.max_affected_rows` and the Agent confirmed rollback. Check the SQL's target conditions and the intended number of affected rows before deciding whether to narrow the SQL or adjust the limit. Error responses do not include an affected count; the Gateway request log has `count: null`.
+For `LIMIT_EXCEEDED` with `rolled_back`, inspect the configured input/output capacity and, for DML, `policy.max_affected_rows` and the SQL's target conditions before adjusting a limit. If the outcome is `unknown`, use the same independent-read reconciliation procedure. Error responses do not include an affected count; the Gateway request log has `count: null`.
 
 See [Mutation Reconciliation](/operations/mutation-reconciliation) for the read-capability workflow and an INSERT example.
 
@@ -54,7 +54,7 @@ Check:
 
 ## Capability Denied
 
-`GATEWAY_CAPABILITY_DENIED` means the API key is valid but not authorized for that capability.
+`CAPABILITY_DENIED` means the API key is valid but not authorized for that capability.
 
 Update the key definition or use a key whose `capabilities` includes the requested capability or `"*"`.
 
@@ -84,23 +84,21 @@ Common causes:
 
 ## Runtime DB Permission Failure
 
-External callers receive a normalized agent error such as `AGENT_QUERY_FAILED`. The DB-specific detail is in `onprest-agent.log`.
+External callers receive a normalized agent error such as `EXECUTION_FAILED`. The DB-specific detail is in `onprest-agent.log`.
 
 This is expected. Do not look for SQL detail in gateway stdout or HTTP responses.
 
 ## Rate Limited
 
-Check the error code to identify which limiter rejected the request.
+`RATE_LIMITED` is shared by several rejection layers. Use the fixed public message and related logs to identify the layer:
 
-`GATEWAY_RATE_LIMITED` means the source IP exceeded the Gateway rate or burst limits.
+| Public message | Rejection layer and action |
+|---|---|
+| `too many requests` | Gateway source-IP limiter, before authentication/Agent execution. Review `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND`, `GATEWAY_RATE_LIMIT_BURST`, and trusted-proxy source-IP detection. REST request or MCP `mcp_http_rejected` logs record this HTTP rejection. |
+| `authentication is busy; retry later` | Gateway authentication capacity, before Agent execution. Inspect concurrent authentication load; changing capability rate policy does not affect this limit. |
+| `capability rate limit exceeded` | Agent capability admission, before its execution queue. Review the capability's `policy.rate_limit` or inherited defaults and call rate. The Gateway request event and sampled Agent-local rejection log identify the capability. |
 
-Review:
-
-- `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND`
-- `GATEWAY_RATE_LIMIT_BURST`
-- trusted proxy source IP detection
-
-`AGENT_RATE_LIMITED` means the request exceeded the Agent policy for that capability. Check `policy.rate_limit` on the target capability, or under `defaults` when inherited, and compare it with the actual call rate. See [Capability YAML](/agent/capability-yaml#policy) for the policy fields and [Errors](/api/errors#rest-error-status-mappings) for the response contract.
+All use `not_started`; the code alone does not select Gateway env or capability policy. See [Capability YAML](/agent/capability-yaml#policy), [Gateway Logs](/gateway/logs), and [Errors](/api/errors).
 
 ## Docker or Testcontainers Issues
 

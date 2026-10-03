@@ -2,7 +2,12 @@ package gateway
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"github.com/viewlegacy/onprest/internal/contract"
+	"github.com/viewlegacy/onprest/internal/protocol"
 	"io"
 	"math/big"
 	"net/http"
@@ -65,7 +70,7 @@ type mcpRequest struct {
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
+		writeJSON(w, http.StatusMethodNotAllowed, requestAPIError(r, errGatewayMethodNotAllowed, "use POST"))
 		return
 	}
 
@@ -75,12 +80,12 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !mcpJSONContentType(r.Header.Get("Content-Type")) {
 		s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "Content-Type must be application/json")
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "Content-Type must be application/json"))
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "Content-Type must be application/json"))
 		return
 	}
 	if !mcpAcceptsJSON(r.Header.Values("Accept")) {
 		s.mcpHTTPRejected(http.StatusNotAcceptable, errGatewayInvalidRequest, "Accept must allow application/json")
-		writeJSON(w, http.StatusNotAcceptable, apiError(errGatewayInvalidRequest, "Accept must allow application/json"))
+		writeJSON(w, http.StatusNotAcceptable, requestAPIError(r, errGatewayInvalidRequest, "Accept must allow application/json"))
 		return
 	}
 
@@ -100,7 +105,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		protocolVersion, ok = mcpRequestProtocolVersion(r)
 		if !ok {
 			s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "unsupported MCP protocol version")
-			writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "unsupported MCP protocol version"))
+			writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "unsupported MCP protocol version"))
 			return
 		}
 	}
@@ -117,7 +122,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		}
 		if !mcpClientNotificationAllowed(protocolVersion, req.Method) {
 			s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "invalid json rpc notification")
-			writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json rpc notification"))
+			writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "invalid json rpc notification"))
 			return
 		}
 		if !validMCPNotificationParams(protocolVersion, req.Method, req.Params) {
@@ -131,7 +136,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	if !req.HasID {
 		s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "invalid json rpc notification")
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json rpc notification"))
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "invalid json rpc notification"))
 		return
 	}
 
@@ -168,7 +173,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		filterOpenAPI(doc, key.Capabilities)
 		writeMCP(w, req.ID, map[string]any{"tools": toolsFromOpenAPI(doc, protocolVersion)}, nil)
 	case "tools/call":
-		s.handleMCPToolCall(w, r, req.ID, req.Params, key, protocolVersion, newID(), time.Now())
+		s.handleMCPToolCall(w, r, req.ID, req.Params, key, protocolVersion, authRequestID(r), time.Now())
 	default:
 		writeMCPError(w, req.ID, -32601, errJSONRPCMethodNotFound, "unsupported MCP method")
 	}
@@ -804,34 +809,27 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 	}
 	if !allowed(key, name) {
 		s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusForbidden, errGatewayCapabilityDenied, "capability not allowed", start)
-		writeJSON(w, http.StatusForbidden, apiError(errGatewayCapabilityDenied, "capability not allowed"))
+		writeJSON(w, http.StatusForbidden, commonAPIError(requestID, errGatewayCapabilityDenied, "capability not allowed", "not_started"))
 		return
 	}
-	result := s.callAgent(r.Context(), name, arguments)
+	fingerprint := sha256.Sum256([]byte(key.KeyHash))
+	ctx := context.WithValue(r.Context(), callIdentityKey{}, callIdentity{ID: requestID, Binding: hex.EncodeToString(fingerprint[:])})
+	result := s.callAgent(ctx, name, arguments)
 	if !result.OK() {
-		switch result.Code {
-		case errGatewayCapabilityNotFound:
-			s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusOK, errJSONRPCInvalidParams, "tool is not defined", start)
-			writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "tool is not defined")
-			return
-		default:
-			s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusOK, result.Code, result.Message, start)
-			toolResult := map[string]any{
-				"content": []any{map[string]any{"type": "text", "text": result.Message}},
-				"isError": true,
-			}
-			if mcpUsesStructuredContent(protocolVersion) {
-				toolResult["structuredContent"] = map[string]any{"error": map[string]any{
-					"code": result.Code, "message": result.Message,
-				}}
-			}
-			writeMCP(w, id, toolResult, nil)
-			return
+		logged := result
+		logged.Status = http.StatusOK
+		s.accessExecutionLog("mcp", requestID, key.Name, name, logged, start)
+		toolResult := map[string]any{"content": []any{map[string]any{"type": "text", "text": string(protocol.MustJSON(resultError(requestID, result)))}}, "isError": true}
+		if mcpUsesStructuredContent(protocolVersion) {
+			toolResult["structuredContent"] = resultError(requestID, result)
 		}
+		writeMCP(w, id, toolResult, nil)
+		return
+
 	}
 	var structured any
 	_ = decodeJSONNumber(result.Payload, &structured)
-	s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusOK, "", "", start, result.Count)
+	s.accessExecutionLog("mcp", requestID, key.Name, name, result, start)
 	toolResult := map[string]any{
 		"content": []any{map[string]any{"type": "text", "text": string(result.Payload)}},
 	}
@@ -873,7 +871,12 @@ func decodeMCPToolCallParams(raw json.RawMessage, protocolVersion string) (strin
 	if _, ok := mcpJSONObjectFields(argumentsRaw); !ok {
 		return "", nil, false
 	}
-	if err := decodeJSONNumber(argumentsRaw, &arguments); err != nil || arguments == nil {
+	value, err := contract.DecodeJSON(argumentsRaw, contract.Limits{MaxBytes: 16 << 20, MaxDepth: 32, MaxItems: 100000})
+	if err != nil {
+		return "", nil, false
+	}
+	arguments, ok = value.(map[string]any)
+	if !ok || arguments == nil {
 		return "", nil, false
 	}
 	return name, arguments, true

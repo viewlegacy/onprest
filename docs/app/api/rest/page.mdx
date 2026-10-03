@@ -1,76 +1,50 @@
 # REST API
 
-REST calls execute one capability by name.
-
-SELECT success retains the `{"rows": [...], "count": n}` contract. INSERT, UPDATE, and DELETE return only `{"count": n}`. Mutation count is the database driver's native `RowsAffected()` value; `count: 0` is HTTP 200, not a business error.
-
-## Endpoint
-
-```http
-POST /api/v1/capabilities/{name}
-Authorization: Bearer {api_key}
-Content-Type: application/json
-```
-
-You may also authenticate with:
-
-```http
-X-API-Key: {api_key}
-```
-
-## Request Body
-
-The request body is the params object directly.
+Execute a prepared capability with `POST /api/v1/capabilities/{name}`, `Authorization: Bearer {api_key}` (or `X-API-Key`), and `Content-Type: application/json`. The body is the input object directly:
 
 ```json
 {
-  "customer_id": 1
+  "id": 1
 }
 ```
 
-Do not wrap params in a `params` field.
+Input follows the capability schema. Duplicate keys, invalid UTF-8, signed-int64 overflow, extra top-level values and non-object bodies are rejected. The Gateway body limit defaults to 1 MiB and uses `GATEWAY_MAX_REQUEST_BODY_BYTES`; wire-body overflow returns HTTP 413 `LIMIT_EXCEEDED`, and an unsupported REST content type returns HTTP 415 `INVALID_REQUEST`. Capability input limits are also enforced by the Agent.
 
-The request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, more than one top-level JSON value, or a non-JSON content type returns HTTP 400 with `GATEWAY_INVALID_REQUEST`. The gateway also applies a bounded body-read time so a client cannot occupy a connection indefinitely by sending the body too slowly. See [Gateway Configuration](/gateway/configuration).
-
-## Success Response
-
-```http
-HTTP/1.1 200 OK
-Content-Type: application/json
-```
+## Success response
 
 ```json
 {
-  "rows": [
-    {
-      "id": 1,
-      "name": "Ada Lovelace",
-      "email": "ada@example.com"
-    }
-  ],
-  "count": 1
-}
-```
-
-The exact result shape comes from the agent capability execution. Row fields are limited by the capability `result` allow-list. Every listed field is present; a database `NULL` value is returned as JSON `null`, and the generated OpenAPI 3.1 response schema permits `null` alongside the field's declared type.
-
-## Failure Response
-
-```json
-{
-  "error": {
-    "code": "GATEWAY_AGENT_OFFLINE",
-    "message": "agent is not connected"
+  "request_id": "01J5ABCDEF1234567890ABCDEF01",
+  "result": {
+    "data": {
+      "rows": [
+        {
+          "id": 1,
+          "name": "Ada Lovelace"
+        }
+      ],
+      "count": 1
+    },
+    "files": []
   }
 }
 ```
 
-The `message` is public client-facing text. Agent validation errors may name the invalid field and reason, but raw detail, SQL text, DB-specific error text, credentials, and submitted param values are not included in external responses.
+The Gateway assigns one request ID for the public response, Agent request and request log. SELECT data is a rows/count object; DML data is `{"count": n}` using native RowsAffected, including zero. Output selection and constraints come from `output`. Omitted output returns `data: null` and an empty files array while still executing. The current DB runtime publishes JSON only. See [Database JSON values](/databases#json-values) for the representation of database types.
 
-Agent validation failures return HTTP 400. Typed database constraints return HTTP 409. Query failures and unknown transaction outcomes return HTTP 502; an unavailable or disconnected agent returns HTTP 503; agent policy timeouts and gateway-to-agent response timeouts return HTTP 504. A gateway timeout or disconnect leaves a mutation outcome unknown and must not be retried automatically. See [Errors](/api/errors) for the canonical mappings.
+## Failure response
 
-## Reconcile a mutation after a lost response
+```json
+{
+  "request_id": "01J5ABCDEF1234567890ABCDEF01",
+  "error": {
+    "code": "LIMIT_EXCEEDED",
+    "message": "output exceeds configured limit",
+    "outcome": "rolled_back"
+  }
+}
+```
 
-Call a separately defined read capability through the same endpoint to check
-the database state. See [Mutation Reconciliation](/operations/mutation-reconciliation) for
-the order INSERT example and how to interpret its read result.
+Success and error are mutually exclusive. Errors contain safe code/message/outcome and optionally a fixed safe reason. See [Errors](/api/errors) for status mappings and outcomes. Driver errors, SQL, source details, credentials and input values remain in local diagnostics.
+
+The deadline uses the prepared capability's timeout and caller cancellation. SELECT max_rows truncates results. DML validates count, common output and limits before commit; a confirmed rollback is reported explicitly. After an unknown outcome, verify state through an independent read before retrying a mutation.

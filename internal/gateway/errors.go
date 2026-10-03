@@ -1,66 +1,65 @@
 package gateway
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 const (
-	errGatewayAuthFailed              = "GATEWAY_AUTH_FAILED"
-	errGatewayCapabilityDenied        = "GATEWAY_CAPABILITY_DENIED"
-	errGatewayIPDenied                = "GATEWAY_IP_DENIED"
-	errGatewayRateLimited             = "GATEWAY_RATE_LIMITED"
-	errGatewayInternal                = "GATEWAY_INTERNAL_ERROR"
-	errGatewayAgentOffline            = "GATEWAY_AGENT_OFFLINE"
-	errGatewayTimeout                 = "GATEWAY_TIMEOUT"
-	errGatewayInvalidRequest          = "GATEWAY_INVALID_REQUEST"
-	errGatewayCapabilityNotFound      = "GATEWAY_CAPABILITY_NOT_FOUND"
-	errGatewayMethodNotAllowed        = "GATEWAY_METHOD_NOT_ALLOWED"
-	errGatewayAgentAlreadyConn        = "GATEWAY_AGENT_ALREADY_CONNECTED"
-	errAgentValidationFailed          = "AGENT_VALIDATION_FAILED"
-	errAgentQueryFailed               = "AGENT_QUERY_FAILED"
-	errAgentQueryTimeout              = "AGENT_QUERY_TIMEOUT"
-	errAgentDBUnreachable             = "AGENT_DB_UNREACHABLE"
-	errAgentInternal                  = "AGENT_INTERNAL_ERROR"
-	errAgentBusy                      = "AGENT_BUSY"
-	errAgentRateLimited               = "AGENT_RATE_LIMITED"
-	errAgentConstraintViolation       = "AGENT_CONSTRAINT_VIOLATION"
-	errAgentAffectedRowsExceeded      = "AGENT_AFFECTED_ROWS_EXCEEDED"
-	errAgentTransactionOutcomeUnknown = "AGENT_TRANSACTION_OUTCOME_UNKNOWN"
+	errGatewayAuthFailed              = "AUTH_FAILED"
+	errGatewayCapabilityDenied        = "CAPABILITY_DENIED"
+	errGatewayIPDenied                = "PERMISSION_DENIED"
+	errGatewayRateLimited             = "RATE_LIMITED"
+	errGatewayInternal                = "INTERNAL_ERROR"
+	errGatewayAgentOffline            = "AGENT_OFFLINE"
+	errGatewayTimeout                 = "EXECUTION_TIMEOUT"
+	errGatewayInvalidRequest          = "INVALID_REQUEST"
+	errGatewayCapabilityNotFound      = "NOT_FOUND"
+	errGatewayMethodNotAllowed        = "INVALID_REQUEST"
+	errGatewayAgentAlreadyConn        = "CONFLICT"
+	errAgentValidationFailed          = "VALIDATION_FAILED"
+	errAgentQueryFailed               = "EXECUTION_FAILED"
+	errAgentQueryTimeout              = "EXECUTION_TIMEOUT"
+	errAgentDBUnreachable             = "DEPENDENCY_UNAVAILABLE"
+	errAgentInternal                  = "EXECUTION_FAILED"
+	errAgentBusy                      = "BUSY"
+	errAgentRateLimited               = "RATE_LIMITED"
+	errAgentConstraintViolation       = "CONFLICT"
+	errAgentAffectedRowsExceeded      = "LIMIT_EXCEEDED"
+	errAgentTransactionOutcomeUnknown = "OUTCOME_UNKNOWN"
 	errJSONRPCParseError              = "PARSE_ERROR"
 	errJSONRPCInvalidRequest          = "INVALID_REQUEST"
 	errJSONRPCMethodNotFound          = "METHOD_NOT_FOUND"
 	errJSONRPCInvalidParams           = "INVALID_PARAMS"
 )
 
-func apiError(code, message string) map[string]any {
-	return map[string]any{"error": map[string]any{"code": code, "message": message}}
-}
-
 func agentErrorStatus(code string) (int, string) {
+	status := http.StatusBadGateway
 	switch code {
-	case errGatewayAgentOffline:
-		return http.StatusServiceUnavailable, errGatewayAgentOffline
-	case errGatewayCapabilityNotFound:
-		return http.StatusNotFound, errGatewayCapabilityNotFound
-	case errAgentValidationFailed:
-		return http.StatusBadRequest, errAgentValidationFailed
-	case errAgentQueryFailed:
-		return http.StatusBadGateway, errAgentQueryFailed
-	case errAgentQueryTimeout:
-		return http.StatusGatewayTimeout, errAgentQueryTimeout
-	case errAgentDBUnreachable:
-		return http.StatusBadGateway, errAgentDBUnreachable
-	case errAgentInternal:
-		return http.StatusBadGateway, errAgentInternal
-	case errAgentBusy:
-		return http.StatusServiceUnavailable, errAgentBusy
-	case errAgentRateLimited:
-		return http.StatusTooManyRequests, errAgentRateLimited
-	case errAgentConstraintViolation:
-		return http.StatusConflict, errAgentConstraintViolation
-	case errAgentAffectedRowsExceeded:
-		return http.StatusConflict, errAgentAffectedRowsExceeded
-	case errAgentTransactionOutcomeUnknown:
-		return http.StatusBadGateway, errAgentTransactionOutcomeUnknown
+	case "INVALID_REQUEST", "VALIDATION_FAILED":
+		status = 400
+	case "AUTH_FAILED":
+		status = 401
+	case "CAPABILITY_DENIED", "PERMISSION_DENIED":
+		status = 403
+	case "NOT_FOUND":
+		status = 404
+	case "SOURCE_CHANGED", "CONFLICT":
+		status = 409
+	case "LIMIT_EXCEEDED":
+		status = 422
+	case "RATE_LIMITED":
+		status = 429
+	case "BUSY", "AGENT_OFFLINE", "DEPENDENCY_UNAVAILABLE":
+		status = 503
+	case "EXECUTION_TIMEOUT":
+		status = 504
+	case "INTERNAL_ERROR":
+		status = 500
 	default:
-		return http.StatusBadGateway, code
+		if strings.HasPrefix(code, "APP_") {
+			status = 422
+		}
 	}
+	return status, code
 }

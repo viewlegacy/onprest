@@ -93,7 +93,7 @@ func TestCLIIssuedSecretsAuthenticateGateway(t *testing.T) {
 	if status != http.StatusForbidden {
 		t.Fatalf("hidden status = %d, want 403; body=%s", status, string(body))
 	}
-	requireAPIErrorCode(t, body, "GATEWAY_CAPABILITY_DENIED")
+	requireAPIErrorCode(t, body, "CAPABILITY_DENIED")
 
 	done := make(chan []byte, 1)
 	go func() {
@@ -114,7 +114,7 @@ func TestCLIIssuedSecretsAuthenticateGateway(t *testing.T) {
 	if req.Capability != "echo_customer" || req.ID == "" {
 		t.Fatalf("capability request = %#v", req)
 	}
-	if err := conn.WriteText(protocol.MustJSON(protocol.ResultResponse(req.ID, map[string]any{"rows": []any{}, "count": 0}))); err != nil {
+	if err := conn.WriteText(protocol.MustJSON(currentDBFixtureResult(req.ID, map[string]any{"rows": []any{}, "count": 0}))); err != nil {
 		t.Fatalf("write CLI issued key response: %v", err)
 	}
 	body = <-done
@@ -166,7 +166,7 @@ func TestGatewayOpenAPIAndMCPFilteringWithManualAgent(t *testing.T) {
 	}
 }
 
-func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
+func TestGatewayPassesStrictAgentErrorWithoutPrivateParams(t *testing.T) {
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -203,17 +203,18 @@ func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 	}
 	agentMessage := "secret: rejected by validation"
 	if err := conn.WriteText(protocol.MustJSON(map[string]any{
-		"id": req.ID,
+		"type": "error",
+		"id":   req.ID,
 		"error": map[string]any{
-			"code":    "AGENT_VALIDATION_FAILED",
+			"code":    "VALIDATION_FAILED",
+			"outcome": "unknown",
 			"message": agentMessage,
-			"detail":  "database password is dont-log-me",
 		},
 	})); err != nil {
 		t.Fatalf("write agent error: %v", err)
 	}
 	body := <-done
-	requireAPIErrorCode(t, body, "AGENT_VALIDATION_FAILED")
+	requireAPIErrorCode(t, body, "VALIDATION_FAILED")
 	if !strings.Contains(string(body), agentMessage) || !strings.Contains(logs.String(), agentMessage) {
 		t.Fatalf("agent message not propagated; body=%s logs=%s", string(body), logs.String())
 	}
@@ -241,17 +242,18 @@ func TestGatewayPassesAgentErrorMessageAndIgnoresRawDetail(t *testing.T) {
 	}
 	mcpAgentMessage := "secret: rejected by validation"
 	if err := conn.WriteText(protocol.MustJSON(map[string]any{
-		"id": req.ID,
+		"type": "error",
+		"id":   req.ID,
 		"error": map[string]any{
-			"code":    "AGENT_VALIDATION_FAILED",
+			"code":    "VALIDATION_FAILED",
+			"outcome": "unknown",
 			"message": mcpAgentMessage,
-			"detail":  "database password is dont-log-me-too",
 		},
 	})); err != nil {
 		t.Fatalf("write MCP agent error: %v", err)
 	}
 	mcpBody := <-mcpDone
-	if got := requireMCPToolErrorCode(t, mcpBody, "AGENT_VALIDATION_FAILED"); got != mcpAgentMessage {
+	if got := requireMCPToolErrorCode(t, mcpBody, "VALIDATION_FAILED"); got != mcpAgentMessage {
 		t.Fatalf("MCP agent message=%q want %q; body=%s", got, mcpAgentMessage, mcpBody)
 	}
 	if !strings.Contains(string(mcpBody), mcpAgentMessage) || !strings.Contains(logs.String(), mcpAgentMessage) {
@@ -275,7 +277,7 @@ func serveMetaOnce(t *testing.T, conn *ws.Conn, doc map[string]any) protocol.Req
 	if req.Capability != "meta" {
 		t.Fatalf("capability = %q, want meta", req.Capability)
 	}
-	if err := conn.WriteText(protocol.MustJSON(protocol.ResultResponse(req.ID, map[string]any{"data": doc}))); err != nil {
+	if err := conn.WriteText(protocol.MustJSON(currentDBFixtureMetadata(req.ID, doc))); err != nil {
 		t.Fatalf("write meta response: %v", err)
 	}
 	return req
@@ -426,7 +428,17 @@ func requireMCPToolErrorVariant(t *testing.T, body []byte, wantStructured bool) 
 	if err := validateMCPStructuredContent(response.Result.StructuredContent, wantStructured); err != nil {
 		t.Fatalf("MCP tool error structuredContent: %v; body=%s", err, body)
 	}
-	return response.Result.Content[0].Text
+	var envelope struct {
+		RequestID string `json:"request_id"`
+		Error     struct {
+			Message string `json:"message"`
+			Outcome string `json:"outcome"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(response.Result.Content[0].Text), &envelope); err != nil || len(envelope.RequestID) != 26 || envelope.Error.Outcome == "" {
+		t.Fatalf("invalid tool error envelope: %s", body)
+	}
+	return envelope.Error.Message
 }
 
 func quoteJSON(v string) string {

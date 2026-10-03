@@ -25,6 +25,7 @@ type Server struct {
 	apiKeyAuthSlots chan struct{}
 	openapi         map[string]any
 	responseKinds   map[string]responseKind
+	capabilities    map[string]protocol.CapabilityMetadata
 	rateMu          sync.Mutex
 	rate            map[string]*bucket
 	rateLastCleanup time.Time
@@ -118,7 +119,7 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	mux.HandleFunc("/api/v1/capabilities/", s.handleCapability)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/mcp", s.handleMCP)
-	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withRecovery(s.withAccess(mux)), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withRequestIdentity(s.withRecovery(s.withAccess(mux))), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
 	return s
 }
 

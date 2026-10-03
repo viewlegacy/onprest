@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"math"
 	"net"
 	"net/http"
@@ -21,9 +22,9 @@ func (s *Server) withRecovery(next http.Handler) http.Handler {
 				if r.URL.Path == "/mcp" {
 					s.mcpHTTPRejected(http.StatusInternalServerError, errGatewayInternal, "unexpected gateway error")
 				} else {
-					s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusInternalServerError, errGatewayInternal, "unexpected gateway error", start)
+					s.accessLog(authRequestID(r), "", capabilityFromPath(r.URL.Path), http.StatusInternalServerError, errGatewayInternal, "unexpected gateway error", start)
 				}
-				writeJSON(w, http.StatusInternalServerError, apiError(errGatewayInternal, "unexpected gateway error"))
+				writeJSON(w, http.StatusInternalServerError, commonAPIError(authRequestID(r), errGatewayInternal, "unexpected gateway error", "unknown"))
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -38,7 +39,7 @@ func (s *Server) withAccess(next http.Handler) http.Handler {
 			if !corsAllowed && r.Header.Get("Origin") != "" {
 				if r.URL.Path == "/mcp" {
 					s.mcpHTTPRejected(http.StatusForbidden, errGatewayInvalidRequest, "origin is not allowed")
-					writeJSON(w, http.StatusForbidden, apiError(errGatewayInvalidRequest, "origin is not allowed"))
+					writeJSON(w, http.StatusForbidden, requestAPIError(r, errGatewayInvalidRequest, "origin is not allowed"))
 					return
 				}
 				w.WriteHeader(http.StatusForbidden)
@@ -49,25 +50,25 @@ func (s *Server) withAccess(next http.Handler) http.Handler {
 		}
 		if r.URL.Path == "/mcp" && strings.TrimSpace(r.Header.Get("Origin")) != "" && !corsAllowed {
 			s.mcpHTTPRejected(http.StatusForbidden, errGatewayInvalidRequest, "origin is not allowed")
-			writeJSON(w, http.StatusForbidden, apiError(errGatewayInvalidRequest, "origin is not allowed"))
+			writeJSON(w, http.StatusForbidden, requestAPIError(r, errGatewayInvalidRequest, "origin is not allowed"))
 			return
 		}
 		if len(s.cfg.IPAllowList) > 0 && !s.ipAllowed(r) {
 			if r.URL.Path == "/mcp" {
 				s.mcpHTTPRejected(http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed")
 			} else {
-				s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed", start)
+				s.accessLog(authRequestID(r), "", capabilityFromPath(r.URL.Path), http.StatusForbidden, errGatewayIPDenied, "source ip is not allowed", start)
 			}
-			writeJSON(w, http.StatusForbidden, apiError(errGatewayIPDenied, "source ip is not allowed"))
+			writeJSON(w, http.StatusForbidden, requestAPIError(r, errGatewayIPDenied, "source ip is not allowed"))
 			return
 		}
 		if s.cfg.RateLimit.RequestsPerSecond > 0 && !s.take(s.clientIP(r)) {
 			if r.URL.Path == "/mcp" {
 				s.mcpHTTPRejected(http.StatusTooManyRequests, errGatewayRateLimited, "too many requests")
 			} else {
-				s.accessLog(newID(), "", capabilityFromPath(r.URL.Path), http.StatusTooManyRequests, errGatewayRateLimited, "too many requests", start)
+				s.accessLog(authRequestID(r), "", capabilityFromPath(r.URL.Path), http.StatusTooManyRequests, errGatewayRateLimited, "too many requests", start)
 			}
-			writeJSON(w, http.StatusTooManyRequests, apiError(errGatewayRateLimited, "too many requests"))
+			writeJSON(w, http.StatusTooManyRequests, requestAPIError(r, errGatewayRateLimited, "too many requests"))
 			return
 		}
 		if r.URL.Path != "/ws/agent" && r.Body != nil && r.Body != http.NoBody {
@@ -221,4 +222,11 @@ func ipInBlocks(ip net.IP, blocks []*net.IPNet) bool {
 		}
 	}
 	return false
+}
+
+func (s *Server) withRequestIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = r.WithContext(context.WithValue(r.Context(), callIdentityKey{}, callIdentity{ID: newID()}))
+		next.ServeHTTP(w, r)
+	})
 }

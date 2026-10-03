@@ -126,31 +126,31 @@ func TestRunnerRateLimitAdmissionOrderingIsolationAndRestart(t *testing.T) {
 		t.Fatalf("rate limiter map size = %d, want 2 fixed configured capabilities", len(r.rateLimits))
 	}
 
-	invalid := protocol.Request{ID: "invalid", Capability: "limited", Params: map[string]any{"secret": 42}}
-	if _, rejected := r.admit(invalid); rejected == nil || rejected.Error.Code != "AGENT_VALIDATION_FAILED" {
+	invalid := protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "invalid", Capability: "limited", Params: map[string]any{"secret": 42}}
+	if _, rejected := r.admit(invalid); rejected == nil || rejected.Error.Code != "VALIDATION_FAILED" {
 		t.Fatalf("invalid admission response = %#v", rejected)
 	}
-	unknown := protocol.Request{ID: "unknown", Capability: "hidden-name", Params: map[string]any{}}
-	if _, rejected := r.admit(unknown); rejected == nil || rejected.Error.Code != "GATEWAY_CAPABILITY_NOT_FOUND" {
+	unknown := protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "unknown", Capability: "hidden-name", Params: map[string]any{}}
+	if _, rejected := r.admit(unknown); rejected == nil || rejected.Error.Code != "NOT_FOUND" {
 		t.Fatalf("unknown admission response = %#v", rejected)
 	}
-	meta := protocol.Request{ID: "meta", Capability: "meta"}
+	meta := protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "meta", Capability: "meta"}
 	if prepared, rejected := r.admit(meta); rejected != nil || !prepared.metadata {
 		t.Fatalf("meta admission = prepared %#v rejected %#v", prepared, rejected)
 	}
 
-	valid := protocol.Request{ID: "valid", Capability: "limited", Params: map[string]any{"secret": "TOP-SECRET-PARAM"}}
+	valid := protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "valid", Capability: "limited", Params: map[string]any{"secret": "TOP-SECRET-PARAM"}}
 	if prepared, rejected := r.admit(valid); rejected != nil || prepared == nil {
 		t.Fatalf("first valid admission = prepared %#v rejected %#v", prepared, rejected)
 	}
-	if _, rejected := r.admit(valid); rejected == nil || rejected.Error.Code != "AGENT_RATE_LIMITED" || rejected.Error.Message != rateLimitedMessage {
+	if _, rejected := r.admit(valid); rejected == nil || rejected.Error.Code != "RATE_LIMITED" || rejected.Error.Message != rateLimitedMessage {
 		t.Fatalf("exhausted admission response = %#v", rejected)
 	}
-	if prepared, rejected := r.admit(protocol.Request{ID: "separate", Capability: "separate"}); rejected != nil || prepared == nil {
+	if prepared, rejected := r.admit(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "separate", Capability: "separate"}); rejected != nil || prepared == nil {
 		t.Fatalf("separate capability shared a bucket: prepared %#v rejected %#v", prepared, rejected)
 	}
 	for i := 0; i < 20; i++ {
-		if prepared, rejected := r.admit(protocol.Request{ID: "unlimited", Capability: "unlimited"}); rejected != nil || prepared == nil {
+		if prepared, rejected := r.admit(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "unlimited", Capability: "unlimited"}); rejected != nil || prepared == nil {
 			t.Fatalf("unlimited admission %d = prepared %#v rejected %#v", i, prepared, rejected)
 		}
 	}
@@ -161,7 +161,7 @@ func TestRunnerRateLimitAdmissionOrderingIsolationAndRestart(t *testing.T) {
 	if bytes.Contains([]byte(logText), []byte("TOP-SECRET-PARAM")) {
 		t.Fatalf("secret param reached rejection log: %s", logText)
 	}
-	if got := bytes.Count([]byte(logText), []byte("AGENT_RATE_LIMITED")); got != 1 {
+	if got := bytes.Count([]byte(logText), []byte("RATE_LIMITED")); got != 1 {
 		t.Fatalf("sampled rejection logs = %d, want 1; logs=%s", got, logText)
 	}
 
@@ -187,12 +187,12 @@ func TestFailedExecutionDoesNotReturnRateLimitToken(t *testing.T) {
 	r.cf.Capabilities = map[string]CapabilityDef{"mutate": cap}
 	r.caps = r.cf.ByName()
 	r.rateLimits = newCapabilityRateLimiters(r.cf, r.clock)
-	req := protocol.Request{ID: "first", Capability: "mutate", Params: map[string]any{}}
-	if resp := r.handle(context.Background(), req); resp.Error == nil || resp.Error.Code != "AGENT_QUERY_FAILED" {
+	req := protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "first", Capability: "mutate", Params: map[string]any{}}
+	if resp := r.handle(context.Background(), req); resp.Error == nil || resp.Error.Code != "EXECUTION_FAILED" {
 		t.Fatalf("first failed execution response = %#v", resp)
 	}
 	req.ID = "second"
-	if resp := r.handle(context.Background(), req); resp.Error == nil || resp.Error.Code != "AGENT_RATE_LIMITED" {
+	if resp := r.handle(context.Background(), req); resp.Error == nil || resp.Error.Code != "RATE_LIMITED" {
 		t.Fatalf("failed execution returned its token: %#v", resp)
 	}
 }
@@ -257,7 +257,7 @@ func TestPrepareRejectionsPreserveWorkerQueueOrderingCancellationAndBusy(t *test
 	}
 	startSlow := func(t *testing.T, h harness) {
 		t.Helper()
-		writeRequest(t, h.client, protocol.Request{ID: "running", Capability: "slow", Params: map[string]any{}})
+		writeRequest(t, h.client, protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "running", Capability: "slow", Params: map[string]any{}})
 		select {
 		case <-h.state.execStarted:
 		case <-time.After(time.Second):
@@ -333,8 +333,8 @@ func TestPrepareRejectionsPreserveWorkerQueueOrderingCancellationAndBusy(t *test
 		req  protocol.Request
 		code string
 	}{
-		{name: "unknown", req: protocol.Request{ID: "rejected", Capability: "hidden"}, code: "GATEWAY_CAPABILITY_NOT_FOUND"},
-		{name: "invalid", req: protocol.Request{ID: "rejected", Capability: "needs-value", Params: map[string]any{"value": 42}}, code: "AGENT_VALIDATION_FAILED"},
+		{name: "unknown", req: protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "rejected", Capability: "hidden"}, code: "NOT_FOUND"},
+		{name: "invalid", req: protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "rejected", Capability: "needs-value", Params: map[string]any{"value": 42}}, code: "VALIDATION_FAILED"},
 	}
 
 	for _, tc := range prepareRejections {
@@ -374,9 +374,9 @@ func TestPrepareRejectionsPreserveWorkerQueueOrderingCancellationAndBusy(t *test
 		h := newHarness(t)
 		defer h.cleanup()
 		startSlow(t, h)
-		writeRequest(t, h.client, protocol.Request{ID: "queued", Capability: "hidden"})
-		writeRequest(t, h.client, protocol.Request{ID: "busy", Capability: "needs-value", Params: map[string]any{"value": 42}})
-		if response := readResponse(t, h.client); response.ID != "busy" || response.Error == nil || response.Error.Code != "AGENT_BUSY" {
+		writeRequest(t, h.client, protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "queued", Capability: "hidden"})
+		writeRequest(t, h.client, protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "busy", Capability: "needs-value", Params: map[string]any{"value": 42}})
+		if response := readResponse(t, h.client); response.ID != "busy" || response.Error == nil || response.Error.Code != "BUSY" {
 			t.Fatalf("queue-full rejection response = %#v", response)
 		}
 		syncCancel(t, h.client, "queued")
@@ -393,11 +393,11 @@ func TestPrepareRejectionsPreserveWorkerQueueOrderingCancellationAndBusy(t *test
 		h := newHarness(t)
 		defer h.cleanup()
 		startSlow(t, h)
-		writeRequest(t, h.client, protocol.Request{ID: "rate", Capability: "limited", Params: map[string]any{}})
+		writeRequest(t, h.client, protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "rate", Capability: "limited", Params: map[string]any{}})
 		if err := h.client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		if response := readResponse(t, h.client); response.ID != "rate" || response.Error == nil || response.Error.Code != "AGENT_RATE_LIMITED" {
+		if response := readResponse(t, h.client); response.ID != "rate" || response.Error == nil || response.Error.Code != "RATE_LIMITED" {
 			t.Fatalf("immediate rate response = %#v", response)
 		}
 		if err := h.client.SetReadDeadline(time.Time{}); err != nil {
@@ -428,6 +428,19 @@ func TestAgentWireIDBoundariesPreserveGatewayULID(t *testing.T) {
 		t.Fatalf("production Gateway ULID length/limit = %d/%t", len(gatewayULID), validAgentWireID(gatewayULID))
 	}
 
+	for _, raw := range []string{`"` + strings.Repeat(`\u0069`, agentMaxWireIDBytes) + `"`, `"` + gatewayULID + `"`} {
+		var id boundedWireID
+		if err := json.Unmarshal([]byte(raw), &id); err != nil || !validAgentWireID(string(id)) {
+			t.Fatalf("bounded escaped ID rejected: %v", err)
+		}
+	}
+	for _, raw := range []string{`null`, `1`, `""`, `"` + strings.Repeat(`\u0069`, agentMaxWireIDBytes+1) + `"`} {
+		var id boundedWireID
+		if json.Unmarshal([]byte(raw), &id) == nil {
+			t.Fatal("invalid bounded ID accepted")
+		}
+	}
+
 	r := mutationRunner(t, &mutationDriverState{})
 	maxConcurrent := 1
 	r.cf.Runtime.MaxConcurrentRequests = &maxConcurrent
@@ -450,7 +463,7 @@ func TestAgentWireIDBoundariesPreserveGatewayULID(t *testing.T) {
 	defer cleanup()
 
 	// The exact-limit ID is accepted for both request and control envelopes.
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: boundaryID, Capability: "meta"})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: boundaryID, Capability: "meta"})); err != nil {
 		t.Fatal(err)
 	}
 	msg, err := client.ReadText()
@@ -469,7 +482,7 @@ func TestAgentWireIDBoundariesPreserveGatewayULID(t *testing.T) {
 	}
 	// Synchronous invalid and rate-limit responses can echo at most the bounded
 	// ID. Exercise both paths at the exact limit while the peer is reading.
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: boundaryID, Capability: "mutate"})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: boundaryID, Capability: "mutate"})); err != nil {
 		t.Fatal(err)
 	}
 	msg, err = client.ReadText()
@@ -480,10 +493,10 @@ func TestAgentWireIDBoundariesPreserveGatewayULID(t *testing.T) {
 	if err := json.Unmarshal(msg, &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.ID != boundaryID || response.Error == nil || response.Error.Code != "AGENT_RATE_LIMITED" {
+	if response.ID != boundaryID || response.Error == nil || response.Error.Code != "RATE_LIMITED" {
 		t.Fatalf("exact-limit rate response = %#v", response)
 	}
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: boundaryID, Capability: "unknown"})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: boundaryID, Capability: "unknown"})); err != nil {
 		t.Fatal(err)
 	}
 	msg, err = client.ReadText()
@@ -494,10 +507,10 @@ func TestAgentWireIDBoundariesPreserveGatewayULID(t *testing.T) {
 	if err := json.Unmarshal(msg, &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.ID != boundaryID || response.Error == nil || response.Error.Code != "GATEWAY_CAPABILITY_NOT_FOUND" {
+	if response.ID != boundaryID || response.Error == nil || response.Error.Code != "NOT_FOUND" {
 		t.Fatalf("exact-limit invalid response = %#v", response)
 	}
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: gatewayULID, Capability: "meta"})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: gatewayULID, Capability: "meta"})); err != nil {
 		t.Fatal(err)
 	}
 	msg, err = client.ReadText()
@@ -575,13 +588,13 @@ func TestAgentWebSocketRejectsInvalidOrOversizedIDsBeforeAdmissionAndResponseQue
 
 	oneByteOver := strings.Repeat("i", agentMaxWireIDBytes+1)
 	t.Run("empty request ID", func(t *testing.T) {
-		assertClosedWithoutResponse(t, protocol.MustJSON(protocol.Request{Capability: "mutate"}))
+		assertClosedWithoutResponse(t, protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), Capability: "mutate"}))
 	})
 	t.Run("empty control ID", func(t *testing.T) {
 		assertClosedWithoutResponse(t, protocol.MustJSON(protocol.CancelRequest{Type: "cancel"}))
 	})
 	t.Run("request one byte over", func(t *testing.T) {
-		assertClosedWithoutResponse(t, protocol.MustJSON(protocol.Request{ID: oneByteOver, Capability: "mutate"}))
+		assertClosedWithoutResponse(t, protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: oneByteOver, Capability: "mutate"}))
 	})
 	t.Run("control one byte over", func(t *testing.T) {
 		assertClosedWithoutResponse(t, protocol.MustJSON(protocol.CancelRequest{Type: "cancel", ID: oneByteOver}))
@@ -589,8 +602,13 @@ func TestAgentWebSocketRejectsInvalidOrOversizedIDsBeforeAdmissionAndResponseQue
 	t.Run("large non-reading peer", func(t *testing.T) {
 		// Exercise one near-maximum (16 MiB) WebSocket message, rather than
 		// reproducing the vulnerable pattern of retaining hundreds of them.
-		largeID := strings.Repeat("h", (16<<20)-1024)
-		assertClosedWithoutResponse(t, protocol.MustJSON(protocol.Request{ID: largeID, Capability: "mutate"}))
+		// Construct the hostile frame directly: encoding/json.Marshal caches
+		// its near-16MiB encoder buffer in a process-wide pool for one GC,
+		// which would measure fixture memory rather than Agent retention.
+		payload := []byte(`{"type":"request","id":"`)
+		payload = append(payload, strings.Repeat("h", (16<<20)-1024)...)
+		payload = append(payload, []byte(`","capability":"mutate"}`)...)
+		assertClosedWithoutResponse(t, payload)
 	})
 
 	limiter := r.rateLimits["mutate"]
@@ -681,7 +699,7 @@ func TestRateLimitedWebSocketQueueFullCancellationKeepsStateMemoryAndControlBoun
 
 	writeRequest := func(id string) {
 		t.Helper()
-		if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: id, Capability: "mutate", Params: map[string]any{}})); err != nil {
+		if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: id, Capability: "mutate", Params: map[string]any{}})); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -736,13 +754,13 @@ func TestRateLimitedWebSocketQueueFullCancellationKeepsStateMemoryAndControlBoun
 		response := readResponse()
 		responses[response.ID] = response
 	}
-	if response := responses["busy"]; response.Error == nil || response.Error.Code != "AGENT_BUSY" {
+	if response := responses["busy"]; response.Error == nil || response.Error.Code != "BUSY" {
 		t.Fatalf("queue-full response = %#v", response)
 	}
-	if response := responses["after-busy"]; response.Error == nil || response.Error.Code != "AGENT_RATE_LIMITED" {
+	if response := responses["after-busy"]; response.Error == nil || response.Error.Code != "RATE_LIMITED" {
 		t.Fatalf("queue-full token was returned: %#v", response)
 	}
-	if response := responses["running"]; response.Error == nil || response.Error.Code != "AGENT_QUERY_TIMEOUT" {
+	if response := responses["running"]; response.Error == nil || response.Error.Code != "EXECUTION_TIMEOUT" {
 		t.Fatalf("running cancellation response = %#v", response)
 	}
 	if _, ok := responses["queued"]; ok {
@@ -781,7 +799,7 @@ func TestRateLimitedWebSocketQueueFullCancellationKeepsStateMemoryAndControlBoun
 			}
 		}
 		response := readResponse()
-		if response.ID != id || response.Error == nil || response.Error.Code != "AGENT_RATE_LIMITED" {
+		if response.ID != id || response.Error == nil || response.Error.Code != "RATE_LIMITED" {
 			t.Fatalf("rejected response %d = %#v", i, response)
 		}
 	}

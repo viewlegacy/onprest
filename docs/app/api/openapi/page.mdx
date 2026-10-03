@@ -11,31 +11,13 @@ Authorization: Bearer {api_key}
 
 ## Source
 
-The Agent generates OpenAPI from `capability.yaml`, excluding capabilities with `expose_in_openapi: false`. When the Agent connects, the Gateway retrieves and caches the generated document in memory.
+The Agent generates OpenAPI from `capability.yaml`, excluding capabilities with `policy.expose_in_openapi: false`. When the Agent connects, the Gateway retrieves and caches the generated document in memory.
 
-The public HTTP 200 schema is operation-specific: SELECT requires `rows` and non-negative `int64` `count`; INSERT/UPDATE/DELETE requires only non-negative `int64` `count` and disallows additional properties.
+The Gateway validates the document and its capability metadata before caching them. Until valid metadata and definition hashes are available, business calls return `AGENT_OFFLINE` without execution. A service whose capabilities are all hidden can have an empty OpenAPI `paths` map while retaining its internal capability metadata.
+
+The HTTP 200 schema describes the common envelope: `request_id` and `result`, with `result.data` and `result.files` always present. Configured `output` determines the schema of published data. A SELECT with data output returns `result.data.rows` and a non-negative `int64` `result.data.count`; INSERT/UPDATE/DELETE data output returns the native affected-row count in `result.data.count`. Omitting output returns `result.data: null` and `result.files: []` while still executing the operation.
 
 Optional `x-onprest-annotations` contains explicitly configured operation hints, and optional `x-onprest-examples` contains validated `{params: object}` examples.
-
-```json
-{
-  "id": "01J5ABCDEG...",
-  "capability": "meta"
-}
-```
-
-The agent responds with:
-
-```json
-{
-  "id": "01J5ABCDEG...",
-  "result": {
-    "data": {
-      "openapi": "3.1.0"
-    }
-  }
-}
-```
 
 ## Filtering
 

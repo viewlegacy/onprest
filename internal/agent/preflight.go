@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/viewlegacy/onprest/internal/agent/providers"
 	"io"
 	"os"
 	"strings"
@@ -60,10 +61,13 @@ type preparationDetailLog struct {
 }
 
 type agentPreparation struct {
-	cf        *CapabilityFile
-	caps      map[string]CapabilityDef
-	db        *sql.DB
-	detailLog *preparationDetailLog
+	redactor   *configurationRedactor
+	versioned  *providers.Prepared
+	controller *ExecutionController
+	cf         *CapabilityFile
+	caps       map[string]CapabilityDef
+	db         *sql.DB
+	detailLog  *preparationDetailLog
 }
 
 type preparationObserver func(validationStage)
@@ -123,7 +127,7 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 	if err != nil {
 		return nil, detailLogError(diagnosticFailureMessage, err, "")
 	}
-	p := &agentPreparation{cf: cf, caps: cf.ByName(), detailLog: detailLog}
+	p := &agentPreparation{cf: cf, caps: cf.ByName(), detailLog: detailLog, redactor: newConfigurationRedactor(cf)}
 
 	fail := func(pe *preparationError) (*agentPreparation, error) {
 		if err := p.recordFailureWithMessage(pe, diagnosticFailureMessage); err != nil {
@@ -132,6 +136,54 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 		return nil, pe
 	}
 
+	if cf.Compiled != nil {
+		var providerErr error
+		var failedCapability string
+		registry, _ := providers.NewRegistry(map[string]providers.Factory{"db": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
+			p.redactor.capture(snapshot)
+			p, e := prepareDBProviderObserved(ctx, snapshot, observe)
+			if e != nil {
+				providerErr = e
+				failedCapability = snapshot.Definition().Name
+			}
+			return p, e
+		}})
+		versioned, err := registry.Prepare(ctx, cf.Compiled, cfg.CapabilityFile, providers.ResolveOptions{})
+		if err != nil {
+			stage := validationStageCapabilityExplain
+			detail := err
+			if providerErr != nil {
+				detail = providerErr
+				var de *dbPrepareError
+				if errors.As(providerErr, &de) {
+					stage = de.stage
+				}
+			}
+			if ctx.Err() != nil {
+				stage = validationStageCanceled
+			}
+			return fail(&preparationError{stage: stage, capability: failedCapability, publicMessage: "executor preparation failed", detailErr: detail})
+		}
+		p.versioned = versioned
+		for _, name := range versioned.Names() {
+			snapshot, _ := versioned.Snapshot(name)
+			cap := snapshot.Definition()
+			source, _ := snapshot.Source(providers.SourceKey{Group: "databases", Name: cap.Executor.Source})
+			if cf.Database.Driver == "" {
+				cf.Database = snapshotDatabase(source)
+			}
+		}
+		sink, err := NewDiagnosticSink(detailLog.Writer, nil, cf.Logging.Level)
+		if err != nil {
+			return fail(&preparationError{stage: validationStageDetailLog, publicMessage: "diagnostic sink failed", detailErr: err})
+		}
+		p.controller, err = NewExecutionController(versioned, nil, sink)
+		if err != nil {
+			return fail(&preparationError{stage: validationStageInternal, publicMessage: "execution preparation failed", detailErr: err})
+		}
+		p.controller.redactor.secret(cf.Gateway.AgentPrivateKey)
+		return p, nil
+	}
 	db, err := openDatabaseForPreparation(cf.Database)
 	if err != nil {
 		pe := &preparationError{stage: validationStageDatabaseOpen, publicMessage: "database could not be opened", detailErr: err}
@@ -214,7 +266,11 @@ func (p *agentPreparation) recordFailureWithMessage(pe *preparationError, diagno
 	}
 	detail := ""
 	if pe.privateDetail() != nil {
-		detail = redactPreparationDetail(pe.privateDetail().Error(), p.cf)
+		detail = pe.privateDetail().Error()
+		if p.redactor != nil {
+			detail = p.redactor.redact(detail)
+		}
+		detail = redactPreparationDetail(detail, p.cf)
 	}
 	record := map[string]any{
 		"ts": time.Now().UTC().Format(time.RFC3339Nano), "event": "agent_error",
@@ -264,7 +320,7 @@ func (p *agentPreparation) finishDoctorSuccess() error {
 }
 
 func (p *agentPreparation) finishSuccess(cleanupFailureMessage, diagnosticFailureMessage, closeFailureMessage string) error {
-	if p.db != nil {
+	if p.db != nil || p.versioned != nil {
 		if err := p.closeDatabase(); err != nil {
 			pe := &preparationError{stage: validationStageInternal, publicMessage: closeFailureMessage, detailErr: err}
 			if recordErr := p.recordFailureWithMessage(pe, diagnosticFailureMessage); recordErr != nil {
@@ -284,6 +340,11 @@ func (p *agentPreparation) finishSuccess(cleanupFailureMessage, diagnosticFailur
 }
 
 func (p *agentPreparation) closeDatabase() error {
+	if p.versioned != nil {
+		v := p.versioned
+		p.versioned = nil
+		return v.Close()
+	}
 	if p.db == nil {
 		return nil
 	}
@@ -309,7 +370,7 @@ func redactPreparationDetail(detail string, cf *CapabilityFile) string {
 	if cf == nil {
 		return detail
 	}
-	for _, secret := range []string{cf.Database.Password, cf.Gateway.AgentPrivateKey, cf.Database.DSN()} {
+	for _, secret := range []string{cf.Database.DSN(), cf.Database.Password, cf.Gateway.AgentPrivateKey} {
 		if secret != "" {
 			detail = strings.ReplaceAll(detail, secret, "[REDACTED]")
 		}

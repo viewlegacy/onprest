@@ -7,7 +7,7 @@ You can use PostgreSQL, MySQL, SQL Server, or Oracle. Additional steps let you
 observe no row, changed contents, and an unavailable read.
 
 The caller chooses a UNIQUE `external_request_id` before inserting and compares
-all four fields when reading: request ID, product, quantity, and customer.
+all four fields when reading: external request ID, product, quantity, and customer.
 Finding the ID alone is insufficient. This example uses INSERT; see
 [Mutation Reconciliation](https://docs.onprest.viewlegacy.com/operations/mutation-reconciliation)
 for operational decisions and UPDATE/DELETE considerations.
@@ -105,7 +105,7 @@ curl --fail-with-body -sS \
   -d '{"external_request_id":"req-20260906-001","product_code":"SKU-001","quantity":2,"customer_code":"CUST-001"}'
 ```
 
-Success returns `{"count":1}`. Read through the separate capability:
+Success returns an envelope with `result.data.count: 1`. Read through the separate capability:
 
 ```bash
 curl --fail-with-body -sS \
@@ -118,7 +118,7 @@ curl --fail-with-body -sS \
 Expected result:
 
 ```json
-{"rows":[{"external_request_id":"req-20260906-001","product_code":"SKU-001","quantity":2,"customer_code":"CUST-001"}],"count":1}
+{"request_id":"01J5ABCDEF1234567890ABCDEF01","result":{"data":{"rows":[{"external_request_id":"req-20260906-001","product_code":"SKU-001","quantity":2,"customer_code":"CUST-001"}],"count":1},"files":[]}}
 ```
 
 ## 3. Lose a response, then confirm the order
@@ -147,7 +147,7 @@ curl --fail-with-body -sS \
 ```
 
 curl reports an empty response (normally exit code 52). **Do not repeat this
-INSERT.** Keep its request ID and read directly through the Gateway:
+INSERT.** Keep its `external_request_id` and read directly through the Gateway:
 
 ```bash
 curl --fail-with-body -sS \
@@ -166,7 +166,7 @@ Do not interpret every missing response as a successful commit.
 ### Use MCP instead
 
 For an MCP response-loss exercise, restart `go run ./examples/mutation-reconciliation/response-loss.go`,
-wait for its ready message, and send a new request ID:
+wait for its ready message, and send a new `external_request_id`:
 
 ```bash
 curl --fail-with-body -sS \
@@ -194,7 +194,7 @@ The read returns the `003` order in `structuredContent` and text content.
 MCP tool errors can use HTTP 200 with `isError: true`; inspect the body. The
 helper discards only a successful one-row INSERT response, so an upstream
 execution error is returned instead of being presented as simulated success.
-Use a fresh request ID or reset the example database to repeat an exercise.
+Use a fresh `external_request_id` or reset the example database to repeat an exercise.
 
 ## 4. Try the other read results
 
@@ -217,7 +217,7 @@ curl --fail-with-body -sS \
 Expected result:
 
 ```json
-{"rows":[],"count":0}
+{"request_id":"01J5ABCDEF1234567890ABCDEF01","result":{"data":{"rows":[],"count":0},"files":[]}}
 ```
 
 This shows how an empty read looks. No INSERT was sent for this ID, so this
@@ -249,7 +249,7 @@ curl --fail-with-body -sS \
 Expected result:
 
 ```json
-{"rows":[{"external_request_id":"req-20260906-002","product_code":"SKU-001","quantity":5,"customer_code":"CUST-001"}],"count":1}
+{"request_id":"01J5ABCDEF1234567890ABCDEF01","result":{"data":{"rows":[{"external_request_id":"req-20260906-002","product_code":"SKU-001","quantity":5,"customer_code":"CUST-001"}],"count":1},"files":[]}}
 ```
 
 The ID exists, but the quantity differs from the original request's `2`. The
@@ -276,7 +276,7 @@ curl --fail-with-body -sS \
   -d '{"external_request_id":"req-20260906-002"}'
 ```
 
-Expect HTTP 503 with `GATEWAY_AGENT_OFFLINE` (curl exit code 22). This is a
+Expect HTTP 503 with `AGENT_OFFLINE` (curl exit code 22). This is a
 failed read, not an empty result; it tells you nothing about the order's presence
 or contents. Restore read access before making an INSERT decision.
 

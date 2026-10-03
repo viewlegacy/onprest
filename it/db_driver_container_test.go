@@ -268,14 +268,14 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 					if len(response.Error) != 0 && string(response.Error) != "null" {
 						t.Fatalf("MCP mutation error=%s", response.Error)
 					}
-					if len(response.Result.Content) != 1 || response.Result.Content[0].Type != "text" || response.Result.Content[0].Text != `{"count":1}` {
+					if len(response.Result.Content) != 1 || response.Result.Content[0].Type != "text" || string(unwrapBusinessEnvelope(t, []byte(response.Result.Content[0].Text))) != `{"count":1}` {
 						t.Fatalf("MCP mutation result=%#v, want exact count text", response.Result)
 					}
 					if mcpVersion.wantStructured {
 						var structured struct {
 							Count int `json:"count"`
 						}
-						if len(response.Result.StructuredContent) == 0 || string(response.Result.StructuredContent) == "null" || json.Unmarshal(response.Result.StructuredContent, &structured) != nil || structured.Count != 1 {
+						if len(response.Result.StructuredContent) == 0 || string(response.Result.StructuredContent) == "null" || json.Unmarshal(unwrapBusinessEnvelope(t, response.Result.StructuredContent), &structured) != nil || structured.Count != 1 {
 							t.Fatalf("MCP mutation structuredContent=%s, want count 1", response.Result.StructuredContent)
 						}
 					} else if len(response.Result.StructuredContent) != 0 {
@@ -286,11 +286,11 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 			}
 			beforeLimitScore := mutationScoreSum(t, driver, dbCfg)
 			status, body := postCapability(t, baseURL, secrets.APIKey, "limit_update", `{}`)
-			if status != http.StatusConflict {
+			if status != http.StatusUnprocessableEntity {
 				t.Fatalf("affected-row limit REST status=%d body=%s", status, body)
 			}
-			requireAPIErrorCode(t, body, "AGENT_AFFECTED_ROWS_EXCEEDED")
-			if !strings.Contains(string(body), `"message":"affected rows exceed policy.max_affected_rows"`) {
+			requireAPIErrorCode(t, body, "LIMIT_EXCEEDED")
+			if !strings.Contains(string(body), `"message":"output exceeds the configured limit"`) {
 				t.Fatalf("affected-row limit REST message=%s", body)
 			}
 			if got := mutationScoreSum(t, driver, dbCfg); got != beforeLimitScore {
@@ -298,7 +298,7 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 			}
 			mcpLimitPayload := `{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"limit_update","arguments":{}}}`
 			status, body = postMCPStatusWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, mcpLimitPayload)
-			if status != http.StatusOK || !strings.Contains(string(body), `"isError":true`) || !strings.Contains(string(body), `"code":"AGENT_AFFECTED_ROWS_EXCEEDED"`) || !strings.Contains(string(body), `"message":"affected rows exceed policy.max_affected_rows"`) {
+			if status != http.StatusOK || !strings.Contains(string(body), `"isError":true`) || !strings.Contains(string(body), `"code":"LIMIT_EXCEEDED"`) || !strings.Contains(string(body), `"message":"output exceeds the configured limit"`) {
 				t.Fatalf("affected-row limit MCP status=%d body=%s", status, body)
 			}
 			if got := mutationScoreSum(t, driver, dbCfg); got != beforeLimitScore {
@@ -308,13 +308,13 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 			if status != http.StatusConflict {
 				t.Fatalf("constraint status=%d body=%s", status, body)
 			}
-			requireAPIErrorCode(t, body, "AGENT_CONSTRAINT_VIOLATION")
+			requireAPIErrorCode(t, body, "CONFLICT")
 			for _, constraintCapability := range []string{"insert_not_null", "insert_check", "insert_fk"} {
 				status, body = postCapability(t, baseURL, secrets.APIKey, constraintCapability, `{}`)
 				if status != http.StatusConflict {
 					t.Fatalf("%s constraint status=%d body=%s", constraintCapability, status, body)
 				}
-				requireAPIErrorCode(t, body, "AGENT_CONSTRAINT_VIOLATION")
+				requireAPIErrorCode(t, body, "CONFLICT")
 			}
 			if got := mutationRowCount(t, driver, dbCfg); got != 5 {
 				t.Fatalf("constraint failures changed DB row count to %d", got)
@@ -346,7 +346,7 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 			if status != http.StatusBadGateway && status != http.StatusGatewayTimeout {
 				t.Fatalf("policy timeout status=%d body=%s", status, body)
 			}
-			if !strings.Contains(string(body), `"code":"AGENT_TRANSACTION_OUTCOME_UNKNOWN"`) && !strings.Contains(string(body), `"code":"AGENT_QUERY_TIMEOUT"`) {
+			if !strings.Contains(string(body), `"code":"OUTCOME_UNKNOWN"`) && !strings.Contains(string(body), `"code":"EXECUTION_TIMEOUT"`) {
 				t.Fatalf("policy timeout returned unsafe classification: %s", body)
 			}
 			if oraclePolicyUnlock != nil {
@@ -370,7 +370,7 @@ func TestContainerDBDriverMutationMatrix(t *testing.T) {
 			if status != http.StatusGatewayTimeout {
 				t.Fatalf("gateway timeout status=%d body=%s", status, body)
 			}
-			requireAPIErrorCode(t, body, "GATEWAY_TIMEOUT")
+			requireAPIErrorCode(t, body, "EXECUTION_TIMEOUT")
 			_ = blocker.Rollback()
 			deadline = time.Now().Add(5 * time.Second)
 			for {
@@ -409,68 +409,135 @@ func writeMutationCapability(t *testing.T, dir, driver string, db postgresConfig
 	mysqlUpsertBlock := ""
 	if driver == "mysql" {
 		mysqlUpsertBlock = `  mysql_upsert:
-    sql: insert into onprest_it_mutations (id, name, score, parent_id) values (10, 'ignored', 0, 1) on duplicate key update name = 'Multi-A-updated'
-    policy: {readonly: false, timeout: 2s, max_bytes: 128KB}
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: insert into onprest_it_mutations (id, name, score, parent_id) values (10, 'ignored', 0, 1) on duplicate key update name = 'Multi-A-updated'
+    output:
+      data: {}
 `
 	}
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Mutation IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
 capabilities:
   insert_row:
-    sql: %s
-    params:
-      id: {type: integer, required: true}
-      name: {type: string, required: true}
-    policy: {readonly: false, timeout: 2s, max_rows: 1, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    input:
+      properties:
+        id: {type: integer}
+        name: {type: string}
+      required: [id, name]
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    output:
+      data: {}
   insert_many:
-    sql: %s
-    policy: {readonly: false, timeout: 2s, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    output:
+      data: {}
 %s  insert_not_null:
-    sql: insert into onprest_it_mutations (id, name, score, parent_id) values (20, NULL, 0, 1)
-    policy: {readonly: false, timeout: 2s, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: insert into onprest_it_mutations (id, name, score, parent_id) values (20, NULL, 0, 1)
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    output:
+      data: {}
   insert_check:
-    sql: insert into onprest_it_mutations (id, name, score, parent_id) values (21, 'bad-check', -1, 1)
-    policy: {readonly: false, timeout: 2s, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: insert into onprest_it_mutations (id, name, score, parent_id) values (21, 'bad-check', -1, 1)
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    output:
+      data: {}
   insert_fk:
-    sql: insert into onprest_it_mutations (id, name, score, parent_id) values (22, 'bad-fk', 0, 999)
-    policy: {readonly: false, timeout: 2s, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: insert into onprest_it_mutations (id, name, score, parent_id) values (22, 'bad-fk', 0, 999)
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    output:
+      data: {}
   update_row:
-    sql: %s
-    params:
-      id: {type: integer, required: true}
-      name: {type: string, required: true}
-    policy: {readonly: false, timeout: 2s, max_rows: 1, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    input:
+      properties:
+        id: {type: integer}
+        name: {type: string}
+      required: [id, name]
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    output:
+      data: {}
   delete_row:
-    sql: %s
-    params:
-      id: {type: integer, required: true}
-    policy: {readonly: false, timeout: 2s, max_rows: 1, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    input:
+      properties:
+        id: {type: integer}
+      required: [id]
+    policy: {readonly: false, timeout: 2s, max_output_bytes: 128KB}
+    output:
+      data: {}
   limit_update:
-    sql: update onprest_it_mutations set score = score + 1
-    policy: {readonly: false, timeout: 2s, max_affected_rows: 1, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: update onprest_it_mutations set score = score + 1
+    policy: {readonly: false, timeout: 2s, max_affected_rows: 1, max_output_bytes: 128KB}
+    output:
+      data: {}
   slow_update:
-    sql: %s
-    params:
-      id: {type: integer, required: true}
-      name: {type: string, required: true}
-    policy: {readonly: false, timeout: 10s, max_rows: 1, max_bytes: 128KB}
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    input:
+      properties:
+        id: {type: integer}
+        name: {type: string}
+      required: [id, name]
+    policy: {readonly: false, timeout: 10s, max_output_bytes: 128KB}
+    output:
+      data: {}
   list_rows:
-    sql: %s
-    policy: {readonly: false, timeout: 2s, max_rows: 100, max_bytes: 128KB}
-    result:
-      id: {type: integer}
-      name: {type: string}
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    policy: {readonly: false, timeout: 2s, max_rows: 100, max_output_bytes: 128KB}
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: integer}
+          name: {type: string}
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey),
 		yamlString("insert into onprest_it_mutations (id, name, score, parent_id) values (:id, :name, 0, 1)"), yamlString(multiInsert), mysqlUpsertBlock, yamlString("update onprest_it_mutations set name = :name where id = :id"), yamlString("delete from onprest_it_mutations where id = :id"), yamlString("update onprest_it_mutations set name = :name where id = :id"), yamlString(selectSQL))
 	return writeFile(t, filepath.Join(dir, "capability.mutations."+driver+".yaml"), content)
@@ -802,7 +869,7 @@ func TestContainerDBDriverErrorsAreHiddenFromGatewayResponse(t *testing.T) {
 			if status != http.StatusBadGateway {
 				t.Fatalf("driver_error status=%d body=%s", status, string(body))
 			}
-			requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+			requireAPIErrorCode(t, body, "EXECUTION_FAILED")
 			if strings.Contains(strings.ToLower(string(body)), "json") ||
 				strings.Contains(strings.ToLower(string(body)), "divide") ||
 				strings.Contains(strings.ToLower(string(body)), "ora-") ||
@@ -869,7 +936,7 @@ func TestContainerDBDriverTimeoutsAreNormalized(t *testing.T) {
 			if status != http.StatusGatewayTimeout {
 				t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusGatewayTimeout, string(body))
 			}
-			requireAPIErrorCode(t, body, "AGENT_QUERY_TIMEOUT")
+			requireAPIErrorCode(t, body, "EXECUTION_TIMEOUT")
 			if tc.blockRuntimeSelect && elapsed+25*time.Millisecond < tc.policyTimeout {
 				t.Fatalf("slow_query returned before policy timeout: elapsed=%s timeout=%s", elapsed, tc.policyTimeout)
 			}
@@ -948,7 +1015,7 @@ func TestContainerDBDriverPermissionErrorsAreHiddenFromGatewayResponse(t *testin
 			if status != http.StatusBadGateway {
 				t.Fatalf("permission_probe after revoke status=%d body=%s", status, string(body))
 			}
-			requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+			requireAPIErrorCode(t, body, "EXECUTION_FAILED")
 			lowerBody := strings.ToLower(string(body))
 			for _, leaked := range []string{"permission", "denied", "select", "ora-", "sqlstate", restricted.User, restricted.Password} {
 				if leaked != "" && strings.Contains(lowerBody, strings.ToLower(leaked)) {
@@ -960,7 +1027,7 @@ func TestContainerDBDriverPermissionErrorsAreHiddenFromGatewayResponse(t *testin
 				t.Fatalf("read agent detail log: %v; output=%s", err, output.String())
 			}
 			lowerLog := bytes.ToLower(logs)
-			if !bytes.Contains(logs, []byte("AGENT_QUERY_FAILED")) ||
+			if !bytes.Contains(logs, []byte("EXECUTION_FAILED")) ||
 				!(bytes.Contains(lowerLog, []byte("permission")) ||
 					bytes.Contains(lowerLog, []byte("denied")) ||
 					bytes.Contains(lowerLog, []byte("ora-"))) {
@@ -1043,7 +1110,7 @@ func TestContainerDBDriverStartupDMLExplainPermissionErrorsArePrivate(t *testing
 			if status != http.StatusServiceUnavailable {
 				t.Fatalf("offline capability status=%d body=%s", status, publicBody)
 			}
-			requireAPIErrorCode(t, publicBody, "GATEWAY_AGENT_OFFLINE")
+			requireAPIErrorCode(t, publicBody, "AGENT_OFFLINE")
 			if got := permissionProbeValue(t, tc.driver, admin); got != 1 {
 				t.Fatalf("startup EXPLAIN changed protected value to %d", got)
 			}
@@ -1140,7 +1207,7 @@ func TestContainerDBDriverPolicySemantics(t *testing.T) {
 		{
 			name:     "oracle",
 			driver:   "oracle",
-			rowsSQL:  `select level as "n" from dual connect by level <= 3`,
+			rowsSQL:  `select cast(level as number(19,0)) as "n" from dual connect by level <= 3`,
 			largeSQL: `select rpad('x', 2048, 'x') as "payload" from dual`,
 		},
 	} {
@@ -1176,10 +1243,10 @@ func TestContainerDBDriverPolicySemantics(t *testing.T) {
 			}
 
 			status, body = postCapability(t, baseURL, secrets.APIKey, "too_large", `{}`)
-			if status != http.StatusBadGateway {
-				t.Fatalf("too_large status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+			if status != http.StatusUnprocessableEntity {
+				t.Fatalf("too_large status=%d want %d; body=%s", status, http.StatusUnprocessableEntity, string(body))
 			}
-			requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+			requireAPIErrorCode(t, body, "LIMIT_EXCEEDED")
 
 			cancel()
 			select {
@@ -1360,16 +1427,19 @@ func execDBStatements(t *testing.T, driver string, cfg postgresConfig, statement
 
 func writeContainerCapability(t *testing.T, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey, sql string) string {
 	t.Helper()
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest Container DB IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
@@ -1378,47 +1448,57 @@ logging:
   max_files: 3
 capabilities:
   get_customer:
-    sql: %s
-    params:
-      id:
-        type: integer
-        required: true
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    input:
+      properties:
+        id:
+          type: integer
+      required: [id]
     policy:
       readonly: true
       timeout: 2s
       max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer
-      name:
-        type: string
-      email:
-        type: string
+      max_output_bytes: 128KB
+    output:
+      data: {}
+      items:
+        properties:
+          id:
+            type: integer
+          name:
+            type: string
+          email:
+            type: string
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), yamlString(sql))
 	return writeFile(t, dir+"/capability."+driver+".yaml", content)
 }
 
 func writeContainerErrorCapability(t *testing.T, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey, sql, resultType string) string {
 	t.Helper()
-	paramBlock := `      denominator:
-        type: integer
-        required: true`
+	paramBlock := `        denominator:
+          type: integer
+      required: [denominator]`
 	if driver == "mysql" {
-		paramBlock = `      payload:
-        type: string
-        required: true`
+		paramBlock = `        payload:
+          type: string
+      required: [payload]`
 	}
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest Container DB Error IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
@@ -1427,33 +1507,43 @@ logging:
   max_files: 3
 capabilities:
   driver_error:
-    sql: %s
-    params:
+    executor:
+      type: db
+      source: primary
+      sql: %s
+    input:
+      properties:
 %s
     policy:
       readonly: true
       timeout: 2s
       max_rows: 1
-      max_bytes: 128KB
-    result:
-      value:
-        type: %s
+      max_output_bytes: 128KB
+    output:
+      data: {}
+      items:
+        properties:
+          value:
+            type: %s
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), yamlString(sql), paramBlock, resultType)
 	return writeFile(t, dir+"/capability."+driver+".error.yaml", content)
 }
 
 func writeContainerPolicyCapability(t *testing.T, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey, rowsSQL, largeSQL string) string {
 	t.Helper()
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest Container DB Policy IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
@@ -1462,41 +1552,56 @@ logging:
   max_files: 3
 capabilities:
   limited_rows:
-    sql: %s
+    executor:
+      type: db
+      source: primary
+      sql: %s
     policy:
       readonly: true
       timeout: 2s
       max_rows: 2
-      max_bytes: 128KB
-    result:
-      n:
-        type: integer
+      max_output_bytes: 128KB
+    output:
+      data: {}
+      items:
+        properties:
+          n:
+            type: integer
   too_large:
-    sql: %s
+    executor:
+      type: db
+      source: primary
+      sql: %s
     policy:
       readonly: true
       timeout: 2s
       max_rows: 1
-      max_bytes: 1KB
-    result:
-      payload:
-        type: string
+      max_output_bytes: 1KB
+    output:
+      data: {}
+      items:
+        properties:
+          payload:
+            type: string
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), yamlString(rowsSQL), yamlString(largeSQL))
 	return writeFile(t, dir+"/capability."+driver+".policy.yaml", content)
 }
 
 func writeContainerStartupCapability(t *testing.T, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey, sql string) string {
 	t.Helper()
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest Container DB Startup IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
@@ -1505,57 +1610,75 @@ logging:
   max_files: 3
 capabilities:
   startup_probe:
-    sql: %s
+    executor:
+      type: db
+      source: primary
+      sql: %s
     policy:
       readonly: true
       timeout: 2s
       max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer
+      max_output_bytes: 128KB
+    output:
+      data: {}
+      items:
+        properties:
+          id:
+            type: integer
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), yamlString(sql))
 	return writeFile(t, dir+"/capability."+driver+".startup.yaml", content)
 }
 
 func writeContainerWritableCapability(t *testing.T, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey, statement string) string {
 	t.Helper()
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest Writable Protection IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
 capabilities:
   attempted_multiple_mutation:
-    sql: %s
+    executor:
+      type: db
+      source: primary
+      sql: %s
     policy:
       readonly: false
       timeout: 2s
-      max_bytes: 128KB
+      max_output_bytes: 128KB
+    output:
+      data: {}
+
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), yamlString(statement))
 	return writeFile(t, filepath.Join(dir, "capability."+driver+".writable-protection.yaml"), content)
 }
 
 func writeContainerPermissionCapability(t *testing.T, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey, sql string) string {
 	t.Helper()
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest Container DB Permission IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
@@ -1564,27 +1687,36 @@ logging:
   max_files: 3
 capabilities:
   permission_probe:
-    sql: %s
+    executor:
+      type: db
+      source: primary
+      sql: %s
     policy:
       readonly: false
       timeout: 2s
-      max_bytes: 128KB
+      max_output_bytes: 128KB
+    output:
+      data: {}
+
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), yamlString(sql))
 	return writeFile(t, dir+"/capability."+driver+".permission.yaml", content)
 }
 
 func writeContainerTimeoutCapability(t *testing.T, dir, driver string, db postgresConfig, gatewayURL, agentPrivateKey, sql string, policyTimeout time.Duration) string {
 	t.Helper()
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest Container DB Timeout IT
   version: 0.1.0
-database:
-  driver: %s
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
@@ -1593,15 +1725,21 @@ logging:
   max_files: 3
 capabilities:
   slow_query:
-    sql: %s
+    executor:
+      type: db
+      source: primary
+      sql: %s
     policy:
       readonly: false
       timeout: %s
       max_rows: 1
-      max_bytes: 128KB
-    result:
-      slept:
-        type: integer
+      max_output_bytes: 128KB
+    output:
+      data: {}
+      items:
+        properties:
+          slept:
+            type: integer
 `, driver, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), yamlString(sql), policyTimeout.String())
 	return writeFile(t, dir+"/capability."+driver+".timeout.yaml", content)
 }

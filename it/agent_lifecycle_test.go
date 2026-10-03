@@ -69,16 +69,23 @@ func TestAgentExitsOnDBPingFailure(t *testing.T) {
 		Port: port,
 		Name: "missing",
 		User: "missing",
-	}, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `  ping:
+	}, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `ping:
+  policy:
+    readonly: true
+    timeout: 1s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select 1::int as id
-    policy:
-      readonly: true
-      timeout: 1s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer`)
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+`)
 
 	cmd := startProcess(t, context.Background(), agentBin, nil, []string{"AGENT_CAPABILITY_FILE=" + capabilityFile})
 	if err := waitForExit(t, cmd, 5*time.Second); err == nil {
@@ -94,16 +101,23 @@ func TestAgentExitsOnExplainFailure(t *testing.T) {
 	buildBinary(t, repo, agentBin, "./cmd/agent")
 
 	secrets := newITSecrets(t)
-	capabilityFile := writePostgresCapability(t, tmp, db, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `  explain_fail:
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `explain_fail:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select missing_column from missing_table
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      missing_column:
-        type: string`)
+  output:
+    data: {}
+    items:
+      properties:
+        missing_column:
+          type: string
+`)
 
 	cmd := startProcess(t, context.Background(), agentBin, nil, []string{"AGENT_CAPABILITY_FILE=" + capabilityFile})
 	if err := waitForExit(t, cmd, 5*time.Second); err == nil {
@@ -234,16 +248,22 @@ func TestCapabilityFileChangesRequireRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = f.WriteString(`
-  added_after_start:
+added_after_start:
+  policy:
+    readonly: true
+    timeout: 1s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select 1::int as id
-    policy:
-      readonly: true
-      timeout: 1s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
 `)
 	_ = f.Close()
 
@@ -252,7 +272,7 @@ func TestCapabilityFileChangesRequireRestart(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d; body=%s", status, http.StatusNotFound, string(body))
 	}
-	requireAPIErrorCode(t, body, "GATEWAY_CAPABILITY_NOT_FOUND")
+	requireAPIErrorCode(t, body, "NOT_FOUND")
 
 	cancel()
 	select {

@@ -68,7 +68,10 @@ The following is a JSON-RPC wire-protocol example, not an `mcpServers` client co
   "params": {
     "protocolVersion": "2025-11-25",
     "capabilities": {},
-    "clientInfo": {"name": "example-client", "version": "1.0.0"}
+    "clientInfo": {
+      "name": "example-client",
+      "version": "1.0.0"
+    }
   }
 }
 ```
@@ -98,23 +101,25 @@ The Gateway maps explicitly supplied `x-onprest-annotations` values to MCP's `re
   "method": "tools/call",
   "params": {
     "name": "get_customer",
-    "arguments": {"customer_id": 1}
+    "arguments": {
+      "customer_id": 1
+    }
   }
 }
 ```
 
-The tool name maps to a capability name and `arguments` maps to capability params. `name` is required, and `arguments` must be a JSON object when supplied. Every successful call includes the Agent result as a text `content` item. `2025-06-18` and `2025-11-25` additionally include the same JSON value as `structuredContent`; the legacy `2025-03-26` behavior omits it. The same version distinction applies to execution-error results.
+The tool name maps to a capability name and `arguments` maps to capability params. `name` is required, and `arguments` must be a JSON object when supplied. Business results use the [REST envelope](/api/rest), with a Gateway-assigned `request_id` and `result.data` / `result.files`. Every supported version includes that envelope as a text `content` item. `2025-06-18` and `2025-11-25` additionally include the same JSON as `structuredContent`; `2025-03-26` omits it. The same version distinction applies to execution-error results.
 
-Mutation capabilities use the same `tools/call` method. A successful mutation returns its count-only result in the text fallback and, for newer versions, in `structuredContent`; `count: 0` remains success.
+SELECT data contains `rows` and `count`; mutation data contains the native affected `count`, including zero as success. Omitting output publishes `data: null` and `files: []` while still executing.
 
 ## IDs and notifications
 
-JSON-RPC request IDs may be strings or numbers. The Gateway accepts the official client-to-server notifications defined by the selected protocol version, including `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, and `notifications/roots/list_changed`; `notifications/tasks/status` is accepted only in `2025-11-25`. Notifications are validated but do not invoke capabilities.
+JSON-RPC request IDs may be strings or numbers. They are independent of the Gateway-assigned `request_id`. The Gateway accepts the official client-to-server notifications defined by the selected protocol version, including `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, and `notifications/roots/list_changed`; `notifications/tasks/status` is accepted only in `2025-11-25`. Notifications are validated but do not invoke capabilities.
 
 A valid notification returns HTTP 202 with an empty body. Invalid parameters on a recognized ID-less notification return HTTP 400 with JSON-RPC `INVALID_PARAMS` and `id: null`; a notification carrying an ID is an `INVALID_REQUEST`. Other ID-less methods are rejected.
 
 ## Errors
 
-JSON parse/shape errors, unsupported JSON-RPC methods, and unknown tool names are JSON-RPC errors with HTTP 200. `tools/list` without usable Agent metadata also returns HTTP 200 with JSON-RPC error `-32000` and `error.data.code: GATEWAY_AGENT_OFFLINE`.
+JSON parse/shape errors, unsupported JSON-RPC methods, and malformed tool-call parameters are JSON-RPC errors with HTTP 200. `tools/list` without usable Agent metadata also returns HTTP 200 with JSON-RPC error `-32000` and `error.data.code: AGENT_OFFLINE`.
 
-Once a known tool has been invoked, an agent/runtime failure—including `AGENT_RATE_LIMITED`—is a normal JSON-RPC result with HTTP 200 and `isError: true`. Authentication, the Gateway's source-IP rate limit, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.
+Business failures, including Agent `RATE_LIMITED` and a well-formed call to an undefined tool, return HTTP 200 with `isError: true` and the [common error envelope](/api/errors), including the observed outcome. Authentication, the Gateway's source-IP rate limit, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.

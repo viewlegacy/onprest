@@ -144,7 +144,7 @@ AGENT_CAPABILITY_FILE=/path/to/capability.yaml
 
 Production `gateway.url` values must use `wss://.../ws/agent`. Plain `ws://` is accepted without an override only on loopback for local development. The `allow_insecure_non_loopback_ws` acknowledgement exists for isolated development networks, not production deployment.
 
-The challenge-based `onprest-agent-v2` handshake requires matching gateway and agent releases. An old agent cannot authenticate to a new gateway, and a new agent cannot obtain a challenge from an old gateway. Schedule the two binaries as one coordinated upgrade.
+Use compatible Gateway and Agent binaries. The WebSocket handshake requires both peers to confirm `X-Onprest-Protocol-Major: 1`; a missing or mismatched major is rejected before capability requests. The challenge-based Ed25519 signature uses the `onprest-agent-v2` domain.
 
 For OS-managed binary operation, follow the separate [new-service installation and existing-service change procedures](/operations/capability-changes). They validate the exact registered file before starting or stopping a service and include post-start health, OpenAPI, REST, and MCP checks. See [CLI Reference](/reference/cli#agent-service-commands) for individual service command syntax and aliases. Service installation does not enable automatic start on OS boot; configure that separately with the host OS if required.
 
@@ -169,11 +169,26 @@ docker build --build-arg TARGET=agent -t onprest-agent .
 
 For a release build, pass the same `--build-arg VERSION=x.y.z` to both commands. An omitted value is reported as `dev` by the binaries and MCP `initialize` metadata.
 
-When running the agent container, mount `capability.yaml` and pass it to the container entrypoint:
+The Agent image runs as UID/GID `65532:65532`; configuration and referenced protected files must be readable by that user. Mount configuration read-only and a separate protected, writable, persistent identity directory. Set the following in `capability.yaml`:
+
+```yaml
+runtime:
+  identity_dir: /var/lib/onprest/identity
+```
+
+Prepare the host directory for that container user and preserve it across container replacement:
 
 ```bash
-docker run --rm -v "$PWD/capability.yaml:/config/capability.yaml:ro" onprest-agent --config /config/capability.yaml
+mkdir -p "$PWD/agent-identity"
+sudo chown 65532:65532 "$PWD/agent-identity"
+sudo chmod 700 "$PWD/agent-identity"
+docker run --rm \
+  -v "$PWD/capability.yaml:/config/capability.yaml:ro" \
+  -v "$PWD/agent-identity:/var/lib/onprest/identity" \
+  onprest-agent --config /config/capability.yaml
 ```
+
+A named volume is also suitable when the operator initializes its ownership and permissions before use. In Compose, mount the same persistent volume read/write at `runtime.identity_dir` and keep it when recreating the Agent. The Agent creates a protected `config-hmac.key`; losing or replacing this key changes prepared definition bindings. A read-only YAML mount alone cannot provide the default configuration-relative identity directory.
 
 The mounted `capability.yaml` must use database and gateway addresses reachable from inside the container. Container platforms manage process start/stop and stdout/stderr collection. Do not use `onprest-agent service install` inside a container. `docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
 

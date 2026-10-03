@@ -218,7 +218,7 @@ func TestMCPToolsCallBranchesEmitExactlyOneCompleteRequestEvent(t *testing.T) {
 	dbUnreachableError := agentFailure(errAgentDBUnreachable, "database unavailable")
 	internalError := agentFailure(errAgentInternal, "agent internal error")
 	busyError := agentFailure(errAgentBusy, "agent concurrency limit reached")
-	unknownAgentError := agentFailure("AGENT_FUTURE_ERROR", "future agent error")
+	unknownAgentError := agentFailure("APP_FUTURE_ERROR", "future agent error")
 	unknown := func(t *testing.T) (*Server, *bytes.Buffer, string, func()) {
 		return testServerWithAgent(t, func(req agentRequest) agentResponse {
 			return agentResponse{ID: req.ID, Error: &wireError{Code: errGatewayCapabilityNotFound, Message: "capability is not defined"}}
@@ -228,14 +228,14 @@ func TestMCPToolsCallBranchesEmitExactlyOneCompleteRequestEvent(t *testing.T) {
 		{"invalid params", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}`, basic, "", http.StatusOK, errJSONRPCInvalidParams, "invalid tools/call params"},
 		{"capability denied", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_orders","arguments":{}}}`, basic, "search_orders", http.StatusForbidden, errGatewayCapabilityDenied, "capability not allowed"},
 		{"agent offline", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, offline, "get_customer", http.StatusOK, errGatewayAgentOffline, "agent is not connected"},
-		{"tool undefined", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, unknown, "get_customer", http.StatusOK, errJSONRPCInvalidParams, "tool is not defined"},
+		{"tool undefined", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, unknown, "get_customer", http.StatusOK, errGatewayCapabilityNotFound, "capability is not defined"},
 		{"validation error", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, validationError, "get_customer", http.StatusOK, errAgentValidationFailed, "parameters failed validation"},
 		{"tool execution error", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, toolError, "get_customer", http.StatusOK, errAgentQueryFailed, "database query failed"},
 		{"query timeout", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, timeoutError, "get_customer", http.StatusOK, errAgentQueryTimeout, "query exceeded policy.timeout"},
 		{"database unreachable", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, dbUnreachableError, "get_customer", http.StatusOK, errAgentDBUnreachable, "database unavailable"},
 		{"agent internal error", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, internalError, "get_customer", http.StatusOK, errAgentInternal, "agent internal error"},
 		{"agent busy", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, busyError, "get_customer", http.StatusOK, errAgentBusy, "agent concurrency limit reached"},
-		{"unknown agent error pass-through", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, unknownAgentError, "get_customer", http.StatusOK, "AGENT_FUTURE_ERROR", "future agent error"},
+		{"unknown agent error pass-through", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, unknownAgentError, "get_customer", http.StatusOK, "APP_FUTURE_ERROR", "future agent error"},
 		{"success", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`, success, "get_customer", http.StatusOK, nil, nil},
 	}
 	for _, test := range cases {

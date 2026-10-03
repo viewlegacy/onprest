@@ -21,9 +21,9 @@ For mutations, grant the agent DB user only the required table-level INSERT, UPD
 - DB credentials do not exist in the gateway.
 - The OpenAPI cache contains only Agent-generated public metadata, not SQL or DB connection information.
 - The agent rejects unknown capabilities.
-- The agent rejects inputs outside the params contract with `AGENT_VALIDATION_FAILED`.
+- The agent rejects inputs outside the params contract with `VALIDATION_FAILED`.
 - The agent can enforce a per-capability `policy.rate_limit` even if a compromised gateway sends requests without applying its own HTTP rate limit.
-- SELECT columns not included in the `result` allow-list are not returned externally. DML forbids `result`, returns affected count only, and may use `max_affected_rows` to rollback mutations larger than the declared policy.
+- Normal output with declared `output.items.properties` selects only those SELECT fields. `output.data: {}` without a row schema and `mode: passthrough` can publish all returned fields; the configuration author chooses that exposure. DML data output publishes a validated affected-count object and may use `max_affected_rows` to roll back mutations larger than policy. See [Output](/agent/capability-yaml#output).
 
 The gateway knows which API key can call which capability and can serve its public contract. Capability meaning and execution remain on the Agent.
 
@@ -36,12 +36,17 @@ API keys use explicit capability-level authorization.
   {
     "name": "partner-a",
     "key_hash": "$2a$10$...",
-    "capabilities": ["get_customer", "get_orders"]
+    "capabilities": [
+      "get_customer",
+      "get_orders"
+    ]
   },
   {
     "name": "internal",
     "key_hash": "$2a$10$...",
-    "capabilities": ["*"]
+    "capabilities": [
+      "*"
+    ]
   }
 ]
 ```
@@ -63,11 +68,11 @@ At startup:
 At runtime:
 
 - It checks whether the capability is defined.
-- It rejects unknown params, invalid types, enum violations, out-of-range values, and invalid formats.
+- It rejects unknown input properties by default, plus invalid types, enum violations, out-of-range values, and invalid formats.
 - It applies timeout and max-bytes policy to every operation, and max rows only to SELECT.
 - After capability and params validation, it applies any capability rate limit before execution-queue or database admission. Unknown capabilities and invalid params do not consume tokens.
 - It passes parameters through prepared statements.
-- It limits SELECT columns with the `result` allow-list; DML has no row result and returns native affected count only.
+- It applies configured output selection and validation; field filtering depends on the declared output schema and mode. See [Output](/agent/capability-yaml#output).
 
 ## Agent Secret Leakage
 
@@ -88,7 +93,7 @@ The gateway validates the signature before atomically consuming both the challen
 
 Use `wss://` for every non-loopback agent connection so challenges and authentication headers cannot be captured from the network. Plain `ws://` is accepted by default only for loopback development. `gateway.allow_insecure_non_loopback_ws: true` is an explicit escape hatch for an isolated development network and must not be used in production.
 
-Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `GATEWAY_AGENT_ALREADY_CONNECTED`.
+Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `CONFLICT`.
 
 `onprest-agent doctor` uses the same one-time challenge store but a separate signature domain:
 
@@ -104,13 +109,15 @@ Managed products and dashboards are outside the OSS core security boundary. Thei
 
 ## Sensitive Detail Handling
 
-External HTTP responses and gateway stdout never include raw detail. The HTTP response `message` is a public contract field; validation messages may identify the invalid field and reason.
+External HTTP responses and gateway stdout never include raw detail. Public errors use safe codes, messages, observed outcomes and optional fixed reasons; see [Errors](/api/errors).
 
 ```json
 {
+  "request_id": "01J5ABCDEF1234567890ABCDEF01",
   "error": {
-    "code": "AGENT_QUERY_FAILED",
-    "message": "database query failed"
+    "code": "EXECUTION_FAILED",
+    "message": "database query failed",
+    "outcome": "unknown"
   }
 }
 ```

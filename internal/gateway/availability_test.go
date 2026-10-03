@@ -29,6 +29,7 @@ func TestAgentDisconnectImmediatelyReleasesInflightRequest(t *testing.T) {
 	conn := newControlledAgentConn()
 	ac := newAgentConn(conn)
 	s.agent = ac
+	seedVersionedTestMetadata(s)
 	s.responseKinds = map[string]responseKind{"old": responseKindMutation}
 	go s.writeAgent(ac)
 	readDone := make(chan struct{})
@@ -73,6 +74,7 @@ func TestBlockedAgentWriteDoesNotHoldPendingLockOrLeakEntries(t *testing.T) {
 	conn.blockWrites = make(chan struct{})
 	ac := newAgentConn(conn)
 	s.agent = ac
+	seedVersionedTestMetadata(s)
 	go s.writeAgent(ac)
 
 	results := make(chan agentCallResult, 2)
@@ -124,6 +126,7 @@ func TestWriteFailureRemovesPendingEntry(t *testing.T) {
 	conn := &errorWriteAgentConn{err: errors.New("broken pipe")}
 	ac := newAgentConn(conn)
 	s.agent = ac
+	seedVersionedTestMetadata(s)
 	go s.writeAgent(ac)
 	result := s.callAgent(context.Background(), "capability", nil)
 	if result.Status != http.StatusServiceUnavailable {
@@ -148,6 +151,7 @@ func TestSentRequestTimeoutWritesSameIDCancelAndCleansState(t *testing.T) {
 	conn := newControlledAgentConn()
 	ac := newAgentConn(conn)
 	s.agent = ac
+	seedVersionedTestMetadata(s)
 	go s.writeAgent(ac)
 
 	result := s.callAgent(context.Background(), "mutate", nil)
@@ -187,6 +191,7 @@ func TestConcurrentTimeoutCleanupLeavesNoPendingOrSendState(t *testing.T) {
 	conn := newControlledAgentConn()
 	ac := newAgentConn(conn)
 	s.agent = ac
+	seedVersionedTestMetadata(s)
 	go s.writeAgent(ac)
 
 	const calls = 64
@@ -600,7 +605,7 @@ func (c *generationMetadataAgentConn) WriteText(payload []byte) error {
 	if c.release != nil {
 		<-c.release
 	}
-	resp := agentResponse{ID: req.ID, Result: json.RawMessage(c.response)}
+	resp := versionedTestResponse(req, agentResponse{ID: req.ID, Result: json.RawMessage(c.response)})
 	c.ac.mu.Lock()
 	ch := c.ac.pending[resp.ID]
 	delete(c.ac.pending, resp.ID)
@@ -841,7 +846,7 @@ func TestConcurrentRequestsOnOneWebSocketDispatchOutOfOrderResponses(t *testing.
 				return
 			}
 			if req.Capability == "meta" {
-				resp := protocol.ResultResponse(req.ID, map[string]any{"data": map[string]any{"openapi": "3.1.0", "paths": map[string]any{}}})
+				resp := versionedTestResponse(req, agentResponse{ID: req.ID, Result: json.RawMessage(`{"data":{"openapi":"3.1.0","paths":{"/api/v1/capabilities/slow":{"post":{}},"/api/v1/capabilities/fast":{"post":{}}}}}`)})
 				if err := conn.WriteText(protocol.MustJSON(resp)); err != nil {
 					agentErr <- err
 					return
@@ -851,7 +856,7 @@ func TestConcurrentRequestsOnOneWebSocketDispatchOutOfOrderResponses(t *testing.
 			requests = append(requests, req)
 		}
 		for i := len(requests) - 1; i >= 0; i-- {
-			resp := protocol.ResultResponse(requests[i].ID, map[string]any{"capability": requests[i].Capability, "count": int64(1)})
+			resp := versionedTestResponse(requests[i], agentResponse{ID: requests[i].ID, Result: json.RawMessage(fmt.Sprintf(`{"rows":[{"capability":%q}],"count":1}`, requests[i].Capability))})
 			if err := conn.WriteText(protocol.MustJSON(resp)); err != nil {
 				agentErr <- err
 				return
@@ -861,6 +866,7 @@ func TestConcurrentRequestsOnOneWebSocketDispatchOutOfOrderResponses(t *testing.
 	}()
 
 	start := make(chan struct{})
+	waitForCondition(t, time.Second, func() bool { s.agentMu.RLock(); defer s.agentMu.RUnlock(); return s.openapi != nil }, "metadata cache before business requests")
 	results := make(chan agentCallResult, 2)
 	for _, capability := range []string{"slow", "fast"} {
 		capability := capability
@@ -878,12 +884,18 @@ func TestConcurrentRequestsOnOneWebSocketDispatchOutOfOrderResponses(t *testing.
 				t.Fatalf("call result = %#v", result)
 			}
 			var body struct {
-				Capability string `json:"capability"`
+				Result struct {
+					Data struct {
+						Rows []struct {
+							Capability string `json:"capability"`
+						} `json:"rows"`
+					} `json:"data"`
+				} `json:"result"`
 			}
 			if err := json.Unmarshal(result.Payload, &body); err != nil {
 				t.Fatal(err)
 			}
-			seen[body.Capability] = true
+			seen[body.Result.Data.Rows[0].Capability] = true
 		case <-time.After(time.Second):
 			t.Fatal("concurrent call timed out")
 		}
@@ -956,6 +968,7 @@ func dialSignedTestAgent(t *testing.T, rawURL, nonce string) *ws.Conn {
 	challenge := fetchTestAgentChallenge(t, rawURL)
 	signature := ed25519.Sign(ed25519.PrivateKey(privateKey), protocol.AgentAuthMessage(path, timestamp, nonce, challenge, key))
 	headers := http.Header{}
+	headers.Set(protocol.MajorHeader, protocol.Major)
 	headers.Set("Sec-WebSocket-Key", key)
 	headers.Set("X-Agent-Timestamp", timestamp)
 	headers.Set("X-Agent-Nonce", nonce)

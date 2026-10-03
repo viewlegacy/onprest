@@ -83,30 +83,33 @@ func TestLoadConfigRejectsUnexpectedArgs(t *testing.T) {
 }
 
 func TestLoadCapabilityDatabaseTLSMatrixFromYAML(t *testing.T) {
-	base := `gateway:
+	base := `schema_version: 1
+gateway:
   url: ws://localhost:8080/ws/agent
   agent_private_key: ` + testAgentPrivateKey + `
-database:
-  driver: %s
-  host: db.example
-  port: %d
-  name: legacy
-  user: readonly
-  tls:
-    mode: %s
+sources:
+  databases:
+    primary:
+      driver: %s
+      host: db.example
+      port: %d
+      name: legacy
+      user: readonly
+      tls:
+        mode: %s
 %s
 capabilities:
   ping:
-    sql: select 1 as value
-    result:
-      value: {type: integer}
+    executor: {type: db, source: primary, sql: select 1 as value}
+    output: {items: {properties: {value: {type: integer}}}, data: {}}
 `
+
 	ports := map[string]int{"postgres": 5432, "mysql": 3306, "sqlserver": 1433, "oracle": 1521}
 	for driver, port := range ports {
 		for _, mode := range []string{"disable", "require", "verify-full"} {
 			extra := ""
 			if mode == "verify-full" {
-				extra = "    server_name: " + driver + ".internal\n"
+				extra = "        server_name: " + driver + ".internal\n"
 			}
 			t.Run(driver+"/"+mode, func(t *testing.T) {
 				path := writeCapabilityFixture(t, fmt.Sprintf(base, driver, port, mode, extra))

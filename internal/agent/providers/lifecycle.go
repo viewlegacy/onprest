@@ -19,6 +19,12 @@ type Provider interface {
 	Execute(context.Context, map[string]any, *Effects) (contract.ProviderResult, error)
 	Close() error
 }
+
+// PublicationProvider lets a transactional provider complete public validation
+// before committing, with the controller retaining ownership of publication.
+type PublicationProvider interface {
+	ExecutePublication(context.Context, map[string]any, *Effects, func(contract.ProviderResult) (*contract.PreparedOutput, error)) (*contract.PreparedOutput, error)
+}
 type Factory func(context.Context, *Snapshot) (Provider, error)
 type Registry struct{ factories map[string]Factory }
 
@@ -169,6 +175,14 @@ func (l *Lease) Context(parent context.Context) (context.Context, context.Cancel
 	ctx, cancel := context.WithCancel(parent)
 	stop := context.AfterFunc(l.parent, cancel)
 	return ctx, func() { stop(); cancel() }
+}
+func (l *Lease) ExecutePublication(ctx context.Context, input map[string]any, effects *Effects, publish func(contract.ProviderResult) (*contract.PreparedOutput, error)) (*contract.PreparedOutput, error, bool) {
+	p, ok := l.entry.provider.(PublicationProvider)
+	if !ok {
+		return nil, nil, false
+	}
+	out, err := p.ExecutePublication(ctx, input, effects, publish)
+	return out, err, true
 }
 func (l *Lease) Execute(ctx context.Context, input map[string]any, effects *Effects) (contract.ProviderResult, error) {
 	return l.entry.provider.Execute(ctx, input, effects)

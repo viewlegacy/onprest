@@ -1,7 +1,12 @@
 package gateway
 
 import (
-	"encoding/json"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"github.com/viewlegacy/onprest/internal/contract"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -9,7 +14,8 @@ import (
 
 func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	reqID := newID()
+	reqID := authRequestID(r)
+	r = r.WithContext(context.WithValue(r.Context(), callIdentityKey{}, callIdentity{ID: reqID}))
 	name := capabilityFromPath(r.URL.Path)
 	key, authStatus := s.authenticate(w, r)
 	if authStatus != 0 {
@@ -22,41 +28,48 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	}
 	if name == "" || strings.Contains(name, "/") {
 		s.accessLog(reqID, key.Name, name, http.StatusNotFound, errGatewayCapabilityNotFound, "capability not found", start)
-		writeJSON(w, http.StatusNotFound, apiError(errGatewayCapabilityNotFound, "capability not found"))
+		writeJSON(w, http.StatusNotFound, commonAPIError(reqID, errGatewayCapabilityNotFound, "capability not found", "not_started"))
 		return
 	}
 	if !allowed(key, name) {
 		s.accessLog(reqID, key.Name, name, http.StatusForbidden, errGatewayCapabilityDenied, "capability not allowed", start)
-		writeJSON(w, http.StatusForbidden, apiError(errGatewayCapabilityDenied, "capability not allowed"))
+		writeJSON(w, http.StatusForbidden, commonAPIError(reqID, errGatewayCapabilityDenied, "capability not allowed", "not_started"))
 		return
 	}
 	if r.Method != http.MethodPost {
 		s.accessLog(reqID, key.Name, name, http.StatusMethodNotAllowed, errGatewayMethodNotAllowed, "use POST", start)
-		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
+		writeJSON(w, http.StatusMethodNotAllowed, commonAPIError(reqID, errGatewayMethodNotAllowed, "use POST", "not_started"))
 		return
 	}
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "Content-Type must be application/json", start)
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "Content-Type must be application/json"))
+		s.accessLog(reqID, key.Name, name, http.StatusUnsupportedMediaType, errGatewayInvalidRequest, "Content-Type must be application/json", start)
+		writeJSON(w, http.StatusUnsupportedMediaType, commonAPIError(reqID, errGatewayInvalidRequest, "Content-Type must be application/json", "not_started"))
 		return
 	}
-	var params map[string]any
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes))
-	dec.UseNumber()
-	if err := dec.Decode(&params); err != nil {
-		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "invalid json body", start)
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json body"))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes))
+	if err != nil {
+		status, code := 400, "INVALID_REQUEST"
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			status, code = 413, "LIMIT_EXCEEDED"
+		}
+		s.accessLog(reqID, key.Name, name, status, code, "invalid request body", start)
+		writeJSON(w, status, commonAPIError(reqID, code, "invalid request body", "not_started"))
 		return
 	}
-	if err := ensureJSONEOF(dec); err != nil {
-		s.accessLog(reqID, key.Name, name, http.StatusBadRequest, errGatewayInvalidRequest, "invalid json body", start)
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json body"))
+	value, err := contract.DecodeJSON(body, contract.Limits{MaxBytes: s.cfg.MaxRequestBodyBytes, MaxDepth: 32, MaxItems: 100000})
+	params, ok := value.(map[string]any)
+	if err != nil || !ok || params == nil {
+		s.accessLog(reqID, key.Name, name, 400, "INVALID_REQUEST", "invalid json body", start)
+		writeJSON(w, 400, commonAPIError(reqID, "INVALID_REQUEST", "invalid json body", "not_started"))
 		return
 	}
-	result := s.callAgent(r.Context(), name, params)
-	s.accessLog(reqID, key.Name, name, result.Status, result.Code, result.Message, start, result.Count)
+	fingerprint := sha256.Sum256([]byte(key.KeyHash))
+	ctx := context.WithValue(r.Context(), callIdentityKey{}, callIdentity{ID: reqID, Binding: hex.EncodeToString(fingerprint[:])})
+	result := s.callAgent(ctx, name, params)
+	s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
 	if !result.OK() {
-		writeJSON(w, result.Status, apiError(result.Code, result.Message))
+		writeJSON(w, result.Status, resultError(reqID, result))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -72,7 +85,7 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	doc := cloneMap(s.openapi)
 	s.agentMu.RUnlock()
 	if doc == nil {
-		writeJSON(w, http.StatusServiceUnavailable, apiError(errGatewayAgentOffline, "agent metadata is not cached yet"))
+		writeJSON(w, http.StatusServiceUnavailable, requestAPIError(r, errGatewayAgentOffline, "agent metadata is not cached yet"))
 		return
 	}
 	filterOpenAPI(doc, key.Capabilities)

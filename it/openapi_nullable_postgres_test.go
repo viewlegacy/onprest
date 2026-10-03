@@ -27,7 +27,15 @@ func TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI(t *testi
 	seedCustomerTable(t, "postgres", cfg)
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
-	capabilityFile := writePostgresCapability(t, t.TempDir(), cfg, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  nullable_result:
+	capabilityFile := writePostgresCapability(t, t.TempDir(), cfg, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `nullable_result:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 10
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: |
       select text_value, integer_value, number_value, boolean_value
       from (values
@@ -36,26 +44,32 @@ func TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI(t *testi
       ) as nullable_values(text_value, integer_value, number_value, boolean_value, ordinal)
       where :marker::text = 'run'
       order by ordinal
-    params:
+  input:
+    properties:
       marker:
         type: string
-        required: true
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 10
-      max_bytes: 128KB
-    result:
-      text_value: {type: string}
-      integer_value: {type: integer}
-      number_value: {type: number}
-      boolean_value: {type: boolean}
-  mutation_count:
+    required:
+      - marker
+  output:
+    data: {}
+    items:
+      properties:
+        text_value: {type: string}
+        integer_value: {type: integer}
+        number_value: {type: number}
+        boolean_value: {type: boolean}
+mutation_count:
+  policy:
+    readonly: false
+    timeout: 2s
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: update onprest_it_customers set name = name where id = -1
-    policy:
-      readonly: false
-      timeout: 2s
-      max_bytes: 128KB`)
+  output:
+    data: {}
+`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -81,7 +95,7 @@ func TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI(t *testi
 		t.Fatalf("generated OpenAPI 3.1 document is invalid: %v", validationErrors)
 	}
 
-	status, selectBody := postCapability(t, baseURL, secrets.APIKey, "nullable_result", `{"marker":"run"}`)
+	status, selectBody := postCapabilityEnvelope(t, baseURL, secrets.APIKey, "nullable_result", `{"marker":"run"}`)
 	if status != http.StatusOK {
 		t.Fatalf("nullable_result status=%d body=%s", status, selectBody)
 	}
@@ -89,7 +103,7 @@ func TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI(t *testi
 		Rows  []map[string]any `json:"rows"`
 		Count int64            `json:"count"`
 	}
-	if err := json.Unmarshal(selectBody, &selectResponse); err != nil {
+	if err := json.Unmarshal(unwrapBusinessEnvelope(t, selectBody), &selectResponse); err != nil {
 		t.Fatal(err)
 	}
 	if selectResponse.Count != 2 || len(selectResponse.Rows) != 2 {
@@ -106,14 +120,14 @@ func TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI(t *testi
 	validateOpenAPIResponse(t, docValidator, baseURL, "nullable_result", selectBody, true)
 
 	missingRequired := cloneJSONResponse(t, selectBody)
-	delete(missingRequired["rows"].([]any)[0].(map[string]any), "boolean_value")
+	delete(missingRequired["result"].(map[string]any)["data"].(map[string]any)["rows"].([]any)[0].(map[string]any), "boolean_value")
 	validateOpenAPIResponse(t, docValidator, baseURL, "nullable_result", mustMarshalJSON(t, missingRequired), false)
 	additionalProperty := cloneJSONResponse(t, selectBody)
-	additionalProperty["rows"].([]any)[0].(map[string]any)["unexpected"] = "must be rejected"
+	additionalProperty["result"].(map[string]any)["data"].(map[string]any)["rows"].([]any)[0].(map[string]any)["unexpected"] = "must be rejected"
 	validateOpenAPIResponse(t, docValidator, baseURL, "nullable_result", mustMarshalJSON(t, additionalProperty), false)
 
-	status, mutationBody := postCapability(t, baseURL, secrets.APIKey, "mutation_count", `{}`)
-	if status != http.StatusOK || string(mutationBody) != `{"count":0}` {
+	status, mutationBody := postCapabilityEnvelope(t, baseURL, secrets.APIKey, "mutation_count", `{}`)
+	if status != http.StatusOK || string(unwrapBusinessEnvelope(t, mutationBody)) != `{"count":0}` {
 		t.Fatalf("actual Agent mutation response status=%d body=%s", status, mutationBody)
 	}
 	validateOpenAPIResponse(t, docValidator, baseURL, "mutation_count", mutationBody, true)

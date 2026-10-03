@@ -61,15 +61,19 @@ func TestUnsafeConfigurationKeysStaySingleRecordInRealProcess(t *testing.T) {
 	}
 	const sentinel = "RAW_KEY_SENTINEL"
 	config := filepath.Join(dir, "unsafe-key.yaml")
-	content := `gateway:
+	content := `schema_version: 1
+gateway:
   url: ws://127.0.0.1:1/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
-database: {driver: postgres, host: localhost, port: 5432, name: test, user: test}
+sources:
+  databases:
+    primary: {driver: postgres, host: localhost, port: 5432, name: test, user: test}
 capabilities:
   safe:
-    sql: select 1
-    params:
-      "bad\n` + sentinel + `\x1b[31m": {type: unsupported}
+    executor: {type: db, source: primary, sql: "select 1"}
+    input:
+      properties:
+        "bad\n` + sentinel + `\x1b[31m": {type: unsupported}
 `
 	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -99,10 +103,10 @@ capabilities:
 					t.Fatalf("invalid JSON failure object: %v %q", err, output)
 				}
 				message, _ := object["message"].(string)
-				if object["valid"] != false || !strings.Contains(message, "<invalid-key>") {
+				if object["valid"] != false || !strings.Contains(message, "<field>") {
 					t.Fatalf("invalid JSON failure object: %q", output)
 				}
-			} else if !strings.Contains(string(output), "<invalid-key>") {
+			} else if !strings.Contains(string(output), "<field>") {
 				t.Fatalf("text failure did not use fixed key placeholder: %q", output)
 			}
 		})
@@ -122,20 +126,22 @@ func TestNormalStartupDatabaseOpenFailureKeepsPrivateDetailLocal(t *testing.T) {
 	}
 	const sentinel = "PRIVATE_OPEN_SENTINEL"
 	config := filepath.Join(dir, "open-failure.yaml")
-	content := `gateway:
+	content := `schema_version: 1
+gateway:
   url: ws://127.0.0.1:1/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
-database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: test
-  user: test
-  tls:
-    mode: verify-full
-    ca_file: /definitely-missing/` + sentinel + `.pem
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: "` + sentinel + `.invalid"
+      port: 5432
+      name: test
+      user: test
+      tls: {mode: disable}
 capabilities:
-  safe: {sql: "select 1"}
+  safe:
+    executor: {type: db, source: primary, sql: "select 1"}
 `
 	if err := os.WriteFile(config, []byte(content), 0o600); err != nil {
 		t.Fatal(err)

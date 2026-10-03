@@ -1,318 +1,115 @@
 # Capability YAML
 
-`capability.yaml` is the agent-side source of truth. It defines what can be called, what input is accepted, what SQL is executed, and—for SELECT—which output columns may leave the database boundary. DML returns affected count only.
+`capability.yaml` defines sources, accepted input, SQL, policy, and published output. Normal startup, `onprest-agent validate --config PATH`, and the preparation portion of `doctor` compile and prepare the same definition. Preparation resolves protected secret/TLS files, opens and Pings the configured databases, and performs driver-specific EXPLAIN without executing business SQL. Validation does not connect to the Gateway or reload a running Agent.
 
-Normal Agent startup and `onprest-agent validate --config PATH` use the same full-load, lint, database Ping, and driver-specific EXPLAIN preparation path. Validation does not connect to the Gateway, reload a running process, or execute a capability. To apply an edit, follow the [existing-service procedure](/operations/capability-changes#apply-a-change-to-an-existing-service).
+## Structure
 
-## Read and mutation capabilities
-
-`policy.readonly` defaults to `true`. Omitted or `true` accepts one top-level `SELECT`; explicit `false` accepts one `SELECT`, `INSERT`, `UPDATE`, or `DELETE`. The agent rejects multiple statements, `WITH`, `MERGE`, procedure calls, DDL, transaction control, and DML `RETURNING`/`OUTPUT` during startup lint. Quotes and comments are scanned using the selected DB dialect, including nested block comments in PostgreSQL and SQL Server, so keywords or semicolons inside them do not become statements.
-
-SELECT uses `result` to allow-list output fields and `max_rows` to limit returned rows. DML must omit `result` and returns only `{"count": n}`, where `n` is the driver's non-negative `RowsAffected()` value; zero is a successful result. `max_affected_rows` can limit a mutation's affected count, while `max_bytes` and `timeout` apply to both reads and mutations. See [Policy](#policy) for these settings.
-
-This partial configuration shows a mutation capability to add to an existing file:
+This is a capability excerpt, not a complete configuration. The [Quick Start configuration](/quick-start) includes `schema_version`, gateway, and database sources.
 
 ```yaml
 capabilities:
+  get_customer:
+    description: Find a customer by ID.
+    executor:
+      type: db
+      source: primary
+      sql: select id, name from customers where id = :id
+    input:
+      properties:
+        id: {type: integer, minimum: 1}
+      required: [id]
+    policy:
+      timeout: 5s
+      max_rows: 1000
+      max_output_bytes: 1MB
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: integer}
+          name: {type: string}
   update_customer:
-    sql: UPDATE customers SET name = :name WHERE id = :id
-    params:
-      id: { type: integer, required: true }
-      name: { type: string, required: true }
+    executor:
+      type: db
+      source: primary
+      sql: update customers set name = :name where id = :id
+    input:
+      properties:
+        id: {type: integer, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 200}
+      required: [id, name]
     policy:
       readonly: false
       timeout: 5s
       max_affected_rows: 1
-      max_bytes: 256KB
+    output:
+      data: {}
 ```
 
-## Structure
+The current runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle. Other executor types and DB file delivery fail preparation and are not advertised. A source is selected by `executor.source`; each DB capability owns its prepared database connection pool.
 
-The following file-level example defines a SELECT capability:
+Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `onprest_` are reserved.
 
-```yaml
-service:
-  title: Example CRM Capabilities
-  version: 0.1.0
-  description: Agent-defined capabilities for a legacy CRM database.
-
-runtime:
-  max_concurrent_requests: 16
-
-gateway:
-  url: "wss://customer-abc.example.com/ws/agent"
-  agent_private_key: "base64url-ed25519-private-key"
-
-database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy_db
-  user: readonly_user
-  password: ""
-  tls:
-    mode: verify-full
-    ca_file: /etc/onprest/db-ca.pem
-    cert_file: /etc/onprest/db-client.pem
-    key_file: /etc/onprest/db-client-key.pem
-
-logging:
-  max_size: 10MB
-  max_files: 3
-
-defaults:
-  readonly: true
-  timeout: 30s
-  max_rows: 1000
-  max_bytes: 1MB
-  rate_limit:
-    requests: 60
-    per: 1m
-    burst: 10
-
-capabilities:
-  get_customer:
-    description: "Fetch one customer by id"
-    sql: select id, name, email from customers where id = :customer_id
-    annotations:
-      read_only: true
-      destructive: false
-      idempotent: true
-      open_world: false
-    examples:
-      - params: {customer_id: 123}
-    params:
-      customer_id:
-        type: integer
-        required: true
-        minimum: 1
-        description: "Customer ID"
-    policy:
-      readonly: true
-      timeout: 5s
-      max_rows: 1
-      max_bytes: 256KB
-      expose_in_openapi: true
-    result:
-      id:
-        type: integer
-        description: "Customer ID"
-      name:
-        type: string
-        description: "Customer name"
-      email:
-        type: string
-        description: "Email address"
-```
+`schema_version: 1` is required. The compiler rejects unknown or duplicate keys, multiple YAML documents, invalid UTF-8, and contradictory settings. YAML aliases and merges are supported; direct values override merged values. Apply changes using the [capability change procedure](/operations/capability-changes).
 
 ## Top-Level Sections
 
 | Section | Purpose |
 |---|---|
-| `service` | OpenAPI info metadata |
-| `runtime` | agent request execution limits |
-| `gateway` | gateway WebSocket URL and agent private key |
-| `database` | DB driver and connection settings |
-| `logging` | agent local detail log rotation settings |
-| `defaults` | default policy values used by capabilities |
-| `capabilities` | externally callable operations |
+| `schema_version` | Required configuration version, `1` |
+| `service` | Public OpenAPI title, version and description |
+| `runtime` | Execution concurrency and persistent identity directory |
+| `gateway` | Gateway WebSocket URL and Agent signing key |
+| `sources.databases` | Named database connections selected by executors |
+| `logging` | Local detail log settings; see [Agent Local Logs](/agent/local-logs#rotation) |
+| `defaults` | Applicable policy defaults |
+| `capabilities` | At least one named executable operation |
 
-Supported database drivers are `postgres`, `mysql`, `sqlserver`, and `oracle`.
+`runtime.max_concurrent_requests` defaults to `16`, with an equally bounded waiting queue; see the [Agent runtime model](/agent#runtime-model). Gateway URL and transport requirements are described in [Deployment](/operations/deployment#self-hosted-minimal-settings).
 
-Capability names must match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`.
+## Sources and protected files
 
-## Descriptions
+Database connection fields are under `sources.databases.<name>`. `password` and `password_file` are mutually exclusive; file bytes are not trimmed. Relative secret and TLS paths resolve from the configuration directory. Secret files must be regular, owned and protected files; symlinks and unsafe permissions fail closed. TLS uses the existing driver-specific modes and CA/client-certificate settings described in [Databases](/databases). Secret and TLS bytes are captured once during preparation and are included in the definition binding; execution does not reread those paths.
 
-`description` fields are optional but recommended. They are public metadata used to make generated OpenAPI and MCP tools understandable to API users and AI agents.
+`gateway.agent_private_key` and `agent_private_key_file` are mutually exclusive. The file contains the exact canonical base64url Ed25519 private key, with no trailing newline. The key signs Agent authentication handshakes and diagnostic challenges. A protected identity key under `runtime.identity_dir` (default `./identity`, relative to the configuration directory) binds prepared definitions; keep this directory private and writable by the Agent user. Changing a source, secret, TLS material, or effective execution contract changes its definition hash. Logging and presentation changes do not.
 
-Descriptions do not grant permissions, change validation, affect SQL execution, or bypass `policy` / SELECT `result` enforcement. Security behavior is defined by capability names, API key authorization, params validation, policy, SQL, SELECT result allow-lists, and the DML count-only contract.
+## Input
 
-| Location | Required | Purpose |
-|---|---:|---|
-| `service.description` | No | OpenAPI service-level documentation |
-| `capabilities.<name>.description` | No | Capability / operation / MCP tool description |
-| `params.<name>.description` | No | Public input parameter documentation |
-| `result.<column>.description` | No | Public SELECT output field documentation; forbidden for DML |
+`input` is a recursive object schema. `properties`, `required`, `items`, `additionalProperties`, `type`, `enum`, `const`, `default`, `minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, and supported formats validate supplied values. `properties` and `items` imply object and array types. Unknown input properties are rejected by default. Missing properties receive their declared defaults before validation; explicit null is not a missing value. Nullable input declares a union such as `type: [string, 'null']`.
 
-For AI/MCP use, write descriptions as stable business-facing contract text. Do not put secrets, internal-only incident detail, DB credentials, or sensitive operational notes in descriptions because they can appear in OpenAPI and MCP metadata.
+Supported string formats are `email`, `uuid`, `date`, `date-time`, and `uri`. Patterns use a common subset: literals, character classes, groups, alternation, repetition, and `^`/`$` anchors. Lookaround, backreferences, inline flags, Unicode-property/POSIX classes, and unsupported escapes are rejected at compile time. `\d` and `\w` use ASCII classes; anchor a pattern when it must match the whole value.
 
-## Service
-
-`service` provides the OpenAPI info metadata for the generated spec. All fields are optional.
-
-| Field | Required | Default | Description |
-|---|---:|---|---|
-| `title` | No | `Onprest Agent` | OpenAPI service title |
-| `version` | No | `0.1.0` | OpenAPI service version |
-| `description` | No | empty | OpenAPI service-level documentation |
-
-When `title` or `version` is empty, the agent fills in the default shown above at startup.
-
-## Runtime
-
-| Field | Required | Default | Description |
-|---|---:|---:|---|
-| `max_concurrent_requests` | No | `16` | Maximum capability requests executed concurrently on one gateway connection |
-
-The value must be a positive integer. The agent has the same number of bounded waiting slots in addition to the running slots. Waiting requests do not reach the database early, and the WebSocket reader continues processing ping/pong while the execution limit is saturated. If both running and waiting slots are full, the request fails with `AGENT_BUSY` instead of growing memory without a bound. One response writer sends WebSocket frames in sequence. Once a frame write starts, it must finish within five seconds; this is not a query timeout or a limit on time spent waiting for the writer. Higher values can increase throughput but also increase simultaneous database work and connection-pool demand. Unknown YAML fields and multiple YAML documents are rejected at startup so a misspelled limit cannot silently fall back to `16`. Restart the agent to apply a change.
-
-## Gateway
-
-| Field | Required | Description |
-|---|---:|---|
-| `url` | Yes | Gateway WebSocket URL, usually ending in `/ws/agent` |
-| `agent_private_key` | Yes | base64url Ed25519 private key generated by `onprest-gateway create-agent-secret` |
-| `allow_insecure_non_loopback_ws` | No | Development-only acknowledgement for non-loopback `ws://`; defaults to `false` and must remain false in production |
-
-`url` must use the exact `/ws/agent` path without credentials, a query, or a fragment. Non-loopback addresses require `wss://` unless the development-only insecure acknowledgement is explicitly enabled. Loopback `ws://localhost`, `ws://127.0.0.1`, and `ws://[::1]` remain available for local development.
-
-## Database
-
-| Field | Required | Description |
-|---|---:|---|
-| `driver` | Yes | `postgres`, `mysql`, `sqlserver`, or `oracle` |
-| `host` | Yes | DB hostname or IP address |
-| `port` | Yes | DB port |
-| `name` | Yes | Database, service, or schema name used by the driver |
-| `user` | Yes | DB username |
-| `password` | No | DB password; keep this only on the agent side |
-| `tls.mode` | No | TLS mode described below; defaults to `disable` |
-| `tls.ca_file` | No | PEM CA certificate used to verify the DB server |
-| `tls.cert_file` | No | PostgreSQL or MySQL PEM client certificate for mutual TLS |
-| `tls.key_file` | No | PostgreSQL or MySQL PEM client private key; required together with `cert_file` |
-| `tls.server_name` | No | `verify-full` certificate hostname override; otherwise `host` is verified |
-
-TLS support is driver-specific:
-
-| Driver | Supported `tls.mode` | Behavior |
-|---|---|---|
-| PostgreSQL | `disable`, `require`, `verify-ca`, `verify-full` | Uses pgx TLS settings. Client certificate and key are supported. |
-| MySQL | `disable`, `require`, `verify-full` | Uses a connector-local TLS configuration, including optional client certificate authentication. |
-| SQL Server | `disable`, `require`, `verify-full` | Uses the pure-Go TDS driver. Client certificates are not supported. |
-| Oracle | `disable`, `require`, `verify-full` | Uses pure-Go `go-ora` TCPS. Oracle Instant Client is not required; client certificates are not supported. |
-
-`require` encrypts the transport but does not authenticate the server. `verify-full` verifies the trust chain and `server_name`, or `host` when no override is set. `ca_file` is optional in verified modes; omitting it uses the OS trust store. PostgreSQL `verify-ca` verifies only the chain. Do not set TLS CA, certificate, key, or server-name fields when `mode: disable`; `ca_file` is not accepted with `require`, and `server_name` is accepted only with `verify-full`. Client certificate and key must be supplied together and are accepted only for PostgreSQL and MySQL. Unsupported combinations fail startup instead of being ignored. Prefer `verify-full` on networks where the database connection can be intercepted.
-
-## Logging
-
-| Field | Default | Description |
-|---|---|---|
-| `max_size` | `10MB` | Size threshold for rotating the local detail log |
-| `max_files` | `3` | Number of rotated files to retain |
-
-`max_size` accepts a non-negative integer followed by an optional `B`, `KB`, `MB`, or `GB` suffix, such as `10MB`. A bare integer is treated as bytes. Fractions, unknown suffixes, trailing text, and values that overflow `int64` are rejected.
-
-Normal Agent runtime detail uses the executable path plus `.log`, for example `onprest-agent.log`. Standalone diagnostics use separate, non-rotating files; see [Agent Local Logs](/agent/local-logs).
-
-## Defaults
-
-`defaults` is optional. It supplies policy defaults for capabilities, and each capability's own `policy` values take precedence.
-
-If neither `defaults` nor capability `policy` sets a value, the implementation defaults are:
-
-| Field | Default |
-|---|---|
-| `readonly` | `true` |
-| `timeout` | `5s` |
-| `max_rows` | `100` |
-| `max_affected_rows` | unlimited |
-| `max_bytes` | `1MB` |
-| `rate_limit` | unlimited |
-| `expose_in_openapi` | `true` |
-
-## Capabilities
-
-Each entry under `capabilities` defines one externally callable operation. At least one capability is required; the agent rejects a file with no capabilities at startup.
-
-| Field | Required | Description |
-|---|---:|---|
-| `description` | No | Public operation text used by OpenAPI and MCP tools |
-| `sql` | Yes | SQL executed by the agent after validation |
-| `params` | No | Input contract; unknown provided params are rejected |
-| `policy` | No | Execution limits; missing values use `defaults` or implementation defaults |
-| `result` | No | SELECT-only output allow-list; forbidden for DML; omitted on SELECT means row object fields are not returned |
-| `annotations` | No | Explicit operation hints for OpenAPI/MCP metadata; omitted hints remain omitted |
-| `examples` | No | Example parameter objects validated against `params` at startup and by `validate`; never executed |
-
-## AI-facing annotations and examples
-
-`annotations` may contain only `read_only`, `destructive`, `idempotent`, and `open_world`. Each field is an optional boolean, so an explicit `false` is different from omitting it. Unknown keys, non-boolean values, and `null` are rejected. The Agent publishes only explicitly supplied fields.
-
-| Field | OpenAPI extension key | MCP tool hint | Meaning |
-|---|---|---|---|
-| `read_only` | `read_only` | `readOnlyHint` | The operation is intended to read without mutation |
-| `destructive` | `destructive` | `destructiveHint` | The operation may have destructive effects |
-| `idempotent` | `idempotent` | `idempotentHint` | Repeating the operation has the same intended effect |
-| `open_world` | `open_world` | `openWorldHint` | The operation may interact with open-world data or side effects |
-
-These hints describe the operation for clients; they do not change authorization or execution. Keep them consistent with the actual capability.
-
-`examples` is a list of objects with a non-null `params` object. Each example is validated against the capability's parameter contract during startup and `validate`, but is never executed. Examples are public OpenAPI metadata and must not contain secrets.
-
-## Params
-
-`params` defines the input contract.
-
-| Field | Description |
-|---|---|
-| `type` | `string`, `integer`, `number`, or `boolean` |
-| `required` | whether the caller must provide the value |
-| `default` | value applied when omitted |
-| `enum` | allowed values |
-| `minimum` / `maximum` | numeric bounds |
-| `minLength` / `maxLength` | string length bounds |
-| `pattern` | regular expression |
-| `format` | one of `email`, `uuid`, `date`, `date-time`, `uri` |
-| `description` | public documentation text |
-
-Unknown params are rejected.
-
-`minimum` and `maximum` are integer-valued bounds and apply to `integer` and `number` params. JSON integer tokens are converted exactly through signed 64-bit integers, including values above JavaScript's 2^53 precision boundary; fractional and int64-overflow values are rejected. `number` also rejects non-finite values.
-
-`minimum`/`maximum` are valid only for `integer` and `number`, and `minimum` must not exceed `maximum`. `minLength`, `maxLength`, `pattern`, and `format` are valid only for `string`; explicitly setting an empty `pattern: ""` or `format: ""` on another type is still invalid, while the same empty values remain valid for a string parameter. `format` otherwise accepts only the five values listed above; any other value is rejected at startup. `minLength` and `maxLength` must be `0` or greater, and `minLength` must not exceed `maxLength`. The agent also validates every `default` and `enum` member against its declared type and constraints during startup, before connecting to the gateway or running DB EXPLAIN. An explicit `default: null` is invalid for every supported parameter type; omit `default` when no default value is intended.
-
-Parameter definitions retain yaml.v3 anchor, alias, and `<<` merge behavior, including merge sequences. A field written directly on the parameter overrides the merged value. Only a YAML merge-tagged `<<` key is merge syntax; a quoted `"<<"` is an ordinary unknown field and is rejected. Startup lint evaluates the effective merged definition, including whether `default`, `pattern`, or `format` was present, and rejects cyclic merges and unknown fields in either a merge source or the direct mapping.
+JSON integers remain signed int64. The API rejects duplicate JSON keys, invalid UTF-8, integer overflow, non-finite numbers, and excessive bytes, depth, or item count. The Agent applies `max_input_bytes`, `max_json_depth`, and `max_json_items` before and after default application. DB input does not accept files. SQL named parameters must refer to declared scalar input properties.
 
 ## Policy
 
-`policy` limits execution.
+`defaults` supplies applicable policy defaults; a capability's `policy` overrides them. Explicit policy keys that do not apply to the executor or SQL operation fail compilation.
 
-| Field | Description |
-|---|---|
-| `readonly` | omitted/`true` accepts one `SELECT`; explicit `false` accepts one `SELECT`, `INSERT`, `UPDATE`, or `DELETE` |
-| `timeout` | execution timeout, such as `5s` |
-| `max_rows` | maximum rows returned by SELECT; ignored for DML |
-| `max_affected_rows` | maximum affected count for INSERT, UPDATE, and DELETE; DML only |
-| `max_bytes` | maximum response size, such as `256KB` |
-| `rate_limit` | optional per-capability token bucket with required `requests`, `per`, and `burst` fields |
-| `expose_in_openapi` | whether to include the capability in OpenAPI and MCP tools/list |
+| Setting | Default | Meaning |
+|---|---|---|
+| `readonly` | `true` | True permits SELECT; false also permits INSERT, UPDATE and DELETE |
+| `timeout` | `5s` | One execution/output-validation budget, at most `300s`; caller cancellation/deadline can shorten it |
+| `max_rows` | `100` | SELECT truncates at this row count |
+| `max_affected_rows` | unset | DML count limit; exceeding it rolls back |
+| `max_input_bytes` / `max_output_bytes` | `1MB` | Input and published data byte limits |
+| `max_json_depth` / `max_json_items` | `32` / `100000` | Recursive structure limits |
+| `rate_limit` | unset | Required `requests`, `per`, and `burst`; admission occurs before queueing |
+| `expose_in_openapi` | `true` | Advertise the prepared capability in OpenAPI/MCP |
 
-Use read-only DB users for read capabilities. YAML policy is an application guard; DB privileges should still enforce least privilege.
+A capability inherits the complete `rate_limit` object from `defaults` when omitted, or replaces it with its own object. Each capability has an independent bucket shared by its callers, starting with `burst` tokens and replenishing at `requests` per `per`. Gateway reconnection preserves the bucket; Agent restart resets it. A token consumed at admission is not returned after a later busy response, cancellation or execution failure.
 
-`timeout` accepts a positive Go duration string such as `5s` or `500ms`. When specified, `max_rows` must be a positive integer and `max_affected_rows` a positive int64. Invalid configured values are rejected at startup. `max_bytes` uses the same suffix syntax as `logging.max_size`, but requires a positive integer rather than allowing zero.
+Byte sizes accept positive integer bytes or units such as `KB`/`MB`. SQL must be one SELECT, INSERT, UPDATE, or DELETE; WITH, MERGE, DDL, procedure calls, transaction control, and row-returning DML are rejected. Dialect-aware scanning handles quoted text and comments. Finite Agent concurrency and waiting queues remain bounded; saturation returns `BUSY` without execution.
 
-`rate_limit.requests` and `rate_limit.burst` must be positive int64 integers, and `rate_limit.per` must be a positive Go duration. All three fields are required when the object is present. The bucket starts with `burst` tokens and refills at `requests` tokens per `per` using monotonic elapsed time. For example, `requests: 60`, `per: 1m`, and `burst: 10` starts with 10 tokens and refills one token per second; it is not a fixed calendar-minute window. Configurations that exceed the supported integer range are rejected at startup.
+## Output
 
-The `rate_limit` object follows normal policy precedence: a capability inherits the complete object from `defaults` when it omits the field, while a capability-level object replaces it as a unit. When configured under `defaults`, each inheriting capability receives its own independent bucket; it does not create an Agent-wide bucket. Omitting it from both locations adds no Agent rate limit; `runtime.max_concurrent_requests` and its bounded wait queue still apply. A capability's bucket is shared by all callers of that capability and is not persisted. A Gateway reconnect keeps the current bucket, while an Agent restart starts again at `burst`.
+`output.data: {}` opts in to JSON publication. SELECT declares its row schema through `output.items`; DML describes its count object with `output.properties`. An omitted output still executes and records measured metrics, but succeeds with `result.data: null` and `result.files: []`. Publishing SELECT returns `{rows: [...], count: n}` inside `result.data`; DML returns `{count: n}`, where count is native non-negative `RowsAffected()` and zero is success.
 
-The Agent resolves the capability and validates params before consuming a token, then checks the bucket before entering the execution queue or acquiring database resources. A later busy response, cancellation, timeout, or execution failure does not return the token. Rate-limit rejection is `AGENT_RATE_LIMITED`; see [Errors](/api/errors#rest-error-status-mappings).
+Normal output selects declared fields recursively, then validates their types and constraints. Empty `properties: {}` publishes no fields. Omitted type/properties allows JSON values; `mode: passthrough` preserves fields and still validates declared constraints. Output `nullable` defaults to true; null and required presence are separate rules. Declared SELECT columns are checked against column metadata even with zero rows. A DML output must retain count.
 
-Policy values follow the precedence described in [Defaults](#defaults). SELECT rejects `max_affected_rows`, including an inherited value, so set this limit on individual mutation capabilities in a file containing both reads and mutations.
+The DB adapter normalizes native driver values before output validation; output declarations never coerce strings to numbers or other types. See [Database JSON values](/databases#json-values) for decimal, binary, timestamp and NULL representations.
 
-The Agent checks the driver's native `RowsAffected()` count before commit. Exceeding `max_affected_rows` triggers rollback of the entire mutation transaction, not a partial update. See [Errors](/api/errors#rest-error-status-mappings) for the distinction between confirmed rollback and an unknown transaction outcome. Rollback cannot undo effects outside the DB transaction, such as trigger-driven external notifications or service calls.
+DML runs in one transaction. The Agent validates affected count, output selection/types/constraints and capacity before commit. Validation failure confirms rollback before reporting `rolled_back`; an unconfirmed commit or rollback reports `OUTCOME_UNKNOWN` with `unknown`. A successful commit is never executed again. Check independent database state before retrying any mutation with an unknown outcome.
 
-For every operation, startup lint rejects another statement after the first, such as `SELECT 1; UPDATE customers SET ...`. One trailing semicolon is allowed. Quote scanning follows the configured driver: ordinary SQL strings use doubled quotes and never treat backslash as a quote escape; PostgreSQL explicit `E'...'` strings support backslash escaping; PostgreSQL dollar quotes, PostgreSQL and SQL Server nested block comments, SQL Server bracket identifiers, MySQL backticks, and Oracle alternative `q'...'` quotes are recognized. This conservative rule also prevents `SELECT '\'; UPDATE ...` from bypassing lint when a server or SQL mode treats the backslash literally. Statements beginning with `WITH` are rejected, including read-only CTEs. `timeout` and `max_bytes` apply to SELECT and DML; `max_rows` applies only to SELECT.
+## Metadata
 
-## SELECT Result Allow-List
-
-`result` is the SELECT output allow-list. DML must omit it, including an empty map, and returns only `{"count": n}`.
-
-- Columns not listed in `result` are removed from the response.
-- If SQL does not return a column listed in `result`, execution fails.
-- If `result` is omitted, row object fields are not returned.
-- Even with `SELECT *`, only result-listed columns can leave the agent boundary.
-- A listed column is always present in each returned row. SQL `NULL` is returned as JSON `null`, and the OpenAPI 3.1 response schema allows both the declared type and `null` for that property.
-
-This is the final guard that prevents accidental exposure of extra columns.
-
-Supported result column types are `string`, `integer`, `number`, and `boolean`.
+`description`, explicit boolean `annotations`, and validated `examples.params` describe a capability. Field descriptions belong in `input.properties.<name>.description`, SELECT `output.items.properties.<column>.description`, or DML `output.properties.<name>.description`. OpenAPI 3.1 and MCP input/output schemas derive from the same compiled contract. SQL, source connection details, secrets and hidden capabilities are not advertised. Examples appear in OpenAPI; MCP uses annotation hints and advertises outputSchema only for protocol versions that support it.

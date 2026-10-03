@@ -69,7 +69,11 @@ validation succeeded: driver=postgres capabilities=2
 JSON success is one stdout object:
 
 ```json
-{"valid":true,"database_driver":"postgres","capabilities":2}
+{
+  "valid": true,
+  "database_driver": "postgres",
+  "capabilities": 2
+}
 ```
 
 Validation failures use exit `1`. Text failures go to stderr; JSON failures go to stdout with `valid:false`, a fixed `stage`, and a safe `message`. The fixed stages are `config`, `busy`, `detail_log`, `database_open`, `database_ping`, `capability_explain`, `canceled`, and `internal`. Usage errors, including unknown flags, formats, commands, and positional arguments, use exit `2`; help and successful validation use exit `0`.
@@ -99,7 +103,17 @@ doctor gateway_tls: skipped (NOT_APPLICABLE) TLS is not used for ws://
 JSON always uses this schema and preserves check order:
 
 ```json
-{"ok":true,"checks":[{"stage":"config","status":"passed","code":"OK","message":"configuration is valid"}]}
+{
+  "ok": true,
+  "checks": [
+    {
+      "stage": "config",
+      "status": "passed",
+      "code": "OK",
+      "message": "configuration is valid"
+    }
+  ]
+}
 ```
 
 The actual result includes every preparation and Gateway stage. A successful doctor exits `0`, a completed check failure exits `1`, and invalid arguments or formats exit `2`. Output contains safe summaries only.

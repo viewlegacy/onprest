@@ -293,13 +293,20 @@ func assertRESTCapability(t *testing.T, baseURL, apiKey string) {
 		t.Fatalf("REST status=%d body=%s", resp.StatusCode, string(b))
 	}
 	var got struct {
-		Rows  []map[string]any `json:"rows"`
-		Count int              `json:"count"`
+		RequestID string `json:"request_id"`
+		Result    struct {
+			Data struct {
+				Rows  []map[string]any `json:"rows"`
+				Count int              `json:"count"`
+			} `json:"data"`
+			Files []any `json:"files"`
+		} `json:"result"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Count != 1 || len(got.Rows) != 1 || got.Rows[0]["name"] != "Ada" || got.Rows[0]["id"] != float64(7) {
+	data := got.Result.Data
+	if len(got.RequestID) != 26 || got.Result.Files == nil || len(got.Result.Files) != 0 || data.Count != 1 || len(data.Rows) != 1 || data.Rows[0]["name"] != "Ada" || data.Rows[0]["id"] != float64(7) {
 		t.Fatalf("unexpected REST response: %s", string(b))
 	}
 }

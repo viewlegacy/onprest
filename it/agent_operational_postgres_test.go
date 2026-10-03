@@ -71,20 +71,29 @@ func TestProvisioningCLIOutputsRunGatewayAndAgentBinaries(t *testing.T) {
 			_ = conn.Close()
 		}
 	}()
-	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `  echo_customer:
-    sql: select :id::int as id
-    params:
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `echo_customer:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
+    sql: "select :id::int as id"
+  input:
+    properties:
       id:
         type: integer
-        required: true
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer`)
+    required:
+      - id
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+`)
 	validate := exec.Command(agentBin, "validate", "--config", capabilityFile, "--format", "json")
 	validate.Dir = t.TempDir()
 	validateOutput, err := validate.CombinedOutput()
@@ -108,10 +117,13 @@ func TestProvisioningCLIOutputsRunGatewayAndAgentBinaries(t *testing.T) {
 		t.Fatalf("normal startup ping failure exit=%d output=%s", exitCodeOf(startupPingErr), startupPingOutput)
 	}
 	explainSentinel := "private_explain_sentinel"
-	explainConfig := writePostgresCapability(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `  explain_failure:
+	explainConfig := writePostgresCapability(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `explain_failure:
+  executor:
+    type: db
+    source: primary
     sql: select * from `+explainSentinel+`
-    policy: {readonly: true, timeout: 2s, max_rows: 1, max_bytes: 128KB}
-    result: {id: {type: integer}}`)
+  policy: {readonly: true, timeout: 2s, max_rows: 1, max_output_bytes: 128KB}
+  output: {data: {}, items: {properties: {id: {type: integer}}}}`)
 	startupExplain := exec.Command(agentBin, "--config", explainConfig)
 	startupExplainOutput, startupExplainErr := startupExplain.CombinedOutput()
 	if exitCodeOf(startupExplainErr) != 1 || bytes.Contains(startupExplainOutput, []byte(explainSentinel)) || !bytes.Contains(startupExplainOutput, []byte("agent startup failed")) {
@@ -238,16 +250,22 @@ func TestAgentInvalidCapabilityRestartDoesNotConnect(t *testing.T) {
 	}
 	waitForAgentDisconnected(t, baseURL)
 
-	writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  invalid_write:
+	writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `invalid_write:
+  policy:
+    readonly: true
+    timeout: 1s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: update customers set name = 'bad'
-    policy:
-      readonly: true
-      timeout: 1s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
+  output:
+    data: {}
+    properties:
       id:
-        type: integer`)
+        type: integer
+`)
 	if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile, ReconnectEvery: 100 * time.Millisecond}, nil); err == nil {
 		t.Fatal("NewRunner succeeded with invalid readonly update")
 	}
@@ -263,20 +281,29 @@ func TestAgentProcessSignalAndLocalDetailLog(t *testing.T) {
 
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
-	capabilityFile := writePostgresCapabilityWithLogging(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, "512B", 2, `  failing_query:
+	capabilityFile := writePostgresCapabilityWithLogging(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, "512B", 2, `failing_query:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select (1 / :denominator::int)::int as value
-    params:
+  input:
+    properties:
       denominator:
         type: integer
-        required: true
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      value:
-        type: integer`)
+    required:
+      - denominator
+  output:
+    data: {}
+    items:
+      properties:
+        value:
+          type: integer
+`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -290,7 +317,7 @@ func TestAgentProcessSignalAndLocalDetailLog(t *testing.T) {
 		if status != http.StatusBadGateway {
 			t.Fatalf("failing_query status=%d body=%s", status, string(body))
 		}
-		requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+		requireAPIErrorCode(t, body, "EXECUTION_FAILED")
 	}
 
 	logPath := agentBin + ".log"
@@ -298,7 +325,7 @@ func TestAgentProcessSignalAndLocalDetailLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read agent local log: %v; stdout=%s", err, output.String())
 	}
-	if !bytes.Contains(logs, []byte("AGENT_QUERY_FAILED")) || !bytes.Contains(logs, []byte("division")) {
+	if !bytes.Contains(logs, []byte("EXECUTION_FAILED")) || !bytes.Contains(logs, []byte("division")) {
 		t.Fatalf("agent local log missing detail: %s", string(logs))
 	}
 	if _, err := os.Stat(logPath + ".1"); err != nil {
@@ -398,7 +425,7 @@ func TestAgentRejectsUnknownCapabilityFromGateway(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Fatalf("unknown status=%d body=%s", status, string(body))
 	}
-	requireAPIErrorCode(t, body, "GATEWAY_CAPABILITY_NOT_FOUND")
+	requireAPIErrorCode(t, body, "NOT_FOUND")
 	cancel()
 	select {
 	case <-errCh:
@@ -437,13 +464,18 @@ func TestPostgresReadOnlyDBUserAllowsReadAndBlocksMutationAtStartup(t *testing.T
 		t.Fatal("readonly agent runner did not stop")
 	}
 
-	mutationFile := writePostgresCapability(t, tmp, db, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `  forbidden_update:
+	mutationFile := writePostgresCapability(t, tmp, db, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `forbidden_update:
+  policy:
+    readonly: false
+    timeout: 2s
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: update pg_class set relname = relname where false
-    policy:
-      readonly: false
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB`)
+  output:
+    data: {}
+`)
 	cmd, output := startProcessWithOutput(t, tmp, agentBin, nil, []string{"AGENT_CAPABILITY_FILE=" + mutationFile})
 	if err := waitForExit(t, cmd, 5*time.Second); err == nil {
 		t.Fatal("readonly DB user initialized mutating capability, want DB permission failure")
@@ -465,13 +497,11 @@ func TestPostgresReadOnlyDBUserAllowsReadAndBlocksMutationAtStartup(t *testing.T
 
 func capabilityBlock(name, sql string) string {
 	return "  " + name + ":\n" +
-		"    sql: " + sql + "\n" +
+		"    executor:\n      type: db\n      source: primary\n      sql: " + sql + "\n" +
 		"    policy:\n" +
 		"      readonly: true\n" +
 		"      timeout: 2s\n" +
 		"      max_rows: 1\n" +
-		"      max_bytes: 128KB\n" +
-		"    result:\n" +
-		"      id:\n" +
-		"        type: integer"
+		"      max_output_bytes: 128KB\n" +
+		"    output:\n      data: {}\n      items:\n        properties:\n          id: {type: integer}"
 }

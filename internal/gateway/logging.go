@@ -46,3 +46,24 @@ func emptyToNil(s string) any {
 	}
 	return s
 }
+
+func (s *Server) accessExecutionLog(protocol, requestID, keyName, capability string, result agentCallResult, start time.Time) {
+	fields := map[string]any{"protocol": protocol, "request_id": requestID, "capability": capability, "api_key_name": keyName, "http_status": result.Status, "count": nil, "error_code": emptyToNil(result.Code), "error_message": emptyToNil(result.Message), "duration_ms": time.Since(start).Milliseconds()}
+	if result.Count != nil {
+		fields["count"] = *result.Count
+	}
+	if m := result.Metrics; m != nil {
+		fields["executor_kind"] = m.ExecutorKind
+		fields["returned_rows"] = m.ReturnedRows
+		fields["affected_rows"] = m.AffectedRows
+		fields["file_count"] = m.FileCount
+		fields["response_bytes"] = m.ResponseBytes
+		fields["input_file_count"] = m.InputFileCount
+		fields["input_file_bytes"] = m.InputFileBytes
+	}
+	if result.Failure != nil {
+		fields["outcome"] = result.Failure.Outcome
+		fields["reason"] = emptyToNil(result.Failure.Reason)
+	}
+	s.log("request", fields)
+}

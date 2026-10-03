@@ -2,7 +2,7 @@
 
 Onprest is designed to expose only agent-defined capabilities, not the database itself.
 
-The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions and return native affected count only after a successful commit. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions. When data output is enabled, they publish native affected count only after a successful commit; omitted output publishes null data while retaining measured metrics. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
 
 ```text
 [API user / MCP client]
@@ -37,8 +37,8 @@ This separation is the core of Onprest.
 
 - The gateway does not store SQL text.
 - The gateway does not store DB host, user, or password.
-- Runtime gateway requests forward only the capability name and params.
-- The agent validates params and policy, then enforces the SELECT result allow-list or DML count-only contract from `capability.yaml`.
+- Runtime gateway requests carry the capability name, HTTP params, deadline, prepared definition hash, and caller binding.
+- The agent validates HTTP params against `input`, enforces policy, and validates the selected output against `output.items` for SELECT or `output.properties` for DML. Omitting output still executes but publishes `result.data: null`.
 - OpenAPI / MCP tools are generated from the agent definition.
 
 Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL, holds no DB credentials, and cannot bypass the capability contract and execution policies enforced by the Agent.
@@ -102,7 +102,7 @@ The gateway is a Go single binary and does not persist application state. It rea
 
 Agent connections are limited to one live connection. Before upgrade, the gateway issues a one-time, one-minute challenge that is included in the Ed25519-signed handshake and consumed atomically. Issued challenges do not survive a gateway restart, so a complete pre-restart handshake cannot be replayed afterward. Non-loopback agent transport requires `wss://` by default. The gateway sends WebSocket ping frames and requires timely pong traffic, so a stale TCP session is closed and a replacement may connect. If another agent tries to connect while the existing session is still live, the gateway rejects it and writes a warning log.
 
-All outbound agent messages pass through one bounded writer queue with write deadlines. Each request has independent pending state; disconnect or write failure releases affected callers immediately instead of waiting for the request timeout. Meta retrieval is retried with bounded backoff only for the current connection generation, and disconnected metadata is not served as current state.
+All outbound agent messages pass through one bounded writer queue with write deadlines. Each request has independent pending state; disconnect or write failure releases affected callers immediately instead of waiting for the request timeout. Meta retrieval, including invalid metadata, is retried with bounded backoff only for the current connection generation, and disconnected metadata is not served as current state.
 
 ## Agent Responsibilities
 
@@ -113,11 +113,11 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - `capability.yaml` lint
 - DB ping
 - SQL EXPLAIN verification
-- params validation
+- input schema validation
 - policy enforcement
 - optional per-capability Agent rate limiting before execution admission
 - prepared statement execution
-- SELECT result allow-list and DML count-only response enforcement
+- output selection and schema enforcement for SELECT and DML
 - OpenAPI spec generation
 - runtime detail output to the local log
 - reconnect every 30 seconds
@@ -129,19 +129,23 @@ Normal startup and `onprest-agent validate` share the same configuration and dat
 
 ## Capability Tunnel
 
-A normal gateway-to-agent request contains only a capability name and params.
+A normal gateway-to-agent request carries the capability name and HTTP params with the deadline, prepared definition hash, and caller binding.
 
 ```json
 {
-  "id": "01J5ABCDEF1234567890ABCDEF",
+  "type": "request",
+  "id": "01J5ABCDEF1234567890ABCDEF01",
   "capability": "get_customer",
   "params": {
     "customer_id": 1
-  }
+  },
+  "deadline": "2026-10-03T09:00:05Z",
+  "definition_hash": "64 lowercase hex characters from prepared metadata",
+  "caller_binding": "opaque caller binding"
 }
 ```
 
-The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Omitted or true `readonly` accepts one `SELECT`; explicit false also accepts one `INSERT`, `UPDATE`, or `DELETE`. The dialect-aware scanner rejects multiple statements and recognizes nested block comments in PostgreSQL and SQL Server. Integer JSON tokens remain exact through signed 64-bit conversion; SELECT values must be finite and representable by their declared result types, while DML returns only a non-negative native affected count.
+The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Omitted or true `readonly` accepts one `SELECT`; explicit false also accepts one `INSERT`, `UPDATE`, or `DELETE`. The dialect-aware scanner rejects multiple statements and recognizes nested block comments in PostgreSQL and SQL Server. Integer JSON tokens remain exact through signed 64-bit conversion; DB values are normalized before validation against the declared `output` types and constraints. With data output enabled, SELECT publishes selected rows and DML publishes the non-negative native affected count; omitted output publishes null while preserving execution and measured metrics.
 
 ## Dedicated Gateway Model
 
@@ -153,7 +157,7 @@ In this model, API keys, the agent public key, OpenAPI cache, and stdout logs ar
 
 Network-edge infrastructure and TLS termination are environment-owned. The gateway can be exposed directly or placed behind an optional compatible reverse proxy or load balancer. See [Reverse Proxy](/gateway/reverse-proxy) when using one.
 
-Database TLS is independent from gateway-edge TLS. PostgreSQL, MySQL, SQL Server, and Oracle support `require` and `verify-full`; PostgreSQL additionally supports `verify-ca`. The default is `disable`. `verify-full` authenticates the trust chain and configured host name, while `require` provides encryption only. Optional client certificates are supported for PostgreSQL and MySQL. Unsupported combinations and verification failures are rejected instead of silently downgraded. See [Database configuration](/agent/capability-yaml#database) and the [database-specific guides](/databases) for field-level configuration.
+Database TLS is independent from gateway-edge TLS. PostgreSQL, MySQL, SQL Server, and Oracle support `require` and `verify-full`; PostgreSQL additionally supports `verify-ca`. The default is `disable`. `verify-full` authenticates the trust chain and configured host name, while `require` provides encryption only. Optional client certificates are supported for PostgreSQL and MySQL. Unsupported combinations and verification failures are rejected instead of silently downgraded. See [Database configuration](/agent/capability-yaml#sources-and-protected-files) and the [database-specific guides](/databases) for field-level configuration.
 
 ## Product Boundary
 

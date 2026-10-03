@@ -6,8 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
+	"encoding/hex"
+	"fmt"
+	"github.com/viewlegacy/onprest/internal/contract"
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 )
@@ -19,25 +24,33 @@ const (
 )
 
 type agentCallResult struct {
-	Payload []byte
-	Status  int
-	Code    string
-	Message string
-	Count   *int64
+	Failure   *contract.ErrorValue
+	Metrics   *protocol.Metrics
+	RequestID string
+	Payload   []byte
+	Status    int
+	Code      string
+	Message   string
+	Count     *int64
 }
 
 func (r agentCallResult) OK() bool { return r.Status == http.StatusOK }
 
 func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
+	if len(r.Header.Values(protocol.MajorHeader)) != 1 || r.Header.Get(protocol.MajorHeader) != protocol.Major {
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "unsupported protocol major; require 1"))
+		return
+	}
+	w.Header().Set(protocol.MajorHeader, protocol.Major)
 	if !s.authenticateAgent(r) {
-		writeJSON(w, http.StatusUnauthorized, apiError(errGatewayAuthFailed, "invalid agent signature"))
+		writeJSON(w, http.StatusUnauthorized, requestAPIError(r, errGatewayAuthFailed, "invalid agent signature"))
 		return
 	}
 	s.agentMu.Lock()
 	if s.agent != nil {
 		s.agentMu.Unlock()
 		s.log("agent_rejected", map[string]any{"reason": "already_connected", "remote": r.RemoteAddr})
-		writeJSON(w, http.StatusConflict, apiError(errGatewayAgentAlreadyConn, "agent already connected"))
+		writeJSON(w, http.StatusConflict, requestAPIError(r, errGatewayAgentAlreadyConn, "agent already connected"))
 		return
 	}
 	conn, err := ws.Accept(w, r)
@@ -50,6 +63,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	s.agent = ac
 	s.openapi = nil
 	s.responseKinds = nil
+	s.capabilities = nil
 	s.agentMu.Unlock()
 	s.log("agent_connected", map[string]any{"remote": r.RemoteAddr})
 	go s.writeAgent(ac)
@@ -76,14 +90,39 @@ func (s *Server) callAgent(ctx context.Context, capability string, params map[st
 	return s.callAgentOn(ctx, ac, capability, params)
 }
 
-func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability string, params map[string]any) agentCallResult {
+func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability string, params map[string]any) (result agentCallResult) {
+	identity, _ := ctx.Value(callIdentityKey{}).(callIdentity)
+	id := identity.ID
+	if id == "" {
+		id = newID()
+	}
+	defer func() { result.RequestID = id }()
 	if ac == nil || ac.conn == nil {
 		return agentOfflineResult()
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.cfg.AgentTimeout)
+	s.agentMu.RLock()
+	metadata, known := s.capabilities[capability]
+	ready := s.agent == ac && s.openapi != nil && s.capabilities != nil
+	s.agentMu.RUnlock()
+	if capability != "meta" {
+		if !ready {
+			return agentOfflineResult()
+		}
+		if !known {
+			failure := &contract.ErrorValue{Code: "NOT_FOUND", Message: "capability is not defined", Outcome: "not_started"}
+			return agentCallResult{Status: http.StatusNotFound, Code: failure.Code, Message: failure.Message, Failure: failure}
+		}
+		if metadata.DefinitionHash == "" {
+			return agentOfflineResult()
+		}
+	}
+	budget := s.cfg.AgentTimeout
+	if known {
+		budget, _ = time.ParseDuration(metadata.ExecutionTimeout)
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	id := newID()
 	ch := make(chan protocol.Response, 1)
 	ac.mu.Lock()
 	if ac.closed {
@@ -100,13 +139,13 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 	ac.sendStates[id] = &requestSendState{phase: "queued"}
 	ac.mu.Unlock()
 
-	payload := protocol.MustJSON(protocol.Request{ID: id, Capability: capability, Params: params})
+	payload := protocol.MustJSON(protocol.Request{Type: "request", ID: id, Capability: capability, Params: params, CallerBinding: identity.Binding, DefinitionHash: metadata.DefinitionHash, Deadline: deadlineOf(ctx)})
 	if ac.send == nil {
 		// Test adapters created before the production writer queue is started use
 		// the same pending lifecycle, but perform the in-memory write directly.
 		if err := ac.conn.WriteText(payload); err != nil {
 			ac.removePending(id)
-			return agentOfflineResult()
+			return agentOfflineFor(ac, id)
 		}
 	} else {
 		writeResult := make(chan error, 1)
@@ -115,29 +154,31 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 		case ac.send <- write:
 		case <-ac.done:
 			ac.removePending(id)
-			return agentOfflineResult()
+			return agentOfflineFor(ac, id)
 		case <-ctx.Done():
 			ac.removePending(id)
+			failure := agentTimeoutFor(ac, id)
 			s.requestAgentCancel(ac, id)
-			return agentTimeoutResult()
+			return failure
 		}
 		select {
 		case err := <-writeResult:
 			if err != nil {
 				ac.removePending(id)
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return agentTimeoutResult()
+					return agentTimeoutFor(ac, id)
 				}
 				_ = ac.conn.Close()
-				return agentOfflineResult()
+				return agentOfflineFor(ac, id)
 			}
 		case <-ac.done:
 			ac.removePending(id)
-			return agentOfflineResult()
+			return agentOfflineFor(ac, id)
 		case <-ctx.Done():
 			ac.removePending(id)
+			failure := agentTimeoutFor(ac, id)
 			s.requestAgentCancel(ac, id)
-			return agentTimeoutResult()
+			return failure
 		}
 	}
 
@@ -146,24 +187,32 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 		ac.finishSendState(id)
 		if resp.Error != nil {
 			status, code := agentErrorStatus(resp.Error.Code)
-			return agentCallResult{Status: status, Code: code, Message: resp.Error.Message}
+			if resp.Error.Validate() != nil {
+				return invalidAgentResult(id)
+			}
+			return agentCallResult{RequestID: id, Status: status, Code: code, Message: resp.Error.Message, Failure: resp.Error}
 		}
 		if capability == "meta" {
+			if resp.Type != "metadata" {
+				return invalidAgentResult(id)
+			}
 			return agentCallResult{Payload: resp.Result, Status: http.StatusOK}
 		}
-		kind := s.responseKind(capability)
-		count, invalid := extractCount(resp.Result)
-		if invalid {
-			if kind == responseKindSelect {
-				return agentCallResult{Status: http.StatusBadGateway, Code: errAgentInternal, Message: "agent internal error"}
-			}
-			return agentCallResult{Status: http.StatusBadGateway, Code: errAgentTransactionOutcomeUnknown, Message: "transaction outcome is unknown"}
+		envelope, metrics, err := validateAgentResult(id, resp, metadata, known)
+		if err != nil {
+			s.log("agent_output_rejected", map[string]any{"request_id": id, "reason": err.Error()})
+			return invalidAgentResult(id)
 		}
-		return agentCallResult{Payload: resp.Result, Status: http.StatusOK, Count: count}
+		count := metrics.ReturnedRows
+		if count == nil {
+			count = metrics.AffectedRows
+		}
+		return agentCallResult{RequestID: id, Payload: envelope, Status: http.StatusOK, Count: count, Metrics: metrics}
 	case <-ctx.Done():
 		ac.removePending(id)
+		failure := agentTimeoutFor(ac, id)
 		s.requestAgentCancel(ac, id)
-		return agentTimeoutResult()
+		return failure
 	}
 }
 
@@ -199,11 +248,11 @@ func extractCount(payload []byte) (*int64, bool) {
 }
 
 func agentOfflineResult() agentCallResult {
-	return agentCallResult{Status: http.StatusServiceUnavailable, Code: errGatewayAgentOffline, Message: "agent is not connected"}
+	return agentCallResult{Status: 503, Code: "AGENT_OFFLINE", Message: "agent is not connected", Failure: &contract.ErrorValue{Code: "AGENT_OFFLINE", Message: "agent is not connected", Outcome: "not_started"}}
 }
 
 func agentTimeoutResult() agentCallResult {
-	return agentCallResult{Status: http.StatusGatewayTimeout, Code: errGatewayTimeout, Message: "agent response timed out"}
+	return agentCallResult{Status: http.StatusGatewayTimeout, Code: errGatewayTimeout, Message: "agent response timed out", Failure: &contract.ErrorValue{Code: "EXECUTION_TIMEOUT", Message: "agent response timed out", Outcome: "unknown"}}
 }
 
 func (ac *agentConn) removePending(id string) {
@@ -362,6 +411,7 @@ func (s *Server) readAgent(ac *agentConn) {
 			s.agent = nil
 			s.openapi = nil
 			s.responseKinds = nil
+			s.capabilities = nil
 		}
 		s.agentMu.Unlock()
 		s.log("agent_disconnected", nil)
@@ -404,7 +454,7 @@ func (ac *agentConn) disconnectPending() {
 		}
 	})
 	for _, ch := range pending {
-		ch <- protocol.Response{Error: &protocol.Error{Code: errGatewayAgentOffline, Message: "agent is not connected"}}
+		ch <- protocol.Response{Error: &protocol.Error{Code: errGatewayAgentOffline, Message: "agent is not connected", Outcome: "unknown"}}
 	}
 }
 
@@ -428,6 +478,13 @@ func (s *Server) fetchMetaFor(ac *agentConn) {
 		result := s.callAgentOn(context.Background(), ac, "meta", map[string]any{})
 		if result.OK() {
 			doc, kinds, err := metaData(result.Payload)
+			var metadata protocol.Metadata
+			if err == nil {
+				err = decodeJSONNumber(result.Payload, &metadata)
+			}
+			if err == nil {
+				err = validateMetadata(metadata)
+			}
 			if err == nil {
 				doc = s.finalizeOpenAPI(doc)
 				s.agentMu.Lock()
@@ -437,6 +494,7 @@ func (s *Server) fetchMetaFor(ac *agentConn) {
 				}
 				s.openapi = doc
 				s.responseKinds = kinds
+				s.capabilities = metadata.Capabilities
 				s.agentMu.Unlock()
 				pathCount := openAPIPathCount(doc)
 				s.log("openapi_cached", map[string]any{"paths": pathCount})
@@ -471,4 +529,140 @@ func (s *Server) isCurrentAgent(ac *agentConn) bool {
 	s.agentMu.RLock()
 	defer s.agentMu.RUnlock()
 	return s.agent == ac
+}
+
+type callIdentityKey struct{}
+type callIdentity struct{ ID, Binding string }
+
+func deadlineOf(ctx context.Context) time.Time { v, _ := ctx.Deadline(); return v }
+func invalidAgentResult(id string) agentCallResult {
+	e := &contract.ErrorValue{Code: "OUTPUT_INVALID", Message: "agent output does not satisfy the protocol contract", Outcome: "unknown"}
+	return agentCallResult{RequestID: id, Status: 502, Code: e.Code, Message: e.Message, Failure: e}
+}
+
+var capabilityMetadataName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`)
+
+func validateMetadata(metadata protocol.Metadata) error {
+	values := metadata.Capabilities
+	if len(values) == 0 || len(metadata.ResponseKinds) != len(values) || metadata.Data == nil || metadata.Data["openapi"] != "3.1.0" {
+		return fmt.Errorf("missing capability metadata")
+	}
+	paths, ok := metadata.Data["paths"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid OpenAPI paths")
+	}
+	info, ok := metadata.Data["info"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid OpenAPI info")
+	}
+	title, titleOK := info["title"].(string)
+	version, versionOK := info["version"].(string)
+	if !titleOK || !versionOK || title == "" || version == "" {
+		return fmt.Errorf("invalid OpenAPI info")
+	}
+	for name, v := range values {
+		if !capabilityMetadataName.MatchString(name) || strings.HasPrefix(name, "onprest_") {
+			return fmt.Errorf("invalid capability metadata")
+		}
+		_, hashErr := hex.DecodeString(v.DefinitionHash)
+		d, e := time.ParseDuration(v.ExecutionTimeout)
+		if e != nil || d <= 0 || d > 300*time.Second || len(v.DefinitionHash) != 64 || hashErr != nil || v.DefinitionHash != strings.ToLower(v.DefinitionHash) || (v.EffectClass != "none" && v.EffectClass != "possible") || v.ExecutorKind != "db" || v.InputSchema == nil || len(v.InputLimits) != 3 || v.InputLimits["max_input_bytes"] <= 0 || v.InputLimits["max_json_depth"] <= 0 || v.InputLimits["max_json_items"] <= 0 {
+			return fmt.Errorf("invalid capability metadata")
+		}
+		kind := metadata.ResponseKinds[name]
+		if v.InputSchema["type"] != "object" || v.EffectClass == "none" && kind != "select" || v.EffectClass == "possible" && kind != "mutation" {
+			return fmt.Errorf("invalid capability response kind")
+		}
+	}
+	for path, methods := range paths {
+		name := strings.TrimPrefix(path, "/api/v1/capabilities/")
+		if path == name {
+			return fmt.Errorf("invalid capability path")
+		}
+		if _, ok := values[name]; !ok {
+			return fmt.Errorf("unknown public capability")
+		}
+		operations, ok := methods.(map[string]any)
+		if !ok || len(operations) != 1 {
+			return fmt.Errorf("invalid capability operation")
+		}
+		operation, ok := operations["post"].(map[string]any)
+		if !ok || operation["x-onprest-capability"] != name {
+			return fmt.Errorf("invalid public capability binding")
+		}
+	}
+	return nil
+}
+func validateAgentResult(id string, resp protocol.Response, meta protocol.CapabilityMetadata, known bool) ([]byte, *protocol.Metrics, error) {
+	if resp.Type != "result" || resp.ID != id || resp.Error != nil || resp.Metrics == nil {
+		return nil, nil, fmt.Errorf("invalid result frame")
+	}
+	var result struct {
+		Data  json.RawMessage                 `json:"data"`
+		Files []contract.PublicFileDescriptor `json:"files"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(resp.Result))
+	dec.DisallowUnknownFields()
+	if e := dec.Decode(&result); e != nil || ensureJSONEOF(dec) != nil || len(result.Data) == 0 || result.Files == nil || len(result.Files) != 0 {
+		return nil, nil, fmt.Errorf("invalid result")
+	}
+	value, e := contract.DecodeJSON(result.Data, contract.Limits{MaxBytes: 16 << 20, MaxDepth: 32, MaxItems: 100000})
+	if e != nil {
+		return nil, nil, e
+	}
+	m := resp.Metrics
+	if m.ExecutorKind != "db" || known && m.ExecutorKind != meta.ExecutorKind || m.FileCount != 0 || m.InputFileCount != 0 || m.InputFileBytes != 0 || m.ResponseBytes < 0 || m.ReturnedRows == nil && m.AffectedRows == nil || m.ReturnedRows != nil && m.AffectedRows != nil {
+		return nil, nil, fmt.Errorf("invalid metrics")
+	}
+	if m.ReturnedRows != nil && *m.ReturnedRows < 0 || m.AffectedRows != nil && *m.AffectedRows < 0 {
+		return nil, nil, fmt.Errorf("invalid count")
+	}
+	if known && (meta.EffectClass == "none" && m.ReturnedRows == nil || meta.EffectClass == "possible" && m.AffectedRows == nil) {
+		return nil, nil, fmt.Errorf("metric effect class mismatch")
+	}
+
+	if value != nil {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, nil, fmt.Errorf("invalid DB data shape")
+		}
+		if m.ReturnedRows != nil {
+			rows, ok := object["rows"].([]any)
+			if !ok || int64(len(rows)) != *m.ReturnedRows || object["count"] != *m.ReturnedRows {
+				return nil, nil, fmt.Errorf("invalid row metrics")
+			}
+		} else if object["count"] != *m.AffectedRows {
+			return nil, nil, fmt.Errorf("invalid mutation metrics")
+		}
+	}
+
+	canonical, e := contract.CanonicalJSON(value)
+	if e != nil || int64(len(canonical)) != m.ResponseBytes {
+		return nil, nil, fmt.Errorf("invalid response size")
+	}
+	envelope := contract.NewSuccessEnvelope(id, value, result.Files)
+	b, e := json.Marshal(envelope)
+	return b, m, e
+}
+
+func agentTimeoutFor(ac *agentConn, id string) agentCallResult {
+	r := agentTimeoutResult()
+	ac.mu.Lock()
+	state := ac.sendStates[id]
+	if state != nil && (state.phase == "queued" || state.phase == "canceled") {
+		r.Failure.Outcome = "not_started"
+	}
+	ac.mu.Unlock()
+	return r
+}
+
+func agentOfflineFor(ac *agentConn, id string) agentCallResult {
+	r := agentOfflineResult()
+	r.Failure.Outcome = "unknown"
+	ac.mu.Lock()
+	if state := ac.sendStates[id]; state != nil && (state.phase == "queued" || state.phase == "canceled") {
+		r.Failure.Outcome = "not_started"
+	}
+	ac.mu.Unlock()
+	return r
 }

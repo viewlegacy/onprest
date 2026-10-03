@@ -125,7 +125,7 @@ func TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase(t *te
 
 func openAndPingDatabaseTLS(t *testing.T, definition agentpkg.DatabaseDef) *sql.DB {
 	t.Helper()
-	db, err := agentpkg.OpenDatabase(definition)
+	db, err := agentpkg.OpenDatabase(snapshotIntegrationTLS(t, definition))
 	if err != nil {
 		t.Fatalf("%s %s TLS adapter creation failed", definition.Driver, definition.TLS.Mode)
 	}
@@ -140,7 +140,7 @@ func openAndPingDatabaseTLS(t *testing.T, definition agentpkg.DatabaseDef) *sql.
 
 func assertDatabaseTLSPingFails(t *testing.T, definition agentpkg.DatabaseDef, reason string) {
 	t.Helper()
-	db, err := agentpkg.OpenDatabase(definition)
+	db, err := agentpkg.OpenDatabase(snapshotIntegrationTLS(t, definition))
 	if err != nil {
 		t.Fatalf("TLS negative-case adapter creation failed before PingContext: %s", reason)
 	}
@@ -369,4 +369,25 @@ func (p *rotatingTLSProxy) track(connection net.Conn, add bool) {
 	} else {
 		delete(p.connections, connection)
 	}
+}
+
+// The production provider passes captured TLS bytes to its connector. Keep real
+// TLS conformance on that path, including reconnect after certificate rotation.
+func snapshotIntegrationTLS(t *testing.T, definition agentpkg.DatabaseDef) agentpkg.DatabaseDef {
+	t.Helper()
+	pairs := []struct {
+		path   string
+		target *[]byte
+	}{{definition.TLS.CAFile, &definition.TLS.CABytes}, {definition.TLS.CertFile, &definition.TLS.CertBytes}, {definition.TLS.KeyFile, &definition.TLS.KeyBytes}}
+	for _, pair := range pairs {
+		if pair.path != "" {
+			data, err := os.ReadFile(pair.path)
+			if err != nil {
+				t.Fatal("read test-owned TLS fixture")
+			}
+			*pair.target = data
+		}
+	}
+	definition.TLS.Snapshot = true
+	return definition
 }

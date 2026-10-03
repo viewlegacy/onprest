@@ -34,6 +34,10 @@ func TestGeneratedIntegrationCapabilityFixturesStillLoad(t *testing.T) {
 			path := writeContainerCapability(t, t.TempDir(), driver, postgresConfig{
 				Host: "127.0.0.1", Port: "1234", Name: "fixture", User: "fixture", Password: "fixture",
 			}, "ws://127.0.0.1:8080/ws/agent", secrets.AgentPrivateKey, "select :id as id, 'name' as name, 'email' as email")
+			mutationPath := writeMutationCapability(t, t.TempDir(), driver, postgresConfig{Host: "127.0.0.1", Port: "1234", Name: "fixture", User: "fixture", Password: "fixture"}, "ws://127.0.0.1:8080/ws/agent", secrets.AgentPrivateKey)
+			if _, err := agentpkg.LoadCapabilityFile(mutationPath); err != nil {
+				t.Fatalf("load mutation fixture %s: %v", driver, err)
+			}
 			if _, err := agentpkg.LoadCapabilityFile(path); err != nil {
 				t.Fatalf("load generated %s integration fixture: %v", driver, err)
 			}
@@ -143,6 +147,7 @@ func TestMCPStructuredContentPresenceValidation(t *testing.T) {
 
 func decodeMCPJSON(t *testing.T, raw []byte, target any) {
 	t.Helper()
+	raw = unwrapBusinessEnvelope(t, raw)
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(target); err != nil {
@@ -239,17 +244,20 @@ func writePostgresCapabilityWithRuntimeAndLogging(t *testing.T, dir string, db p
 	if strings.HasPrefix(gatewayURL, "ws://gateway:") {
 		insecureGatewayOverride = "  allow_insecure_non_loopback_ws: true\n"
 	}
-	content := fmt.Sprintf(`service:
+	content := fmt.Sprintf(`schema_version: 1
+service:
   title: Onprest PostgreSQL IT
   version: 0.1.0
 %s
-database:
-  driver: postgres
-  host: %s
-  port: %s
-  name: %s
-  user: %s
-  password: %s
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: %s
+      port: %s
+      name: %s
+      user: %s
+      password: %s
 gateway:
   url: %s
   agent_private_key: %s
@@ -259,7 +267,7 @@ logging:
   max_files: %d
 capabilities:
 %s
-`, runtime, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), insecureGatewayOverride, maxSize, maxFiles, capabilities)
+`, runtime, yamlString(db.Host), db.Port, yamlString(db.Name), yamlString(db.User), yamlString(db.Password), yamlString(gatewayURL), yamlString(agentPrivateKey), insecureGatewayOverride, maxSize, maxFiles, "  "+strings.ReplaceAll(strings.TrimSpace(capabilities), "\n", "\n  "))
 	path := filepath.Join(dir, "capability.postgres.yaml")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write capability: %v", err)
@@ -333,6 +341,7 @@ func signedAgentHeaders(t *testing.T, gatewayURL string, privateKey ed25519.Priv
 	headers.Set("X-Agent-Timestamp", timestamp)
 	headers.Set("X-Agent-Nonce", nonce)
 	headers.Set("X-Agent-Challenge", challenge)
+	headers.Set(protocol.MajorHeader, protocol.Major)
 	headers.Set("X-Agent-Signature", base64.RawURLEncoding.EncodeToString(signature))
 	return headers
 }
@@ -376,16 +385,16 @@ func fetchIntegrationAgentChallenge(t *testing.T, gatewayURL string) string {
 	return body.Challenge
 }
 
-func postCapability(t *testing.T, baseURL, apiKey, name, payload string) (int, []byte) {
+func postCapabilityEnvelope(t *testing.T, baseURL, apiKey, name, payload string) (int, []byte) {
 	t.Helper()
-	status, body, err := postCapabilityRequest(baseURL, apiKey, name, payload)
+	status, body, err := postCapabilityEnvelopeRequest(baseURL, apiKey, name, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return status, body
 }
 
-func postCapabilityRequest(baseURL, apiKey, name, payload string) (int, []byte, error) {
+func postCapabilityEnvelopeRequest(baseURL, apiKey, name, payload string) (int, []byte, error) {
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/v1/capabilities/"+name, strings.NewReader(payload))
 	if err != nil {
 		return 0, nil, err
@@ -443,4 +452,78 @@ func writeFile(t *testing.T, path, content string) string {
 		t.Fatalf("write %s: %v", path, err)
 	}
 	return path
+}
+
+// Existing business assertions inspect data after validating the current public
+// envelope. Raw transport assertions use postCapabilityEnvelope directly.
+func unwrapBusinessEnvelope(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var v struct {
+		RequestID string `json:"request_id"`
+		Result    *struct {
+			Data  json.RawMessage   `json:"data"`
+			Files []json.RawMessage `json:"files"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil || v.Result == nil {
+		return raw
+	}
+	if len(v.RequestID) != 26 || v.Result.Files == nil {
+		t.Fatalf("invalid current envelope: %s", raw)
+	}
+	return v.Result.Data
+}
+func postCapability(t *testing.T, baseURL, apiKey, name, payload string) (int, []byte) {
+	t.Helper()
+	status, raw := postCapabilityEnvelope(t, baseURL, apiKey, name, payload)
+	if status == 200 {
+		raw = unwrapBusinessEnvelope(t, raw)
+	}
+	return status, raw
+}
+func postCapabilityRequest(baseURL, apiKey, name, payload string) (int, []byte, error) {
+	status, raw, err := postCapabilityEnvelopeRequest(baseURL, apiKey, name, payload)
+	if status == 200 && err == nil {
+		var envelope struct {
+			RequestID string `json:"request_id"`
+			Result    *struct {
+				Data  json.RawMessage   `json:"data"`
+				Files []json.RawMessage `json:"files"`
+			} `json:"result"`
+		}
+		if decodeErr := json.Unmarshal(raw, &envelope); decodeErr != nil {
+			return status, raw, decodeErr
+		}
+		if envelope.Result != nil {
+			if len(envelope.RequestID) != 26 || envelope.Result.Files == nil {
+				return status, raw, fmt.Errorf("invalid current envelope")
+			}
+			raw = envelope.Result.Data
+		}
+	}
+	return status, raw, err
+}
+
+func currentDBFixtureResult(id string, data map[string]any) protocol.Response {
+	raw, _ := json.Marshal(data)
+	result := protocol.ResultResponse(id, map[string]any{"data": data, "files": []any{}})
+	count := int64(0)
+	if n, ok := data["count"].(int); ok {
+		count = int64(n)
+	}
+	result.Metrics = &protocol.Metrics{ExecutorKind: "db", ReturnedRows: &count, ResponseBytes: int64(len(raw))}
+	return result
+}
+func currentDBFixtureMetadata(id string, doc map[string]any) protocol.Response {
+	caps := map[string]protocol.CapabilityMetadata{}
+	kinds := map[string]string{}
+	if paths, ok := doc["paths"].(map[string]any); ok {
+		for path := range paths {
+			name := strings.TrimPrefix(path, "/api/v1/capabilities/")
+			caps[name] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: "5s", EffectClass: "none", InputSchema: map[string]any{"type": "object"}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
+			kinds[name] = "select"
+		}
+	}
+	raw, _ := json.Marshal(protocol.Metadata{Data: doc, Capabilities: caps, ResponseKinds: kinds})
+	return protocol.Response{Type: "metadata", ID: id, Result: raw}
 }

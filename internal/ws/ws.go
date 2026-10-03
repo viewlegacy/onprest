@@ -25,9 +25,10 @@ const (
 )
 
 type Conn struct {
-	c        net.Conn
-	br       *bufio.Reader
-	isClient bool
+	protocolMajor string
+	c             net.Conn
+	br            *bufio.Reader
+	isClient      bool
 
 	writeMu            sync.Mutex
 	beforeWriteLock    func(byte)
@@ -58,7 +59,13 @@ func Accept(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 		return nil, err
 	}
 	accept := acceptKey(key)
-	_, err = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
+	extra := ""
+	for _, major := range w.Header().Values("X-Onprest-Protocol-Major") {
+		if !strings.ContainsAny(major, "\r\n") {
+			extra += "X-Onprest-Protocol-Major: " + major + "\r\n"
+		}
+	}
+	_, err = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n%s\r\n", accept, extra)
 	if err != nil {
 		_ = nc.Close()
 		return nil, err
@@ -170,7 +177,11 @@ func Dial(handshakeTimeout time.Duration, rawurl string, headers http.Header) (*
 		_ = nc.Close()
 		return nil, err
 	}
-	return &Conn{c: nc, br: br, isClient: true}, nil
+	major := ""
+	if len(resp.Header.Values("X-Onprest-Protocol-Major")) == 1 {
+		major = resp.Header.Get("X-Onprest-Protocol-Major")
+	}
+	return &Conn{c: nc, br: br, isClient: true, protocolMajor: major}, nil
 }
 
 func (c *Conn) ReadText() ([]byte, error) {
@@ -452,3 +463,5 @@ func headerHasToken(header http.Header, name, token string) bool {
 	}
 	return false
 }
+
+func (c *Conn) ProtocolMajor() string { return c.protocolMajor }

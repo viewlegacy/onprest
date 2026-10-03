@@ -327,7 +327,7 @@ func TestOracleMutationStartCancellationKeepsTransactionContextAliveForRollback(
 			t.Fatalf("iteration %d: result=%+v, want canceled Oracle transaction", iteration, got)
 		}
 		failure := runner.canceledMutationStartFailure(got.mtx, got.err)
-		if failure == nil || failure.code != "AGENT_QUERY_TIMEOUT" {
+		if failure == nil || failure.code != "EXECUTION_TIMEOUT" {
 			t.Fatalf("iteration %d: failure=%+v", iteration, failure)
 		}
 		got.mtx.close()
@@ -409,7 +409,7 @@ func TestRunnerQueuedAndRunningCancellationUsesRealServeConn(t *testing.T) {
 	defer client.Close()
 	<-accepted
 
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: "running", Capability: "mutate", Params: map[string]any{}})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "running", Capability: "mutate", Params: map[string]any{}})); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -417,10 +417,10 @@ func TestRunnerQueuedAndRunningCancellationUsesRealServeConn(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("running request did not reach ExecContext")
 	}
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: "queued", Capability: "mutate", Params: map[string]any{}})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "queued", Capability: "mutate", Params: map[string]any{}})); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: "busy", Capability: "mutate", Params: map[string]any{}})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "busy", Capability: "mutate", Params: map[string]any{}})); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.WriteText(protocol.MustJSON(protocol.CancelRequest{Type: "cancel", ID: "queued"})); err != nil {
@@ -442,10 +442,10 @@ func TestRunnerQueuedAndRunningCancellationUsesRealServeConn(t *testing.T) {
 		}
 		responses[response.ID] = response
 	}
-	if response := responses["running"]; response.Error == nil || response.Error.Code != "AGENT_QUERY_TIMEOUT" {
+	if response := responses["running"]; response.Error == nil || response.Error.Code != "EXECUTION_TIMEOUT" {
 		t.Fatalf("running cancel response=%+v", response)
 	}
-	if response := responses["busy"]; response.Error == nil || response.Error.Code != "AGENT_BUSY" {
+	if response := responses["busy"]; response.Error == nil || response.Error.Code != "BUSY" {
 		t.Fatalf("busy response=%+v", response)
 	}
 	for _, id := range []string{"running", "busy", "unknown"} {
@@ -476,7 +476,7 @@ func TestRunnerQueuedAndRunningCancellationUsesRealServeConn(t *testing.T) {
 	// Reusing canceled, completed, and queue-busy IDs proves all terminal
 	// registry entries were removed rather than retained for the connection.
 	for _, id := range []string{"queued", "running", "busy"} {
-		if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: id, Capability: "mutate", Params: map[string]any{}})); err != nil {
+		if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: id, Capability: "mutate", Params: map[string]any{}})); err != nil {
 			t.Fatal(err)
 		}
 		msg, err := client.ReadText()
@@ -487,7 +487,7 @@ func TestRunnerQueuedAndRunningCancellationUsesRealServeConn(t *testing.T) {
 		if err := json.Unmarshal(msg, &response); err != nil {
 			t.Fatal(err)
 		}
-		if response.ID != id || response.Error != nil || string(response.Result) != `{"count":1}` {
+		if response.ID != id || response.Error != nil || string(response.Result) != `{"data":{"count":1},"files":[]}` {
 			t.Fatalf("reused %s response=%s", id, msg)
 		}
 	}
@@ -524,7 +524,7 @@ func TestRunnerConnectionCloseCancelsAndRollsBackInflightMutation(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.WriteText(protocol.MustJSON(protocol.Request{ID: "closing", Capability: "mutate", Params: map[string]any{}})); err != nil {
+	if err := client.WriteText(protocol.MustJSON(protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "closing", Capability: "mutate", Params: map[string]any{}})); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -630,17 +630,17 @@ func TestExecuteMutationTransactionOrderingAndFailures(t *testing.T) {
 		{name: "affected rows limit exceeded", state: mutationDriverState{rows: 2}, maxAffectedRows: int64PtrAgent(1), wantCode: errorAffectedRowsExceeded, wantCalls: "begin,exec,rows,rollback"},
 		{name: "maximum int64 affected rows", state: mutationDriverState{rows: math.MaxInt64}, maxAffectedRows: int64PtrAgent(math.MaxInt64), wantCalls: "begin,exec,rows,commit"},
 		{name: "affected rows rollback unknown", state: mutationDriverState{rows: 2, rollbackErr: errors.New("rollback")}, maxAffectedRows: int64PtrAgent(1), wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,rollback", discard: true},
-		{name: "rows error", state: mutationDriverState{rowsErr: errors.New("rows")}, wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
-		{name: "negative rows", state: mutationDriverState{rows: -1}, wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
-		{name: "max bytes before commit", state: mutationDriverState{rows: 1}, maxBytes: "1B", wantCode: "AGENT_QUERY_FAILED", wantCalls: "begin,exec,rows,rollback"},
-		{name: "exec connection lost", state: mutationDriverState{execErr: errors.New("connection reset by peer")}, wantCode: "AGENT_DB_UNREACHABLE", wantCalls: "begin,exec,rollback"},
+		{name: "rows error", state: mutationDriverState{rowsErr: errors.New("rows")}, wantCode: "EXECUTION_FAILED", wantCalls: "begin,exec,rows,rollback"},
+		{name: "negative rows", state: mutationDriverState{rows: -1}, wantCode: "EXECUTION_FAILED", wantCalls: "begin,exec,rows,rollback"},
+		{name: "max bytes before commit", state: mutationDriverState{rows: 1}, maxBytes: "1B", wantCode: "EXECUTION_FAILED", wantCalls: "begin,exec,rows,rollback"},
+		{name: "exec connection lost", state: mutationDriverState{execErr: errors.New("connection reset by peer")}, wantCode: "DEPENDENCY_UNAVAILABLE", wantCalls: "begin,exec,rollback"},
 		{name: "exec connection lost rollback unknown", state: mutationDriverState{execErr: errors.New("connection reset by peer"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
 		{name: "rollback unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: errors.New("rollback")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
 		{name: "rollback tx done unknown", state: mutationDriverState{execErr: errors.New("exec"), rollbackErr: sql.ErrTxDone}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rollback", discard: true},
 		{name: "commit unknown", state: mutationDriverState{rows: 2, commitErr: errors.New("commit")}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit", discard: true},
 		{name: "commit disconnect before apply", state: mutationDriverState{rows: 2, commitErr: errors.New("commit connection reset before apply"), commitApplyBeforeError: true}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit", discard: true, assertCommitState: true, wantCommitState: 0},
 		{name: "commit disconnect after apply", state: mutationDriverState{rows: 2, commitErr: errors.New("commit connection reset after apply"), commitApplyAfterError: true}, wantCode: errorOutcomeUnknown, wantCalls: "begin,exec,rows,commit", discard: true, assertCommitState: true, wantCommitState: 1},
-		{name: "cancel before pool acquisition", state: mutationDriverState{}, cancel: true, wantCode: "AGENT_QUERY_TIMEOUT", wantCalls: ""},
+		{name: "cancel before pool acquisition", state: mutationDriverState{}, cancel: true, wantCode: "EXECUTION_TIMEOUT", wantCalls: ""},
 	}
 	for i := range tests {
 		tc := &tests[i]
@@ -719,7 +719,7 @@ func TestExecuteMutationCancellationAfterRowsAffectedRollsBackBeforeCommit(t *te
 	close(state.rowsRelease)
 	select {
 	case failure := <-result:
-		if failure == nil || failure.code != "AGENT_QUERY_TIMEOUT" {
+		if failure == nil || failure.code != "EXECUTION_TIMEOUT" {
 			t.Fatalf("failure=%+v, want confirmed query timeout", failure)
 		}
 	case <-time.After(time.Second):
@@ -820,14 +820,14 @@ func TestExecuteMutationDBDisconnectClassification(t *testing.T) {
 		{
 			name:        "begin disconnect",
 			state:       mutationDriverState{beginErr: errors.New("connection reset by peer")},
-			wantCode:    "AGENT_DB_UNREACHABLE",
+			wantCode:    "DEPENDENCY_UNAVAILABLE",
 			wantMessage: "database is unreachable",
 			wantCalls:   "begin",
 		},
 		{
 			name:        "exec disconnect rollback confirmed",
 			state:       mutationDriverState{execErr: driver.ErrBadConn},
-			wantCode:    "AGENT_DB_UNREACHABLE",
+			wantCode:    "DEPENDENCY_UNAVAILABLE",
 			wantMessage: "database is unreachable",
 			wantCalls:   "begin,exec,rollback",
 		},
@@ -891,7 +891,7 @@ func TestDatabaseSQLAutomaticRollbackRaceIsOutcomeUnknownAndWaitsForDriver(t *te
 			if rb.state != rollbackAlreadyDone || !errors.Is(rb.err(), sql.ErrTxDone) {
 				t.Fatalf("rollback result=%+v, want unconfirmed sql.ErrTxDone", rb)
 			}
-			failure := mutationFailureForRollback(context.Canceled, rb, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
+			failure := mutationFailureForRollback(context.Canceled, rb, "EXECUTION_TIMEOUT", queryTimeoutDetail)
 			if failure.code != errorOutcomeUnknown {
 				t.Fatalf("failure=%+v, want %s", failure, errorOutcomeUnknown)
 			}

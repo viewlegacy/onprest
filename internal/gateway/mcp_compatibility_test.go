@@ -486,7 +486,7 @@ func assertMCPMethodSuccess(t *testing.T, rec *httptest.ResponseRecorder, method
 			t.Fatalf("tools/call result.content=%#v want one item; result=%#v", result["content"], result)
 		}
 		item, ok := content[0].(map[string]any)
-		if !ok || item["type"] != "text" || item["text"] != `{"rows":[],"count":0}` {
+		if !ok || item["type"] != "text" || !strings.Contains(item["text"].(string), `"rows":[]`) {
 			t.Fatalf("tools/call content=%#v want successful text result", content[0])
 		}
 	}
@@ -607,18 +607,22 @@ func TestMCPToolsCallNameTypeAndEmptyStringSemantics(t *testing.T) {
 							if rec.Code != http.StatusOK {
 								t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 							}
-							assertMCPErrorMessage(t, rec.Body.Bytes(), tc.wantRPCCode, errJSONRPCInvalidParams, tc.wantMessage)
+							if tc.emptyName {
+								assertMCPToolErrorLegacy(t, rec.Body.Bytes(), errGatewayCapabilityNotFound)
+							} else {
+								assertMCPErrorMessage(t, rec.Body.Bytes(), tc.wantRPCCode, errJSONRPCInvalidParams, tc.wantMessage)
+							}
 							entries := requestLogEntries(t, logs)
 							wantLogMessage := "invalid tools/call params"
 							if tc.emptyName {
-								if got := calls.Load(); got != 1 || agentCapability != "" {
-									t.Fatalf("empty name agent calls=%d capability=%q want 1/empty", got, agentCapability)
+								if got := calls.Load(); got != 0 || agentCapability != "" {
+									t.Fatalf("empty name agent calls=%d capability=%q want 0/empty", got, agentCapability)
 								}
-								wantLogMessage = "tool is not defined"
+								wantLogMessage = "capability is not defined"
 							} else if calls.Load() != 0 {
 								t.Fatalf("malformed name reached agent: calls=%d", calls.Load())
 							}
-							if len(entries) != 1 || entries[0]["capability"] != "" || entries[0]["error_code"] != errJSONRPCInvalidParams || entries[0]["error_message"] != wantLogMessage {
+							if len(entries) != 1 || entries[0]["capability"] != "" || entries[0]["error_code"] != map[bool]string{true: "NOT_FOUND", false: errJSONRPCInvalidParams}[tc.emptyName] || entries[0]["error_message"] != wantLogMessage {
 								t.Fatalf("tools/call name request log=%#v want message=%q", entries, wantLogMessage)
 							}
 						} else {
@@ -773,7 +777,7 @@ func TestMCPStructuredContentIsVersionGated(t *testing.T) {
 			}
 			var textValue any
 			decodeMCPJSONUseNumber(t, []byte(response.Result.Content[0].Text), &textValue)
-			want := map[string]any{"rows": []any{map[string]any{"id": json.Number("1"), "name": "Ada"}}, "count": json.Number("1")}
+			want := expectedTestEnvelope(t, response.Result.Content[0].Text, map[string]any{"rows": []any{map[string]any{"id": json.Number("1"), "name": "Ada"}}, "count": json.Number("1")})
 			if !reflect.DeepEqual(textValue, want) {
 				t.Fatalf("text value=%#v want %#v", textValue, want)
 			}
@@ -818,14 +822,14 @@ func TestMCPExecutionErrorStructuredContentIsVersionGated(t *testing.T) {
 			if !response.Result.IsError || string(response.ID) != `1` {
 				t.Fatalf("MCP tools/call response=%#v, want id 1 error result", response)
 			}
-			if got := response.Result.Content[0].Text; got != "query failed" {
+			if got := testEnvelopeErrorMessage(t, response.Result.Content[0].Text); got != "query failed" {
 				t.Fatalf("error text=%q want %q", got, "query failed")
 			}
 			if tc.wantStruct {
 				requireMCPStructuredObject(t, response.Result.StructuredContent)
 				var structuredValue any
 				decodeMCPJSONUseNumber(t, response.Result.StructuredContent, &structuredValue)
-				want := map[string]any{"error": map[string]any{"code": errAgentQueryFailed, "message": "query failed"}}
+				want := expectedTestEnvelope(t, response.Result.Content[0].Text, map[string]any{"error": map[string]any{"code": errAgentQueryFailed, "message": "query failed"}})
 				if !reflect.DeepEqual(structuredValue, want) {
 					t.Fatalf("structuredContent=%#v want %#v", structuredValue, want)
 				}
@@ -851,6 +855,7 @@ func TestMCPDMLPayloadIsVersionGated(t *testing.T) {
 				return agentResponse{ID: req.ID, Result: json.RawMessage(`{"count":2}`)}
 			})
 			defer cleanup()
+			setVersionedTestKind(s, "get_customer", responseKindMutation)
 			req := newMCPCompatibilityRequest(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`)
 			if tc.header != "" {
 				req.Header.Set(mcpProtocolHeader, tc.header)
@@ -865,7 +870,7 @@ func TestMCPDMLPayloadIsVersionGated(t *testing.T) {
 			}
 			var textValue any
 			decodeMCPJSONUseNumber(t, []byte(response.Result.Content[0].Text), &textValue)
-			want := map[string]any{"count": json.Number("2")}
+			want := expectedTestEnvelope(t, response.Result.Content[0].Text, map[string]any{"count": json.Number("2")})
 			if !reflect.DeepEqual(textValue, want) {
 				t.Fatalf("text value=%#v want %#v", textValue, want)
 			}
@@ -928,14 +933,14 @@ func TestMCPExecutionErrorClassificationIsVersionGated(t *testing.T) {
 				if !response.Result.IsError || string(response.ID) != `1` {
 					t.Fatalf("MCP tools/call response=%#v, want id 1 error result", response)
 				}
-				if got := response.Result.Content[0].Text; got != errorCase.message {
+				if got := testEnvelopeErrorMessage(t, response.Result.Content[0].Text); got != errorCase.message {
 					t.Fatalf("text=%q want %q", got, errorCase.message)
 				}
 				if version.wantStruct {
 					requireMCPStructuredObject(t, response.Result.StructuredContent)
 					var structuredValue any
 					decodeMCPJSONUseNumber(t, response.Result.StructuredContent, &structuredValue)
-					want := map[string]any{"error": map[string]any{"code": errorCase.code, "message": errorCase.message}}
+					want := expectedTestEnvelope(t, response.Result.Content[0].Text, map[string]any{"error": map[string]any{"code": errorCase.code, "message": errorCase.message}})
 					if !reflect.DeepEqual(structuredValue, want) {
 						t.Fatalf("structuredContent=%#v want %#v", structuredValue, want)
 					}
