@@ -72,8 +72,8 @@ func compileSelector(m rawMap, input *Schema) (map[string]any, error) {
 		if e != nil || len(r) > 4096 {
 			return nil, errors.New("selector regex must be 1..4096 bytes")
 		}
-		if _, e := regexp.Compile(r); e != nil {
-			return nil, errors.New("invalid selector Go regexp")
+		if _, e := CompileSelectorRegexp(r); e != nil {
+			return nil, e
 		}
 		out["name_regex"] = r
 	}
