@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/viewlegacy/onprest/internal/contract"
 )
 
 // Error exposes a fixed category and safe text. Unwrap is for local diagnostics;
@@ -53,6 +55,10 @@ func joinFailures(errs ...error) error {
 	return osFailure(err)
 }
 func osFailure(err error) error {
+	var output *contract.OutputError
+	if errors.As(err, &output) && output.Code == "LIMIT_EXCEEDED" {
+		return failure("LIMIT_EXCEEDED", err)
+	}
 	if errors.Is(err, fs.ErrNotExist) {
 		return failure("NOT_FOUND", err)
 	}

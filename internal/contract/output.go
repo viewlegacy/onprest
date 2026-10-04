@@ -41,7 +41,7 @@ type OutputArtifact struct {
 }
 
 // ArtifactStager supplies private, bounded storage, not public delivery. The
-// implementation is environment-owned (the Agent spool is connected later).
+// Agent implementations supply an explicit private output ownership scope.
 // Begin must not publish bytes. Close flushes a stage; Finish opens a reader of
 // the completed immutable bytes. Abort releases the stage, including after
 // Finish. It must be safe after a failed Close or Finish.

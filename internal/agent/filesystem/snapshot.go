@@ -47,8 +47,8 @@ func (s *Snapshot) Close() error {
 
 // SnapshotFiles copies only descriptors bound to a completed selection. The
 // supplied stager must satisfy contract.ArtifactStager's private immutable
-// completion contract. P06 connects the production spool; this API provides no
-// path-based fallback storage or ownership/TTL store.
+// completion contract. The Agent artifact store supplies production scopes;
+// this API provides no path-based fallback storage or ownership/TTL store.
 func SnapshotFiles(ctx context.Context, selected []Selection, limits SnapshotLimits, mimeType string, stager contract.ArtifactStager) (_ *Snapshot, err error) {
 	if limits.MaxFileBytes < 1 || limits.MaxTotalBytes < 1 || limits.MaxFiles < 1 || limits.MaxFileBytes > limits.MaxTotalBytes || nilLike(stager) {
 		return nil, failure("VALIDATION_FAILED", fs.ErrInvalid)
