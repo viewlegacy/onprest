@@ -244,6 +244,12 @@ func (c *Conn) WriteTextWithDeadline(payload []byte, timeout time.Duration) erro
 	return c.writeFrameWithDeadline(1, payload, timeout)
 }
 
+// WriteTextWithDeadlineStart runs start under the frame write lock immediately
+// before the first network write, after frame preparation and deadline setup.
+func (c *Conn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	return c.writeFrameStart(1, payload, timeout, start)
+}
+
 func (c *Conn) WritePing(payload []byte) error {
 	return c.WritePingWithDeadline(payload, 0)
 }
@@ -350,6 +356,9 @@ func (c *Conn) writeFrame(op byte, payload []byte) error {
 }
 
 func (c *Conn) writeFrameWithDeadline(op byte, payload []byte, timeout time.Duration) error {
+	return c.writeFrameStart(op, payload, timeout, nil)
+}
+func (c *Conn) writeFrameStart(op byte, payload []byte, timeout time.Duration, start func() error) error {
 	if op >= 8 && len(payload) > 125 {
 		return errors.New("websocket control payload too large")
 	}
@@ -406,6 +415,11 @@ func (c *Conn) writeFrameWithDeadline(op byte, payload []byte, timeout time.Dura
 		}
 	} else {
 		copy(frame[pos:], payload)
+	}
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
 	}
 	return writeFull(c.c, frame)
 }

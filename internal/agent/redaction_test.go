@@ -89,6 +89,7 @@ func TestVersionedPrivateConfigurationIsRedactedFromAllDiagnosticLogs(t *testing
 								t.Fatal("runtime query did not fail")
 							}
 							stdout.Write(protocol.MustJSON(response))
+							_ = runner.store.Close()
 							_ = runner.versioned.Close()
 							_ = runner.detailLogCloser.Close()
 						}

@@ -21,7 +21,23 @@ func (r *Runner) executeVersionedPrepared(ctx context.Context, req protocol.Requ
 				effect = "none"
 			}
 			l := c.Limits()
-			meta.Capabilities[name] = protocol.CapabilityMetadata{DefinitionHash: s.DefinitionHash(), ExecutorKind: "db", ExecutionTimeout: c.Policy["timeout"].(string), EffectClass: effect, InputSchema: c.Input.Normalized(), InputLimits: map[string]int64{"max_input_bytes": l.MaxBytes, "max_json_depth": l.MaxDepth, "max_json_items": l.MaxItems}}
+			meta.Capabilities[name] = protocol.CapabilityMetadata{DefinitionHash: s.DefinitionHash(), ExecutorKind: c.Executor.Type, ExecutionTimeout: c.Policy["timeout"].(string), EffectClass: effect, InputSchema: c.Input.Normalized(), InputLimits: map[string]int64{"max_input_bytes": l.MaxBytes, "max_json_depth": l.MaxDepth, "max_json_items": l.MaxItems}}
+			if c.Executor.Type != "db" {
+				meta.ResponseKinds[name] = "generic"
+				v := meta.Capabilities[name]
+				if c.Executor.Type == "csv" {
+					v.EffectClass = "none"
+				}
+				meta.Capabilities[name] = v
+			}
+			if schemaHasFile(c.Input) {
+				v := meta.Capabilities[name]
+				v.InputTimeout = r.versioned.Runtime()["transfer_timeout"].(string)
+				v.InputLimits["max_input_file_bytes"] = l.MaxFileBytes
+				v.InputLimits["max_total_input_file_bytes"] = l.MaxTotalFileBytes
+				v.InputLimits["max_input_files"] = l.MaxFiles
+				meta.Capabilities[name] = v
+			}
 		}
 		resp := protocol.ResultResponse(req.ID, meta)
 		resp.Type = "metadata"

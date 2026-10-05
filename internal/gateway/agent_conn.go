@@ -59,13 +59,23 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		s.log("agent_upgrade_failed", map[string]any{"error": err.Error()})
 		return
 	}
-	ac := newAgentConn(conn)
+	wire := textConn(conn)
+	if s.agentWire != nil {
+		wire = s.agentWire(conn)
+	}
+	ac := newAgentConn(wire)
+	ac.initializeTransfers()
 	s.agent = ac
 	s.openapi = nil
 	s.responseKinds = nil
 	s.capabilities = nil
 	s.agentMu.Unlock()
 	s.log("agent_connected", map[string]any{"remote": r.RemoteAddr})
+	go func() {
+		if ac.scheduler.Run() != nil {
+			ac.conn.Close()
+		}
+	}()
 	go s.writeAgent(ac)
 	go s.keepAgentAlive(ac)
 	go s.fetchMetaFor(ac)
@@ -346,12 +356,29 @@ func (s *Server) writeAgent(ac *agentConn) {
 			continue
 		default:
 		}
-		err := ac.conn.WriteTextWithDeadline(write.payload, s.cfg.AgentWriteTimeout)
+		writeFrame := func() error { return ac.conn.WriteTextWithDeadline(write.payload, s.cfg.AgentWriteTimeout) }
+		var err error
+		if ac.scheduler != nil {
+			var completed <-chan error
+			completed, err = ac.scheduler.Post(write.ctx, write.control, "", writeFrame)
+			if err == nil {
+				select {
+				case err = <-completed:
+				case <-ac.done:
+					err = errors.New("agent disconnected")
+				}
+			}
+		} else {
+			err = writeFrame()
+		}
 		if err != nil {
 			ac.finishSendState(write.id)
 			write.result <- err
 			if write.cancel != nil {
 				write.cancel()
+			}
+			if !write.control && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+				continue
 			}
 			_ = ac.conn.Close()
 			return
@@ -421,12 +448,35 @@ func (s *Server) readAgent(ac *agentConn) {
 		if err != nil {
 			return
 		}
+		if ac.transfers != nil {
+			var kind struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(msg, &kind) != nil {
+				return
+			}
+			if protocol.IsTransferType(kind.Type) {
+				if ac.handleTransfer(msg) != nil {
+					return
+				}
+				continue
+			}
+		}
 		var resp protocol.Response
 		if err := json.Unmarshal(msg, &resp); err != nil {
 			s.log("agent_bad_message", map[string]any{"error": err.Error()})
 			continue
 		}
 		ac.mu.Lock()
+		if exchange := ac.transferCalls[resp.ID]; exchange != nil {
+			ac.mu.Unlock()
+			select {
+			case exchange.result <- resp:
+			default:
+				return
+			}
+			continue
+		}
 		ch := ac.pending[resp.ID]
 		delete(ac.pending, resp.ID)
 		delete(ac.sendStates, resp.ID)
@@ -438,12 +488,18 @@ func (s *Server) readAgent(ac *agentConn) {
 }
 
 func (ac *agentConn) disconnectPending() {
+	if ac.transferCancel != nil {
+		ac.transferCancel()
+	}
 	ac.mu.Lock()
 	if ac.closed {
 		ac.mu.Unlock()
 		return
 	}
 	ac.closed = true
+	if ac.transfers != nil {
+		defer ac.transfers.Close()
+	}
 	pending := ac.pending
 	ac.pending = map[string]chan protocol.Response{}
 	ac.sendStates = map[string]*requestSendState{}
@@ -566,11 +622,19 @@ func validateMetadata(metadata protocol.Metadata) error {
 		}
 		_, hashErr := hex.DecodeString(v.DefinitionHash)
 		d, e := time.ParseDuration(v.ExecutionTimeout)
-		if e != nil || d <= 0 || d > 300*time.Second || len(v.DefinitionHash) != 64 || hashErr != nil || v.DefinitionHash != strings.ToLower(v.DefinitionHash) || (v.EffectClass != "none" && v.EffectClass != "possible") || v.ExecutorKind != "db" || v.InputSchema == nil || len(v.InputLimits) != 3 || v.InputLimits["max_input_bytes"] <= 0 || v.InputLimits["max_json_depth"] <= 0 || v.InputLimits["max_json_items"] <= 0 {
+		if e != nil || d <= 0 || d > 300*time.Second || len(v.DefinitionHash) != 64 || hashErr != nil || v.DefinitionHash != strings.ToLower(v.DefinitionHash) || (v.EffectClass != "none" && v.EffectClass != "possible") || !validExecutorKind(v.ExecutorKind) || v.InputSchema == nil || (len(v.InputLimits) != 3 && len(v.InputLimits) != 6) || v.InputLimits["max_input_bytes"] <= 0 || v.InputLimits["max_json_depth"] <= 0 || v.InputLimits["max_json_items"] <= 0 {
 			return fmt.Errorf("invalid capability metadata")
 		}
+		if len(v.InputLimits) == 6 {
+			timeout, e := time.ParseDuration(v.InputTimeout)
+			if e != nil || timeout <= 0 || timeout > 300*time.Second || v.InputLimits["max_input_file_bytes"] <= 0 || v.InputLimits["max_total_input_file_bytes"] < v.InputLimits["max_input_file_bytes"] || v.InputLimits["max_input_files"] <= 0 {
+				return fmt.Errorf("invalid input transfer metadata")
+			}
+		} else if v.InputTimeout != "" {
+			return fmt.Errorf("unexpected input transfer timeout")
+		}
 		kind := metadata.ResponseKinds[name]
-		if v.InputSchema["type"] != "object" || v.EffectClass == "none" && kind != "select" || v.EffectClass == "possible" && kind != "mutation" {
+		if v.InputSchema["type"] != "object" || v.ExecutorKind == "db" && (v.EffectClass == "none" && kind != "select" || v.EffectClass == "possible" && kind != "mutation") || v.ExecutorKind != "db" && kind != "generic" {
 			return fmt.Errorf("invalid capability response kind")
 		}
 	}
@@ -665,4 +729,12 @@ func agentOfflineFor(ac *agentConn, id string) agentCallResult {
 	}
 	ac.mu.Unlock()
 	return r
+}
+
+func validExecutorKind(kind string) bool {
+	switch kind {
+	case "db", "csv", "http", "file", "wasm":
+		return true
+	}
+	return false
 }

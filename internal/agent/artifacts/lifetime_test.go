@@ -16,22 +16,44 @@ import (
 func TestArtifactsInputDeadlineClampingAndReadyExpiry(t *testing.T) {
 	s := store(t, 16)
 	s.options.TransferTimeout = 20 * time.Millisecond
-	r, e := s.BeginInput(context.Background(), owner(), inputCapability(t), time.Now().Add(time.Hour))
+	c := inputCapability(t)
+	before := time.Now()
+	r, e := s.BeginInput(context.Background(), owner(), c, before.Add(time.Hour))
+	after := time.Now()
 	if e != nil {
 		t.Fatal(e)
 	}
-	if time.Until(r.Deadline()) > 20*time.Millisecond {
+	if r.Deadline().Before(before.Add(s.options.TransferTimeout)) || r.Deadline().After(after.Add(s.options.TransferTimeout)) {
 		t.Fatal("Agent limit did not clamp")
 	}
+	if d, ok := r.ctx.Deadline(); !ok || !d.Equal(r.Deadline()) {
+		t.Fatal("input context did not use the clamped deadline")
+	}
+	// Control deadline arrival independently of real disk creation/write/sync.
+	// BeginInput's clamp and timer wiring are checked above; Sweep's fixed
+	// deadline branch is checked below with an uncanceled ready context.
+	s.mu.Lock()
+	r.cancel()
+	r.ctx, r.cancel = context.WithCancel(context.Background())
+	s.mu.Unlock()
 	v := receive(t, r, "/files/0", []byte("expire"))
 	if _, e = r.Commit(owner(), map[string]any{"files": []any{v}}); e != nil {
 		t.Fatal(e)
 	}
-	<-r.ctx.Done()
-	if e = s.Sweep(); e != nil || r.State() != "released" || s.Usage() != 0 {
-		t.Fatalf("ready expiry %v %s %d", e, r.State(), s.Usage())
+	st := r.files[v.Pointer]
+	if r.State() != "ready" || r.ctx.Err() != nil || s.Usage() != 6 || len(s.requests) != 1 || len(s.stages) != 1 {
+		t.Fatal("ready input did not retain its file, quota and slot")
 	}
-	_, e = s.BeginInput(context.Background(), owner(), inputCapability(t), time.Now().Add(-time.Second))
+	s.mu.Lock()
+	r.deadline = time.Now().Add(-time.Second)
+	s.mu.Unlock()
+	if e = s.Sweep(); e != nil || r.State() != "released" || s.Usage() != 0 || len(s.requests) != 0 || len(s.stages) != 0 || r.ctx.Err() != context.Canceled {
+		t.Fatalf("ready expiry %v %s %d %d %d %v", e, r.State(), s.Usage(), len(s.requests), len(s.stages), r.ctx.Err())
+	}
+	if _, e = s.objects.Stat(st.path); !errors.Is(e, os.ErrNotExist) {
+		t.Fatalf("expired input file still exists: %v", e)
+	}
+	_, e = s.BeginInput(context.Background(), owner(), c, time.Now().Add(-time.Second))
 	code(t, e, "EXECUTION_TIMEOUT")
 }
 

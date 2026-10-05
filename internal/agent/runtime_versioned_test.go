@@ -256,6 +256,7 @@ func TestVersionedStartupValidateDoctorEntryPoints(t *testing.T) {
 					if runner.cf.Compiled == nil || runner.cf.ConfigPath != selectedPath || runner.versioned == nil || runner.controller == nil {
 						t.Fatal("startup bypassed versioned loader/prepare")
 					}
+					_ = runner.store.Close()
 					_ = runner.versioned.Close()
 					_ = runner.detailLogCloser.Close()
 				} else {

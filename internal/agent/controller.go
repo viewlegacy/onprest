@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/viewlegacy/onprest/internal/agent/artifacts"
 	"github.com/viewlegacy/onprest/internal/agent/providers"
 	"github.com/viewlegacy/onprest/internal/contract"
 )
@@ -18,6 +19,9 @@ type ExecutionRequest struct {
 	Params                         map[string]any
 	Deadline                       time.Time
 	admitted                       bool
+	input                          *artifacts.Request
+	owner                          artifacts.Owner
+	stager                         contract.ArtifactStager
 }
 
 // ExecutionController owns admission, one execution budget, public output and
@@ -137,9 +141,36 @@ func (c *ExecutionController) Execute(parent context.Context, req ExecutionReque
 	if err := ctx.Err(); err != nil {
 		return nil, fail("EXECUTION_TIMEOUT")
 	}
+	if req.input != nil {
+		if err := req.input.Start(req.owner, ctx); err != nil {
+			return nil, fail("VALIDATION_FAILED")
+		}
+		inputCtx, err := req.input.Context(req.owner)
+		if err != nil {
+			return nil, fail("VALIDATION_FAILED")
+		}
+		ctx = inputCtx
+		defer func() {
+			if err := req.input.ReleaseStopped(req.owner); err != nil {
+				if out != nil {
+					out.Close()
+					out = nil
+				}
+				if failure == nil {
+					failure = fail("EXECUTION_FAILED")
+				}
+				c.diagnostic(req, cap.Executor.Type, "EXECUTION_FAILED", err.Error())
+			}
+		}()
+		ctx = context.WithValue(ctx, inputAccessKey{}, inputAccess{req.input, req.owner})
+	}
 	effects.Start()
 	publish := func(result contract.ProviderResult) (*contract.PreparedOutput, error) {
-		return contract.ProcessOutput(ctx, cap, result, c.stager)
+		stager := req.stager
+		if stager == nil {
+			stager = c.stager
+		}
+		return contract.ProcessOutput(ctx, cap, result, stager)
 	}
 	transactionalOut, transactionalErr, transactional := lease.ExecutePublication(ctx, params, effects, publish)
 	result := contract.ProviderResult{}
@@ -252,6 +283,9 @@ func (c *ExecutionController) admit(req ExecutionRequest) (map[string]any, *cont
 	}
 	if req.DefinitionHash != snapshot.DefinitionHash() {
 		return nil, fail("CONFLICT")
+	}
+	if schemaHasFile(snapshot.Definition().Input) {
+		return nil, fail("INVALID_REQUEST")
 	}
 	params, leaves, e := snapshot.Definition().ValidateInput(req.Params)
 	if e != nil || len(leaves) != 0 {

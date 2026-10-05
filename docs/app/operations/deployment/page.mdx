@@ -169,26 +169,28 @@ docker build --build-arg TARGET=agent -t onprest-agent .
 
 For a release build, pass the same `--build-arg VERSION=x.y.z` to both commands. An omitted value is reported as `dev` by the binaries and MCP `initialize` metadata.
 
-The Agent image runs as UID/GID `65532:65532`; configuration and referenced protected files must be readable by that user. Mount configuration read-only and a separate protected, writable, persistent identity directory. Set the following in `capability.yaml`:
+The Agent image runs as UID/GID `65532:65532`; configuration and referenced protected files must be readable by that user. Mount configuration read-only, a protected writable persistent identity directory, and a separate private writable spool directory. Set the following in `capability.yaml`:
 
 ```yaml
 runtime:
   identity_dir: /var/lib/onprest/identity
+  spool_dir: /var/lib/onprest/spool
 ```
 
-Prepare the host directory for that container user and preserve it across container replacement:
+Prepare both host directories for the container user. Preserve the identity directory across container replacement:
 
 ```bash
-mkdir -p "$PWD/agent-identity"
-sudo chown 65532:65532 "$PWD/agent-identity"
-sudo chmod 700 "$PWD/agent-identity"
+mkdir -p "$PWD/agent-identity" "$PWD/agent-spool"
+sudo chown 65532:65532 "$PWD/agent-identity" "$PWD/agent-spool"
+sudo chmod 700 "$PWD/agent-identity" "$PWD/agent-spool"
 docker run --rm \
   -v "$PWD/capability.yaml:/config/capability.yaml:ro" \
   -v "$PWD/agent-identity:/var/lib/onprest/identity" \
+  -v "$PWD/agent-spool:/var/lib/onprest/spool" \
   onprest-agent --config /config/capability.yaml
 ```
 
-A named volume is also suitable when the operator initializes its ownership and permissions before use. In Compose, mount the same persistent volume read/write at `runtime.identity_dir` and keep it when recreating the Agent. The Agent creates a protected `config-hmac.key`; losing or replacing this key changes prepared definition bindings. A read-only YAML mount alone cannot provide the default configuration-relative identity directory.
+A named volume is also suitable when the operator initializes its ownership and permissions before use. In Compose, mount the same persistent volume read/write at `runtime.identity_dir` and keep it when recreating the Agent. The Agent creates a protected `config-hmac.key`; losing or replacing this key changes prepared definition bindings. A read-only YAML mount alone cannot provide the default configuration-relative identity or spool directories. The spool is exclusive temporary storage for one Agent process; do not share it between Agent instances or use it for business data. Spool snapshots are not usable after restart.
 
 The mounted `capability.yaml` must use database and gateway addresses reachable from inside the container. Container platforms manage process start/stop and stdout/stderr collection. Do not use `onprest-agent service install` inside a container. `docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
 

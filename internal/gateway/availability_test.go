@@ -1101,3 +1101,39 @@ func (c *errorWriteAgentConn) WriteTextWithDeadline([]byte, time.Duration) error
 	return c.err
 }
 func (c *errorWriteAgentConn) Close() error { return nil }
+
+func (c *generationMetadataAgentConn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return c.WriteTextWithDeadline(payload, timeout)
+}
+
+func (c *gatewayDeadlineSpy) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return c.WriteTextWithDeadline(payload, timeout)
+}
+
+func (c *controlledAgentConn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return c.WriteTextWithDeadline(payload, timeout)
+}
+
+func (c *errorWriteAgentConn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return c.WriteTextWithDeadline(payload, timeout)
+}

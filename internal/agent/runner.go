@@ -14,6 +14,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/viewlegacy/onprest/internal/agent/artifacts"
 	"github.com/viewlegacy/onprest/internal/agent/providers"
 	"github.com/viewlegacy/onprest/internal/contract"
 	"github.com/viewlegacy/onprest/internal/protocol"
@@ -32,6 +33,9 @@ const (
 )
 
 type Runner struct {
+	dial            func(time.Duration, string, http.Header) (*ws.Conn, error)
+	store           *artifacts.Store
+	controls        *controlAdmission
 	versioned       *providers.Prepared
 	controller      *ExecutionController
 	cfg             Config
@@ -70,6 +74,12 @@ func (i *inflightRegistry) add(id string, cancel context.CancelFunc) bool {
 	i.cancels[id] = cancel
 	return true
 }
+func (i *inflightRegistry) contains(id string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, ok := i.cancels[id]
+	return ok
+}
 func (i *inflightRegistry) cancel(id string) {
 	i.mu.Lock()
 	cancel := i.cancels[id]
@@ -107,6 +117,11 @@ func NewRunner(ctx context.Context, cfg Config, logOut io.Writer) (*Runner, erro
 	}
 	clock := agentClock(time.Now)
 	r := &Runner{versioned: prepared.versioned, controller: prepared.controller, cfg: cfg, cf: prepared.cf, caps: prepared.caps, rateLimits: newCapabilityRateLimiters(prepared.cf, clock), clock: clock, db: prepared.db, logOut: logOut, detailLog: prepared.detailLog.Writer, detailLogCloser: preparationLogCloser{prepared.detailLog}}
+	if err := r.initializeTransport(); err != nil {
+		prepared.versioned.Close()
+		prepared.detailLog.Close()
+		return nil, startupFailure()
+	}
 	r.log("agent_ready", map[string]any{"capabilities": len(prepared.cf.Capabilities), "driver": prepared.cf.Database.Driver, "max_concurrent_requests": *prepared.cf.Runtime.MaxConcurrentRequests})
 	return r, nil
 }
@@ -136,6 +151,9 @@ type preparationLogCloser struct{ log *preparationDetailLog }
 func (c preparationLogCloser) Close() error { return c.log.Close() }
 
 func (r *Runner) Run(ctx context.Context) error {
+	if r.store != nil {
+		defer r.store.Close()
+	}
 	if r.versioned != nil {
 		defer r.versioned.Close()
 	} else if r.db != nil {
@@ -157,7 +175,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.log("agent_auth_failed", map[string]any{"error": err.Error()})
 			return err
 		}
-		conn, err := ws.Dial(10*time.Second, r.cf.Gateway.URL, headers)
+		dial := r.dial
+		if dial == nil {
+			dial = ws.Dial
+		}
+		conn, err := dial(10*time.Second, r.cf.Gateway.URL, headers)
 		if err != nil {
 			r.log("gateway_connect_failed", map[string]any{"error": err.Error()})
 			sleep(ctx, r.cfg.ReconnectEvery)
@@ -183,6 +205,10 @@ func fetchRunnerChallenge(parent context.Context, gatewayURL string, fetch func(
 }
 
 func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
+	if r.controller != nil {
+		r.serveTransport(ctx, conn)
+		return
+	}
 	connCtx, cancel := context.WithCancel(ctx)
 	maxConcurrent := *r.cf.Runtime.MaxConcurrentRequests
 	requests := make(chan requestTask, maxConcurrent)
@@ -342,15 +368,14 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 type boundedWireID string
 
 func (id *boundedWireID) UnmarshalJSON(raw []byte) error {
-	// A JSON Unicode escape consumes at most six bytes per decoded byte.
-	// Reject the raw size first so even a near-message-limit ID cannot allocate
-	// a corresponding decoded string. The normal strict decoder still checks
-	// duplicate keys, UTF-8, and Unicode after this admission guard.
+	// Bound raw size before strict string decoding so malformed Unicode cannot
+	// be replaced by encoding/json before identity admission.
 	if len(raw) > 6*agentMaxWireIDBytes+2 {
 		return errors.New("invalid gateway request ID")
 	}
-	var value string
-	if json.Unmarshal(raw, &value) != nil || !validAgentWireID(value) {
+	decoded, e := contract.DecodeJSON(raw, contract.Limits{MaxBytes: 6*agentMaxWireIDBytes + 2, MaxDepth: 1, MaxItems: 1})
+	value, ok := decoded.(string)
+	if e != nil || !ok || !validAgentWireID(value) {
 		return errors.New("invalid gateway request ID")
 	}
 	*id = boundedWireID(value)
@@ -358,7 +383,7 @@ func (id *boundedWireID) UnmarshalJSON(raw []byte) error {
 }
 
 func validAgentWireID(id string) bool {
-	return id != "" && len(id) <= agentMaxWireIDBytes
+	return protocol.ValidID(id) && len(id) <= agentMaxWireIDBytes
 }
 
 func agentResponseQueueSize(maxConcurrent int) int {

@@ -295,7 +295,7 @@ set +a
 ./onprest-gateway
 ```
 
-Start the agent in another shell from the same directory:
+Start the agent in another shell from the same directory. The Agent user needs permission to create the private `identity` and `spool` subdirectories beside its configuration; see [runtime settings](https://docs.onprest.viewlegacy.com/agent/capability-yaml#top-level-sections):
 
 ```sh
 ./onprest-agent --config examples/capability.postgres.yaml

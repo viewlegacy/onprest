@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/viewlegacy/onprest/internal/protocol"
+	"github.com/viewlegacy/onprest/internal/ws"
 )
 
 type Server struct {
+	agentWire       func(*ws.Conn) textConn
 	cfg             Config
 	logOut          io.Writer
 	logMu           sync.Mutex
@@ -33,15 +35,21 @@ type Server struct {
 }
 
 type agentConn struct {
-	conn       textConn
-	pending    map[string]chan protocol.Response
-	mu         sync.Mutex
-	closed     bool
-	send       chan agentWrite
-	control    chan agentWrite
-	sendStates map[string]*requestSendState
-	done       chan struct{}
-	doneOnce   sync.Once
+	scheduler      *ws.Scheduler
+	transfers      *ws.Transfers
+	transferCalls  map[string]*inputExchange
+	transferRecent map[string]time.Time
+	transferCtx    context.Context
+	transferCancel context.CancelFunc
+	conn           textConn
+	pending        map[string]chan protocol.Response
+	mu             sync.Mutex
+	closed         bool
+	send           chan agentWrite
+	control        chan agentWrite
+	sendStates     map[string]*requestSendState
+	done           chan struct{}
+	doneOnce       sync.Once
 }
 
 type agentWrite struct {
@@ -76,6 +84,7 @@ type textConn interface {
 	ReadText() ([]byte, error)
 	WriteText([]byte) error
 	WriteTextWithDeadline([]byte, time.Duration) error
+	WriteTextWithDeadlineStart([]byte, time.Duration, func() error) error
 	Close() error
 }
 

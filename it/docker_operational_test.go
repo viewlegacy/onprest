@@ -143,20 +143,26 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, writeErr := file.WriteString("runtime: {identity_dir: /var/lib/onprest/identity}\n")
+	_, writeErr := file.WriteString("runtime: {identity_dir: /var/lib/onprest/identity, spool_dir: /var/lib/onprest/spool}\n")
 	closeErr := file.Close()
 	if writeErr != nil || closeErr != nil {
-		t.Fatal("write persistent identity setting")
+		t.Fatal("write protected runtime settings")
 	}
 	identityVolume := fmt.Sprintf("onprest-it-identity-%x", time.Now().UnixNano())
 	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=p04-identity", identityVolume).Run(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", identityVolume).Run() })
+	spoolVolume := fmt.Sprintf("onprest-it-spool-%x", time.Now().UnixNano())
+	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=p07-spool", spoolVolume).Run(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", spoolVolume).Run() })
+
 	// Operator preparation uses the already-required DB image. The Agent itself
 	// continues to run as the image's nonroot user with a private writable mount.
-	if out, err := exec.Command("docker", "run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "sh", "-v", identityVolume+":/identity", "postgres:16-alpine", "-c", "chown 65532:65532 /identity && chmod 700 /identity").CombinedOutput(); err != nil {
-		t.Fatalf("prepare identity volume: %v %s", err, out)
+	if out, err := exec.Command("docker", "run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "sh", "-v", identityVolume+":/identity", "-v", spoolVolume+":/spool", "postgres:16-alpine", "-c", "chown 65532:65532 /identity /spool && chmod 700 /identity /spool").CombinedOutput(); err != nil {
+		t.Fatalf("prepare protected runtime volumes: %v %s", err, out)
 	}
 	composeFile := filepath.Join(tmp, "compose.yaml")
 	writeFile(t, composeFile, `services:
@@ -191,10 +197,14 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
     volumes:
       - ./`+filepath.Base(capabilityFile)+`:/config/capability.yaml:ro
       - identity:/var/lib/onprest/identity
+      - spool:/var/lib/onprest/spool
 volumes:
   identity:
     external: true
     name: `+identityVolume+`
+  spool:
+    external: true
+    name: `+spoolVolume+`
 `)
 	configFile := filepath.Join(tmp, "compose-config.yaml")
 	writeFile(t, configFile, `services:
@@ -244,6 +254,7 @@ volumes:
 		}
 	}
 	checkCalls()
+	assertComposeSpoolProtected(t, spoolVolume)
 	beforeHash := composeIdentityDefinitionHash(t, identityVolume, capabilityFile)
 	oldID := composeAgentID(t, tmp, composeFile)
 	recreate := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--no-deps", "--force-recreate", "agent")
@@ -256,8 +267,18 @@ volumes:
 	}
 	waitForComposeOpenAPI(t, tmp, composeFile, baseURL, secrets.APIKey, 45*time.Second)
 	checkCalls()
+	assertComposeSpoolProtected(t, spoolVolume)
 	if composeIdentityDefinitionHash(t, identityVolume, capabilityFile) != beforeHash {
 		t.Fatal("persistent identity lost the prepared definition binding")
+	}
+}
+
+func assertComposeSpoolProtected(t *testing.T, volume string) {
+	t.Helper()
+	cmd := exec.Command("docker", "run", "--rm", "--network", "none", "--user", "65532:65532", "--entrypoint", "sh", "-v", volume+":/spool:ro", "postgres:16-alpine", "-c", "stat -c '%u:%g:%a' /spool /spool/objects /spool/.lock")
+	out, e := cmd.Output()
+	if e != nil || string(out) != "65532:65532:700\n65532:65532:700\n65532:65532:600\n" {
+		t.Fatal("runtime spool ownership or protection is invalid", e)
 	}
 }
 

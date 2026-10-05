@@ -316,3 +316,12 @@ func assertAgentCallStateEmpty(t *testing.T, ac *agentConn) {
 		t.Fatalf("pending=%d sendStates=%d", len(ac.pending), len(ac.sendStates))
 	}
 }
+
+func (c *deterministicCancelTransport) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return c.WriteTextWithDeadline(payload, timeout)
+}

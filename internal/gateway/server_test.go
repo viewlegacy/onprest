@@ -1575,3 +1575,21 @@ func TestVersionedAgentWebSocketRejectsUnknownNestedFields(t *testing.T) {
 		})
 	}
 }
+
+func (conn silentAgentConn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return conn.WriteTextWithDeadline(payload, timeout)
+}
+
+func (f *fakeAgentConn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return f.WriteTextWithDeadline(payload, timeout)
+}

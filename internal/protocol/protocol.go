@@ -54,6 +54,7 @@ type CapabilityMetadata struct {
 	DefinitionHash   string           `json:"definition_hash"`
 	ExecutorKind     string           `json:"executor_kind"`
 	ExecutionTimeout string           `json:"execution_timeout"`
+	InputTimeout     string           `json:"input_timeout,omitempty"`
 	EffectClass      string           `json:"effect_class"`
 	InputSchema      map[string]any   `json:"input_schema"`
 	InputLimits      map[string]int64 `json:"input_limits"`
