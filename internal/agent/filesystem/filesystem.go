@@ -1,6 +1,6 @@
-// Package filesystem provides descriptor-based, read-only folder access shared
-// by future CSV/file providers and the strict host bridge. It does not register a
-// provider, own a spool, or publish artifacts.
+// Package filesystem provides descriptor-based folder access and safe native
+// file publication shared by CSV/file providers and the strict host bridge. It
+// does not register a provider, own a spool, or publish external artifacts.
 package filesystem
 
 import (

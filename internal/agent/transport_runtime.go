@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"github.com/viewlegacy/onprest/internal/agent/artifacts"
 	"github.com/viewlegacy/onprest/internal/contract"
 	"io"
@@ -12,7 +13,15 @@ import (
 	"time"
 )
 
-func (r *Runner) initializeTransport() error {
+func (r *Runner) initializeTransport() (err error) {
+	defer func() {
+		if err != nil && r.detailLog != nil {
+			sink, e := NewDiagnosticSink(r.detailLog, nil, "error")
+			if e == nil {
+				_ = sink.Write(DiagnosticRecord{Level: "error", Source: "agent", Event: "agent_error", Message: "private spool initialization failed", ErrorCode: "AGENT_STARTUP_FAILED", Detail: errors.Join(err, errors.Unwrap(err)).Error()})
+			}
+		}
+	}()
 	if r.versioned == nil {
 		return nil
 	}

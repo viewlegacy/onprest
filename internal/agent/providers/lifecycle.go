@@ -226,6 +226,16 @@ type Effect struct {
 
 func (e *Effects) Start()    { e.mu.Lock(); e.started = true; e.mu.Unlock() }
 func (e *Effects) NoChange() { e.mu.Lock(); e.noChange = true; e.mu.Unlock() }
+
+// NotStarted records proven absence of any business publication in a provider
+// that prepared private temps. It cannot erase an observed effect.
+func (e *Effects) NotStarted() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.operations) == 0 {
+		e.started = false
+	}
+}
 func (e *Effects) Begin() *Effect {
 	e.mu.Lock()
 	defer e.mu.Unlock()

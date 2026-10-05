@@ -219,6 +219,10 @@ func TestObservedEffectsDoNotInferOutcome(t *testing.T) {
 		observe    func(*Effects)
 	}{
 		{"not_started", "not_started", func(e *Effects) {}},
+		{"proven_not_started", "not_started", func(e *Effects) { e.Start(); e.NotStarted() }},
+		{"cannot_erase_unknown", "unknown", func(e *Effects) { e.Start(); e.Begin(); e.NotStarted() }},
+		{"cannot_erase_commit", "committed", func(e *Effects) { e.Start(); e.Begin().Committed(); e.NotStarted() }},
+		{"cannot_erase_rollback", "rolled_back", func(e *Effects) { e.Start(); e.Begin().RolledBack(); e.NotStarted() }},
 		{"unobserved_execution", "unknown", func(e *Effects) { e.Start() }},
 		{"no_change", "no_change", func(e *Effects) { e.Start(); e.NoChange() }},
 		{"pending_effect", "unknown", func(e *Effects) { e.Start(); e.NoChange(); e.Begin() }},

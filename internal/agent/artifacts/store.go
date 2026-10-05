@@ -80,6 +80,8 @@ type Store struct {
 	stages           map[string]*Stage
 	requests         map[string]*Request
 	reservations     map[*Reservation]bool
+	journal          *saveJournal
+	saveInit         sync.Mutex
 	// Fault injection belongs to package tests; production always uses disk I/O.
 	write    func(*os.File, []byte) (int, error)
 	remove   func(string) error
@@ -89,7 +91,7 @@ type Store struct {
 var objectName = regexp.MustCompile(`^[ioh]-[0-9a-f]{32}\.spool$`)
 
 func Open(options Options) (_ *Store, err error) {
-	if !filepath.IsAbs(options.Directory) || !utf8.ValidString(options.Directory) || strings.ContainsRune(options.Directory, 0) || options.QuotaBytes < 1 || options.MaxPending < 1 || options.MaxObjects < 1 || options.MaxObjects == int(^uint(0)>>1) || options.TransferTimeout <= 0 || options.TransferTimeout > 300*time.Second {
+	if !filepath.IsAbs(options.Directory) || !utf8.ValidString(options.Directory) || strings.ContainsRune(options.Directory, 0) || options.QuotaBytes < 1 || options.MaxPending < 1 || options.MaxPending > (int(^uint(0)>>1)-3)/2 || options.MaxObjects < 1 || options.MaxObjects == int(^uint(0)>>1) || options.TransferTimeout <= 0 || options.TransferTimeout > 300*time.Second {
 		return nil, fail("VALIDATION_FAILED", fs.ErrInvalid)
 	}
 	if err = privateDirectory(options.Directory); err != nil {
@@ -126,6 +128,11 @@ func Open(options Options) (_ *Store, err error) {
 	}
 	if err = lockFile(s.lock); err != nil {
 		return nil, fail("BUSY", err)
+	}
+	// Durable business-temp recovery precedes ephemeral deletion and all
+	// request admission, regardless of the current capability/source settings.
+	if err = s.openSaveJournal(); err != nil {
+		return nil, safe(err)
 	}
 	// Only the dedicated ephemeral namespace is recovered. P08's cleanup
 	// manifests and business directories are never scanned or deleted here.
@@ -270,6 +277,9 @@ func (r *Reservation) Release() {
 func (s *Store) Usage() int64 { s.mu.Lock(); defer s.mu.Unlock(); return s.used }
 func (s *Store) closeHandles() error {
 	var errs []error
+	if s.journal != nil {
+		errs = append(errs, s.journal.close())
+	}
 	if s.objects != nil {
 		errs = append(errs, s.objects.Close())
 	}

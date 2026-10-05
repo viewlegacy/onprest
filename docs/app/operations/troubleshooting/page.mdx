@@ -29,6 +29,12 @@ Use the first failed check to choose the next action:
 
 Later dependent checks are shown as `skipped`. Doctor does not establish or replace the normal WebSocket connection and does not execute a capability. See the [CLI Reference](/reference/cli#diagnose-agent-and-gateway) for output and exit codes, and [Agent Local Logs](/agent/local-logs) for the latest-failure log.
 
+## Private spool recovery prevents startup
+
+Keep `runtime.spool_dir` private, writable by the Agent user, and dedicated to one Agent process. Another process holding its lock, invalid cleanup records, an unavailable recorded save directory, an identity/permission mismatch, or insufficient spool quota for unrecovered records prevents startup. Preserve the spool and recorded directories, and inspect the Agent's [local startup diagnostic](/agent/local-logs) before correcting access or restoring the directory. After restoring access or correcting permissions or quota, restart the Agent using the same spool path. `validate` and `doctor` do not open or recover the running spool.
+
+Startup recovers recorded unfinished saves before connecting, even if the current source configuration has changed. Before moving or deleting a spool that contains cleanup records, complete recovery at its original path. Do not edit those records or delete business files by an `.onprest-*` prefix scan. Recovery removes only verified recorded temporary names and retains completed business files.
+
 ## OpenAPI Returns 503
 
 `AGENT_OFFLINE` means gateway has no connected agent or no usable OpenAPI cache.
