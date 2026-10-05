@@ -6,11 +6,11 @@ require (
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/moby/moby/api v1.56.0
-	github.com/modelcontextprotocol/go-sdk v1.8.0-pre.2
+	github.com/moby/moby/api v1.56.1
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/oklog/ulid/v2 v2.1.2
-	github.com/pb33f/libopenapi v0.38.7
-	github.com/pb33f/libopenapi-validator v0.14.0
+	github.com/pb33f/libopenapi v0.41.2
+	github.com/pb33f/libopenapi-validator v0.15.0
 	github.com/sijms/go-ora/v2 v2.9.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mssql v0.44.0
@@ -68,8 +68,9 @@ require (
 	github.com/moby/term v0.5.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
-	github.com/pb33f/jsonpath v0.8.2 // indirect
-	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
+	github.com/pb33f/go-yaml v0.1.1 // indirect
+	github.com/pb33f/jsonpath v0.8.4 // indirect
+	github.com/pb33f/ordered-map/v2 v2.3.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
@@ -87,7 +88,6 @@ require (
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-	go.yaml.in/yaml/v4 v4.0.0-rc.6 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
