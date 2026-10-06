@@ -11,12 +11,13 @@
 
 ### Optional
 
-All optional gateway variables may be omitted. Empty values are treated the same as omitted values.
+Empty values are treated the same as omitted values. `ONPREST_PUBLIC_BASE_URL` may be omitted only when no Agent capability needs file reference delivery; the other optional variables may be omitted.
 
 | Variable | Default | Description |
 |---|---|---|
 | `GATEWAY_ADDR` | `:8080` | Gateway listen address |
 | `GATEWAY_PUBLIC_URL` | derived from `GATEWAY_ADDR` | External HTTP(S) base URL used in OpenAPI `servers` |
+| `ONPREST_PUBLIC_BASE_URL` | empty | Explicit HTTPS origin required by file reference metadata; HTTP is allowed only on loopback for local testing. See [File Reference Origin](/gateway/configuration#file-reference-origin) |
 | `GATEWAY_CORS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to call the gateway with CORS; empty disables CORS headers |
 | `GATEWAY_IP_ALLOW_LIST` | empty | Comma-separated CIDRs or single IPs allowed to call gateway routes, including API-key-free `/healthz` and Agent diagnostics; empty means no IP allow restriction |
 | `GATEWAY_TRUSTED_PROXY_CIDRS` | empty | CIDRs whose forwarded headers are trusted for source IP detection; empty means forwarded headers are ignored |
@@ -35,6 +36,7 @@ GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$INgs32pPDl8EQAOTcQ1NN.e
 # Optional. Omit these to use defaults or disabled behavior.
 # GATEWAY_ADDR=:8080
 # GATEWAY_PUBLIC_URL=https://gateway.example.com
+# ONPREST_PUBLIC_BASE_URL=https://gateway.example.com
 # GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
 # GATEWAY_IP_ALLOW_LIST=203.0.113.0/24
 # GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12

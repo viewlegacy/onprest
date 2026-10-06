@@ -19,6 +19,7 @@ const defaultMaxRequestBodyBytes int64 = 1 << 20
 type Config struct {
 	Addr                string
 	PublicURL           string
+	PublicBaseURL       string
 	AgentPublicKey      string
 	APIKeys             []APIKey
 	CORSAllowedOrigins  []string
@@ -112,6 +113,10 @@ func LoadConfigFromEnv() (Config, error) {
 		return cfg, err
 	}
 	cfg.PublicURL = publicURL
+	cfg.PublicBaseURL, err = normalizeFileOrigin(os.Getenv("ONPREST_PUBLIC_BASE_URL"))
+	if err != nil {
+		return cfg, err
+	}
 	corsAllowedOrigins, err := parseCORSAllowedOrigins(os.Getenv("GATEWAY_CORS_ALLOWED_ORIGINS"))
 	if err != nil {
 		return cfg, err

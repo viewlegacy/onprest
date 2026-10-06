@@ -1,6 +1,6 @@
 # Onprest
 
-Onprest is an OSS core for safely exposing existing databases in on-premises or private-network environments through REST API and MCP.
+Onprest is an OSS core for safely exposing existing databases and files in configured folders in on-premises or private-network environments through REST API and MCP.
 
 It does not expose the database itself. Only capabilities defined on the on-prem side in `capability.yaml` can be called through the gateway.
 
@@ -39,7 +39,7 @@ The OSS core consists of two independent Go single binaries.
 | Binary | Role |
 |---|---|
 | `onprest-gateway` | API key authentication, capability authorization, REST/MCP/OpenAPI, and agent WebSocket handling |
-| `onprest-agent` | `capability.yaml` loading, DB ping, EXPLAIN, param/policy validation, SELECT result filtering, DML count validation, and SQL execution |
+| `onprest-agent` | `capability.yaml` loading, source preparation, input/policy validation, SQL execution or folder reads, and output validation |
 
 This `/docs` site is a public documentation project built with Nextra / Next.js. Node.js, Nextra, and Next.js are not required to run or distribute the OSS core.
 
@@ -49,4 +49,5 @@ This `/docs` site is a public documentation project built with Nextra / Next.js.
 - [Architecture](/architecture): Understand Onprest's trust boundaries and gateway / agent responsibilities.
 - [Security](/security): Review the compromise model, key rotation, and detail redaction policy.
 - [Capability YAML](/agent/capability-yaml): Define inputs and policy, plus SELECT output allow-lists; DML is count-only.
+- [File Output](/api/files): Retrieve read-only folder snapshots or DB-generated CSV through REST or MCP.
 - [Release Gate](/operations/release-gate): See how published release binaries are tested.

@@ -14,8 +14,8 @@ import (
 	"github.com/viewlegacy/onprest/internal/contract"
 )
 
-// fileProvider is complete at the internal controller/transfer boundary. The
-// production registry refuses it until public input/delivery are connected.
+// fileProvider shares the controller/transfer boundary for reads and writes.
+// Production prepares read-only definitions; writes remain internal.
 type fileProvider struct {
 	cap            *contract.Capability
 	store          *artifacts.Store
@@ -28,7 +28,7 @@ type fileProvider struct {
 
 func prepareFileProvider(ctx context.Context, s *providers.Snapshot, store *artifacts.Store) (providers.Provider, error) {
 	p := &fileProvider{cap: s.Definition(), store: store, roots: map[string]*filesystem.Root{}, paths: map[string]string{}}
-	if p.cap.Executor.Type != "file" || store == nil {
+	if p.cap.Executor.Type != "file" || (p.cap.Executor.Settings["write"] != nil && store == nil) {
 		return nil, errors.New("file provider needs private storage")
 	}
 	fail := func(e error) (providers.Provider, error) { return nil, errors.Join(e, p.Close()) }

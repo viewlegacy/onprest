@@ -2,7 +2,7 @@
 
 Onprest is designed to expose only agent-defined capabilities, not the database itself.
 
-The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions. When data output is enabled, they publish native affected count only after a successful commit; omitted output publishes null data while retaining measured metrics. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+The agent prepares DB and read-only file capabilities at startup. DB capabilities are classified as SELECT or mutation. Mutations execute in explicit transactions. When data output is enabled, they publish native affected count only after a successful commit; omitted output publishes null data while retaining measured metrics. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
 
 ```text
 [API user / MCP client]
@@ -15,7 +15,7 @@ The agent classifies each capability as SELECT or mutation at startup. Mutations
 [onprest-agent + capability.yaml]
   |
   v
-[legacy database]
+[legacy database / configured folder]
 ```
 
 ## Mental Model
@@ -25,7 +25,7 @@ The agent classifies each capability as SELECT or mutation at startup. Mutations
 3. Start the agent inside the customer network.
 4. The agent connects outbound to the gateway.
 5. REST and MCP clients call only capabilities their API key can access.
-6. The agent validates input, applies policy, executes prepared SQL, filters SELECT output or produces a mutation count, and returns the result.
+6. The agent validates input, applies policy, executes prepared SQL or reads completed files from a fixed folder, validates selected output, and returns data or independent file snapshots.
 
 The gateway does not receive private schema knowledge, SQL, DSNs, DB credentials, or execution rules. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations. The gateway receives only the agent-generated public capability contract needed for OpenAPI and MCP discovery.
 
@@ -80,7 +80,7 @@ The OSS core is two independent binaries.
 | Component | Deployment unit | Responsibility |
 |---|---|---|
 | gateway | `onprest-gateway` | REST / MCP / OpenAPI / healthz / WebSocket / API key auth / capability auth |
-| agent | `onprest-agent` | YAML lint / DB ping / EXPLAIN / params validation / SQL execution / local detail logs |
+| agent | `onprest-agent` | YAML lint / source preparation / input validation / SQL execution or folder reads / output validation / local detail logs |
 
 ## Gateway Responsibilities
 
@@ -113,6 +113,7 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - `capability.yaml` lint
 - DB ping
 - SQL EXPLAIN verification
+- folder root validation and read-only file snapshots
 - input schema validation
 - policy enforcement
 - optional per-capability Agent rate limiting before execution admission
@@ -126,6 +127,8 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 Normal startup and `onprest-agent validate` share the same configuration and database preparation. Validation closes those resources and exits without connecting to the Gateway or executing a capability. `onprest-agent doctor` reuses that preparation to diagnose Gateway connectivity and Agent-key authentication without changing the running connection. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
+
+File snapshots are retained in the Agent private spool. Gateway issues authenticated, expiring references from an explicit configured origin and streams downloads without persisting bodies. File writes and file input are not available. See [File Output](/api/files) for lifetime, caller separation and transfer limits.
 
 ## Capability Tunnel
 
@@ -145,7 +148,7 @@ A normal gateway-to-agent request carries the capability name and HTTP params wi
 }
 ```
 
-The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Omitted or true `readonly` accepts one `SELECT`; explicit false also accepts one `INSERT`, `UPDATE`, or `DELETE`. The dialect-aware scanner rejects multiple statements and recognizes nested block comments in PostgreSQL and SQL Server. Integer JSON tokens remain exact through signed 64-bit conversion; DB values are normalized before validation against the declared `output` types and constraints. With data output enabled, SELECT publishes selected rows and DML publishes the non-negative native affected count; omitted output publishes null while preserving execution and measured metrics.
+The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before executing it. For DB capabilities, omitted or true `readonly` accepts one `SELECT`; explicit false also accepts one `INSERT`, `UPDATE`, or `DELETE`. The dialect-aware scanner rejects multiple statements and recognizes nested block comments in PostgreSQL and SQL Server. Integer JSON tokens remain exact through signed 64-bit conversion; DB values are normalized before validation against the declared `output` types and constraints. With data output enabled, SELECT publishes selected rows and DML publishes the non-negative native affected count; omitted output publishes null while preserving execution and measured metrics.
 
 ## Dedicated Gateway Model
 

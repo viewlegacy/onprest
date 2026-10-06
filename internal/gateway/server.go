@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"math/big"
 	"net/http"
 	"sync"
 	"time"
@@ -14,24 +15,29 @@ import (
 )
 
 type Server struct {
-	agentWire       func(*ws.Conn) textConn
-	cfg             Config
-	logOut          io.Writer
-	logMu           sync.Mutex
-	agentMu         sync.RWMutex
-	agent           *agentConn
-	authMu          sync.Mutex
-	nonces          map[string]time.Time
-	agentChallenges map[string]time.Time
-	apiKeyCache     map[[sha256.Size]byte]cachedAPIKey
-	apiKeyAuthSlots chan struct{}
-	openapi         map[string]any
-	responseKinds   map[string]responseKind
-	capabilities    map[string]protocol.CapabilityMetadata
-	rateMu          sync.Mutex
-	rate            map[string]*bucket
-	rateLastCleanup time.Time
-	httpSrv         *http.Server
+	agentWire        func(*ws.Conn) textConn
+	cfg              Config
+	logOut           io.Writer
+	logMu            sync.Mutex
+	agentMu          sync.RWMutex
+	agent            *agentConn
+	authMu           sync.Mutex
+	nonces           map[string]time.Time
+	agentChallenges  map[string]time.Time
+	apiKeyCache      map[[sha256.Size]byte]cachedAPIKey
+	apiKeyAuthSlots  chan struct{}
+	openapi          map[string]any
+	responseKinds    map[string]responseKind
+	capabilities     map[string]protocol.CapabilityMetadata
+	references       map[string]fileReference
+	metadataError    string
+	mcpResponseMu    sync.Mutex
+	mcpResponseCount int
+	mcpResponseBytes big.Int
+	rateMu           sync.Mutex
+	rate             map[string]*bucket
+	rateLastCleanup  time.Time
+	httpSrv          *http.Server
 }
 
 type agentConn struct {
@@ -126,6 +132,7 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	mux.HandleFunc("/ws/agent/challenge", s.handleAgentChallenge)
 	mux.HandleFunc("/ws/agent/verify", s.handleAgentVerify)
 	mux.HandleFunc("/api/v1/capabilities/", s.handleCapability)
+	mux.HandleFunc("/api/v1/files/", s.handleFile)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/mcp", s.handleMCP)
 	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withRequestIdentity(s.withRecovery(s.withAccess(mux))), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}

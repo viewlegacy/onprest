@@ -18,16 +18,18 @@ REST and HTTP-level failures return a shared error envelope with a Gateway-assig
 | 400 | `INVALID_REQUEST`, `VALIDATION_FAILED` | Invalid request or capability input |
 | 401 | `AUTH_FAILED` | Missing or invalid authentication |
 | 403 | `CAPABILITY_DENIED`, `PERMISSION_DENIED` | Capability, origin or IP permission denied |
-| 404 | `NOT_FOUND` | Capability is not defined |
+| 404 | `NOT_FOUND` | Capability or live file reference is unavailable |
 | 409 | `SOURCE_CHANGED`, `CONFLICT` | Definition/source mismatch or typed DB integrity constraint |
 | 422 | `LIMIT_EXCEEDED`, `APP_*` | Capability limit or valid application failure |
 | 429 | `RATE_LIMITED` | Gateway or capability rate admission rejected |
-| 503 | `BUSY`, `AGENT_OFFLINE`, `DEPENDENCY_UNAVAILABLE` | Capacity, Agent or database unavailable |
+| 503 | `BUSY`, `AGENT_OFFLINE`, `DEPENDENCY_UNAVAILABLE` | Capacity, Agent, database or required reference origin unavailable |
 | 504 | `EXECUTION_TIMEOUT` | Execution deadline exceeded |
 | 502 | `EXECUTION_FAILED`, `OUTPUT_INVALID`, `OUTCOME_UNKNOWN` | Execution/output failure or uncertain transaction |
 | 500 | `INTERNAL_ERROR` | Unexpected internal failure |
 
 REST wire-body overflow uses HTTP 413 `LIMIT_EXCEEDED`; unsupported content type uses HTTP 415 `INVALID_REQUEST`; disallowed methods use HTTP 405. MCP HTTP negotiation can use 400/403/405/406. A duplicate Agent connection uses 409.
+
+File Range requests return HTTP 416 `INVALID_REQUEST`. A download that fails after response bytes begin is aborted; it cannot append a JSON error to the file. Treat an incomplete body as failure. See [File Output](/api/files).
 
 ## Observed outcome
 

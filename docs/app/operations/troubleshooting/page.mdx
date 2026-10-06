@@ -106,6 +106,14 @@ This is expected. Do not look for SQL detail in gateway stdout or HTTP responses
 
 All use `not_started`; the code alone does not select Gateway env or capability policy. See [Capability YAML](/agent/capability-yaml#policy), [Gateway Logs](/gateway/logs), and [Errors](/api/errors).
 
+## File references are unavailable
+
+If a capability call returns `DEPENDENCY_UNAVAILABLE` naming `ONPREST_PUBLIC_BASE_URL`, set the explicit [reference origin](/gateway/configuration#file-reference-origin) and restart Gateway. Metadata requiring references is not advertised until this setting is available. Ensure the reverse proxy also routes `/api/v1/files/`.
+
+Use the same API credential as the business call. A different credential receives HTTP 403; that rejected request leaves the live reference unchanged, so the original credential can still download it. Expired TTL, credential rotation, definition change, Agent reconnect or either binary restart invalidates a handle. Downloads do not rerun the business call.
+
+If a handle has expired or otherwise become invalid, obtaining a replacement requires an explicit new call; consider that call's business effects before retrying. `BUSY` can mean another transfer for the same result is active. A truncated response or transport error is a failed download even if HTTP headers were already sent. See [File Output](/api/files).
+
 ## Docker or Testcontainers Issues
 
 Container-backed integration tests require Docker daemon access.

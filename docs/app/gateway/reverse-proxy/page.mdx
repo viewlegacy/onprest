@@ -12,9 +12,12 @@ Route these paths to the gateway process.
 | `/ws/agent/challenge` | HTTP POST | one-time challenge shared by normal Agent authentication and `doctor` |
 | `/ws/agent/verify` | HTTP POST | `doctor` signature verification |
 | `/api/v1/capabilities/*` | HTTP | REST capability calls |
+| `/api/v1/files/*` | authenticated HTTP GET | file reference downloads |
 | `/mcp` | HTTP | MCP JSON-RPC endpoint |
 | `/openapi.json` | HTTP | OpenAPI spec filtered by API key |
 | `/healthz` | HTTP | gateway health and agent connection status |
+
+Set the explicit [File Reference Origin](/gateway/configuration#file-reference-origin) to the public origin used for file downloads.
 
 The `/ws/agent` route must support WebSocket upgrade. The challenge and verify routes are ordinary POST requests and do not use API-key authentication or WebSocket upgrade. Challenge issuance requires no Agent signature; verify requires the Agent's Ed25519 signature.
 

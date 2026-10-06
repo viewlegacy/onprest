@@ -69,6 +69,8 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	s.openapi = nil
 	s.responseKinds = nil
 	s.capabilities = nil
+	s.references = map[string]fileReference{}
+	s.metadataError = ""
 	s.agentMu.Unlock()
 	s.log("agent_connected", map[string]any{"remote": r.RemoteAddr})
 	go func() {
@@ -116,6 +118,12 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 	s.agentMu.RUnlock()
 	if capability != "meta" {
 		if !ready {
+			s.agentMu.RLock()
+			problem := s.metadataError
+			s.agentMu.RUnlock()
+			if problem == "ONPREST_PUBLIC_BASE_URL is required for file reference delivery" {
+				return deliveryFailure("DEPENDENCY_UNAVAILABLE", problem, "not_started")
+			}
 			return agentOfflineResult()
 		}
 		if !known {
@@ -217,7 +225,11 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 		if count == nil {
 			count = metrics.AffectedRows
 		}
-		return agentCallResult{RequestID: id, Payload: envelope, Status: http.StatusOK, Count: count, Metrics: metrics}
+		result := agentCallResult{RequestID: id, Payload: envelope, Status: http.StatusOK, Count: count, Metrics: metrics}
+		if known && metadata.Output != nil {
+			return s.registerFiles(ac, identity, capability, metadata, result)
+		}
+		return result
 	case <-ctx.Done():
 		ac.removePending(id)
 		failure := agentTimeoutFor(ac, id)
@@ -439,6 +451,7 @@ func (s *Server) readAgent(ac *agentConn) {
 			s.openapi = nil
 			s.responseKinds = nil
 			s.capabilities = nil
+			s.references = nil
 		}
 		s.agentMu.Unlock()
 		s.log("agent_disconnected", nil)
@@ -540,6 +553,9 @@ func (s *Server) fetchMetaFor(ac *agentConn) {
 			}
 			if err == nil {
 				err = validateMetadata(metadata)
+				if err == nil {
+					err = s.validateFileOrigin(metadata)
+				}
 			}
 			if err == nil {
 				doc = s.finalizeOpenAPI(doc)
@@ -559,6 +575,11 @@ func (s *Server) fetchMetaFor(ac *agentConn) {
 				}
 				return
 			}
+			s.agentMu.Lock()
+			if s.agent == ac {
+				s.metadataError = err.Error()
+			}
+			s.agentMu.Unlock()
 			s.log("openapi_parse_failed", map[string]any{"attempt": attempt, "error": err.Error()})
 		} else {
 			s.log("openapi_fetch_failed", map[string]any{"attempt": attempt, "code": result.Code, "http_status": result.Status})
@@ -633,6 +654,9 @@ func validateMetadata(metadata protocol.Metadata) error {
 		} else if v.InputTimeout != "" {
 			return fmt.Errorf("unexpected input transfer timeout")
 		}
+		if err := validateOutputMetadata(v.Output); err != nil {
+			return err
+		}
 		kind := metadata.ResponseKinds[name]
 		if v.InputSchema["type"] != "object" || v.ExecutorKind == "db" && (v.EffectClass == "none" && kind != "select" || v.EffectClass == "possible" && kind != "mutation") || v.ExecutorKind != "db" && kind != "generic" {
 			return fmt.Errorf("invalid capability response kind")
@@ -667,7 +691,7 @@ func validateAgentResult(id string, resp protocol.Response, meta protocol.Capabi
 	}
 	dec := json.NewDecoder(bytes.NewReader(resp.Result))
 	dec.DisallowUnknownFields()
-	if e := dec.Decode(&result); e != nil || ensureJSONEOF(dec) != nil || len(result.Data) == 0 || result.Files == nil || len(result.Files) != 0 {
+	if e := dec.Decode(&result); e != nil || ensureJSONEOF(dec) != nil || len(result.Data) == 0 || result.Files == nil {
 		return nil, nil, fmt.Errorf("invalid result")
 	}
 	value, e := contract.DecodeJSON(result.Data, contract.Limits{MaxBytes: 16 << 20, MaxDepth: 32, MaxItems: 100000})
@@ -675,17 +699,17 @@ func validateAgentResult(id string, resp protocol.Response, meta protocol.Capabi
 		return nil, nil, e
 	}
 	m := resp.Metrics
-	if m.ExecutorKind != "db" || known && m.ExecutorKind != meta.ExecutorKind || m.FileCount != 0 || m.InputFileCount != 0 || m.InputFileBytes != 0 || m.ResponseBytes < 0 || m.ReturnedRows == nil && m.AffectedRows == nil || m.ReturnedRows != nil && m.AffectedRows != nil {
+	if !validExecutorKind(m.ExecutorKind) || known && m.ExecutorKind != meta.ExecutorKind || m.FileCount != int64(len(result.Files)) || m.InputFileCount != 0 || m.InputFileBytes != 0 || m.ResponseBytes < 0 || (m.ExecutorKind == "db" && m.ReturnedRows == nil && m.AffectedRows == nil) || m.ReturnedRows != nil && m.AffectedRows != nil || m.ExecutorKind != "db" && (m.ReturnedRows != nil || m.AffectedRows != nil) {
 		return nil, nil, fmt.Errorf("invalid metrics")
 	}
 	if m.ReturnedRows != nil && *m.ReturnedRows < 0 || m.AffectedRows != nil && *m.AffectedRows < 0 {
 		return nil, nil, fmt.Errorf("invalid count")
 	}
-	if known && (meta.EffectClass == "none" && m.ReturnedRows == nil || meta.EffectClass == "possible" && m.AffectedRows == nil) {
+	if known && meta.ExecutorKind == "db" && (meta.EffectClass == "none" && m.ReturnedRows == nil || meta.EffectClass == "possible" && m.AffectedRows == nil) {
 		return nil, nil, fmt.Errorf("metric effect class mismatch")
 	}
 
-	if value != nil {
+	if m.ExecutorKind == "db" && value != nil {
 		object, ok := value.(map[string]any)
 		if !ok {
 			return nil, nil, fmt.Errorf("invalid DB data shape")
@@ -700,6 +724,9 @@ func validateAgentResult(id string, resp protocol.Response, meta protocol.Capabi
 		}
 	}
 
+	if e := validateFileDescriptors(result.Files, meta.Output); e != nil {
+		return nil, nil, e
+	}
 	canonical, e := contract.CanonicalJSON(value)
 	if e != nil || int64(len(canonical)) != m.ResponseBytes {
 		return nil, nil, fmt.Errorf("invalid response size")

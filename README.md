@@ -1,6 +1,6 @@
 # Onprest
 
-Onprest is an **agent-defined capability tunnel** for legacy databases.
+Onprest is an **agent-defined capability tunnel** for legacy databases and files in configured folders.
 
 It exposes selected on-prem-defined business capabilities through REST and MCP, without exposing SQL, database credentials, raw schema access, cloud data replicas, or inbound firewall ports.
 
@@ -15,9 +15,12 @@ The public gateway handles routing, identity, edge rate limits, and observabilit
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
+Read-only folder downloads and DB-generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Output](https://docs.onprest.viewlegacy.com/api/files).
+
 ## Start Here
 
 - **Try it locally:** [Quick Start](#quick-start)
+- **Download a file without a database:** [File download example](examples/file-output/)
 - **Understand the architecture:** [Architecture](#architecture), [Responsibility Split](#responsibility-split), [Trust Boundary](#trust-boundary)
 - **Define capabilities:** [Capability Boundary](#capability-boundary)
 - **Use with AI agents:** [AI Agents and MCP](#ai-agents-and-mcp)
@@ -90,7 +93,7 @@ onprest-gateway
 onprest-agent + capability.yaml
         |
         v
-legacy database
+legacy database / configured folder
 ```
 
 The gateway knows routing, identity, edge rate limits, and which API keys may call which capability names.
@@ -154,7 +157,7 @@ Instead of giving an AI agent a DSN, schema, or SQL executor, you give it narrow
 - `get_invoice_status`
 - `list_recent_shipments`
 
-Each tool is backed by a reviewed SQL statement, validated parameters, and execution limits. Configured `output` selects and validates published data: SELECT rows or the native mutation affected count. Omitting output still executes and publishes null data.
+Each tool is backed by a registered executor, validated inputs, and execution limits. Configured `output` selects and validates published data: SELECT rows or the native mutation affected count. Omitting output still executes and publishes null data.
 
 This makes MCP useful without turning the legacy database into an unrestricted AI-accessible surface.
 
@@ -431,7 +434,8 @@ Docker is optional. The primary deployment unit is the binary.
 Onprest exposes the same approved capabilities through REST and MCP.
 
 - `POST /api/v1/capabilities/{name}` calls a capability with JSON params
-- `POST /mcp` supports MCP `initialize`, `ping`, `tools/list`, and `tools/call`
+- `GET /api/v1/files/{id}` downloads a returned file reference with the original caller credential
+- `POST /mcp` supports MCP `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, and `resources/read`
 - `GET /openapi.json` returns API-key-filtered OpenAPI
 - `GET /healthz` returns gateway health and agent connection state
 
@@ -461,6 +465,7 @@ Recommended next reads:
 - [Gateway configuration](https://docs.onprest.viewlegacy.com/gateway/configuration)
 - [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)
 - [REST API](https://docs.onprest.viewlegacy.com/api/rest)
+- [File Output](https://docs.onprest.viewlegacy.com/api/files)
 - [MCP](https://docs.onprest.viewlegacy.com/api/mcp)
 - [Security model](https://docs.onprest.viewlegacy.com/security)
 - [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment)

@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+type outputSessionKey struct{}
+
 type inputCall struct {
 	owner               artifacts.Owner
 	request             *artifacts.Request
@@ -115,7 +117,7 @@ func (r *Runner) serveTransport(parent context.Context, conn *ws.Conn) {
 				select {
 				case task := <-queue:
 					if task.ctx.Err() == nil {
-						resp := r.executePrepared(task.ctx, task.prepared)
+						resp := r.executePrepared(context.WithValue(task.ctx, outputSessionKey{}, s), task.prepared)
 						s.respond(task.ctx, resp)
 					}
 					s.inflight.finish(task.id)
@@ -208,11 +210,16 @@ func (r *Runner) serveTransport(parent context.Context, conn *ws.Conn) {
 		taskCtx, taskCancel := context.WithCancel(ctx)
 		s.mu.Lock()
 		conflict := s.calls[req.ID] != nil || s.owners[req.ID].files != nil
-		accepted := !conflict && s.inflight.add(req.ID, taskCancel)
+		capacity := s.capacity(req.ID)
+		accepted := !conflict && capacity && s.inflight.add(req.ID, taskCancel)
 		s.mu.Unlock()
 		if !accepted {
 			taskCancel()
-			s.respond(ctx, protocol.Response{ID: req.ID, Error: inputFailure("CONFLICT")})
+			code := "CONFLICT"
+			if !capacity {
+				code = "BUSY"
+			}
+			s.respond(ctx, protocol.Response{ID: req.ID, Error: inputFailure(code)})
 			if release != nil {
 				release()
 			}
@@ -457,13 +464,7 @@ func (s *transportSession) begin(f protocol.Frame) {
 		s.respond(s.ctx, protocol.Response{ID: f.ID, Error: inputFailure("CONFLICT")})
 		return
 	}
-	reserved := len(s.calls)
-	for id := range s.owners {
-		if s.calls[id] == nil {
-			reserved++
-		}
-	}
-	if reserved >= s.recentMax {
+	if !s.capacity(f.ID) {
 		s.respond(s.ctx, protocol.Response{ID: f.ID, Error: inputFailure("BUSY")})
 		return
 	}
@@ -750,4 +751,22 @@ func (s *transportSession) openOutput(f protocol.Frame, transferRelease func(), 
 			s.respond(s.ctx, protocol.Response{ID: f.ID, Error: inputFailure(artifactCode(e))})
 		}
 	}()
+}
+
+// capacity reserves the output ownership table before normal execution. Caller
+// holds s.mu; in-flight IDs also reserve a slot until their result is retained.
+func (s *transportSession) capacity(id string) bool {
+	ids := map[string]bool{}
+	for k := range s.calls {
+		ids[k] = true
+	}
+	for k := range s.owners {
+		ids[k] = true
+	}
+	s.inflight.mu.Lock()
+	for k := range s.inflight.cancels {
+		ids[k] = true
+	}
+	s.inflight.mu.Unlock()
+	return ids[id] || len(ids) < s.recentMax
 }

@@ -1,6 +1,6 @@
 # Capability YAML
 
-`capability.yaml` defines sources, accepted input, SQL, policy, and published output. Normal startup, `onprest-agent validate --config PATH`, and the preparation portion of `doctor` compile and prepare the same definition. Preparation resolves protected secret/TLS files, opens and Pings the configured databases, and performs driver-specific EXPLAIN without executing business SQL. Validation does not connect to the Gateway or reload a running Agent.
+`capability.yaml` defines sources, accepted input, executors, policy, and published output. Normal startup, `onprest-agent validate --config PATH`, and the preparation portion of `doctor` compile and prepare the same definition. Preparation resolves protected secret/TLS files, opens and Pings the configured databases, and performs driver-specific EXPLAIN without executing business SQL. Validation does not connect to the Gateway or reload a running Agent.
 
 ## Structure
 
@@ -46,7 +46,7 @@ capabilities:
       data: {}
 ```
 
-The current runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle. Other executor types and DB file delivery fail preparation and are not advertised. A source is selected by `executor.source`; each DB capability owns its prepared database connection pool.
+The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, and read-only file executors without file input. CSV, HTTP and Wasm executors, file writes and file input fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads select a named folder source.
 
 Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `onprest_` are reserved.
 
@@ -60,7 +60,8 @@ Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `
 | `service` | Public OpenAPI title, version and description |
 | `runtime` | Execution concurrency, private spool, and persistent identity directory |
 | `gateway` | Gateway WebSocket URL and Agent signing key |
-| `sources.databases` | Named database connections selected by executors |
+| `sources.databases` | Named database connections selected by DB executors |
+| `sources.folders` | Fixed folder roots selected by file reads |
 | `logging` | Local detail log settings; see [Agent Local Logs](/agent/local-logs#rotation) |
 | `defaults` | Applicable policy defaults |
 | `capabilities` | At least one named executable operation |
@@ -69,7 +70,7 @@ Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `
 
 Normal Agent startup opens `runtime.spool_dir` (default `./spool`, relative to the configuration directory) before receiving requests. It must be a private, writable directory owned by the Agent user, dedicated to one Agent process. Unsafe permissions, links, another process's lock, or recovery failure prevent startup. `runtime.spool_total_bytes` defaults to `1GiB`; this quota covers temporary input and output snapshots, unfinished save files, and cleanup reservations. Input and output snapshots do not survive restart as usable handles. Preserve the spool directory across restarts when it contains persistent cleanup records; see [spool recovery](/operations/troubleshooting#private-spool-recovery-prevents-startup) for startup failures and safe recovery. `validate` and `doctor` do not open the running Agent's spool.
 
-`runtime.control_limits` applies independently of capability rate limits to Agent management requests. Its fixed `read`, `write`, `cancel`, and `transfer` classes each accept `requests`, `per`, `burst`, and `max_concurrent`. The shared logical I/O budget uses `bytes_per_second` (default `8MiB`) and `burst_bytes` (default `16MiB`). `max_concurrent_transfers` defaults to `4`, with an effective concurrency cap of `8`. Refused management operations return `RATE_LIMITED` or `BUSY` and do not replace existing request state. These settings do not enable file input, file delivery, or additional executors in the current DB runtime.
+`runtime.control_limits` applies independently of capability rate limits to Agent management requests. Its fixed `read`, `write`, `cancel`, and `transfer` classes each accept `requests`, `per`, `burst`, and `max_concurrent`. The shared logical I/O budget uses `bytes_per_second` (default `8MiB`) and `burst_bytes` (default `16MiB`). `max_concurrent_transfers` defaults to `4`, with an effective concurrency cap of `8`. Refused management operations return `RATE_LIMITED` or `BUSY` and do not replace existing request state. File downloads use these fixed management limits in addition to their transfer deadline. They do not enable file input or file writes.
 
 ## Sources and protected files
 
@@ -91,11 +92,11 @@ JSON integers remain signed int64. The API rejects duplicate JSON keys, invalid 
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `readonly` | `true` | True permits SELECT; false also permits INSERT, UPDATE and DELETE |
+| `readonly` | `true` | DB only: true permits SELECT; false also permits INSERT, UPDATE and DELETE |
 | `timeout` | `5s` | One execution/output-validation budget, at most `300s`; caller cancellation/deadline can shorten it |
-| `max_rows` | `100` | SELECT truncates at this row count |
-| `max_affected_rows` | unset | DML count limit; exceeding it rolls back |
-| `max_input_bytes` / `max_output_bytes` | `1MB` | Input and published data byte limits |
+| `max_rows` | `100` | DB SELECT only: truncates at this row count |
+| `max_affected_rows` | unset | DB DML only: count limit; exceeding it rolls back |
+| `max_input_bytes` / `max_output_bytes` | `1MB` | Input bytes / published JSON data and selected data used to generate CSV; original file bytes use the file policy limits below |
 | `max_json_depth` / `max_json_items` | `32` / `100000` | Recursive structure limits |
 | `rate_limit` | unset | Required `requests`, `per`, and `burst`; admission occurs before queueing |
 | `expose_in_openapi` | `true` | Advertise the prepared capability in OpenAPI/MCP |
@@ -113,6 +114,66 @@ Normal output selects declared fields recursively, then validates their types an
 The DB adapter normalizes native driver values before output validation; output declarations never coerce strings to numbers or other types. See [Database JSON values](/databases#json-values) for decimal, binary, timestamp and NULL representations.
 
 DML runs in one transaction. The Agent validates affected count, output selection/types/constraints and capacity before commit. Validation failure confirms rollback before reporting `rolled_back`; an unconfirmed commit or rollback reports `OUTCOME_UNKNOWN` with `unknown`. A successful commit is never executed again. Check independent database state before retrying any mutation with an unknown outcome.
+
+## File reads and CSV output
+
+A file capability selects completed files under a prepared folder root. Relative roots resolve from the configuration directory. This excerpt supplements the required `schema_version: 1` and Gateway signing configuration:
+
+```yaml
+sources:
+  folders:
+    reports:
+      root: ./reports
+      access: read
+capabilities:
+  download_report:
+    executor:
+      type: file
+      read:
+        source: reports
+        selector:
+          name: report.pdf
+    output:
+      files:
+        mime_type: application/pdf
+        delivery:
+          rest: reference
+          mcp: reference
+```
+
+The `executor.read.selector` settings are:
+
+| Setting | Default | Values and meaning |
+|---|---|---|
+| `path` | `.` | Fixed relative directory under the folder root; parent traversal is rejected |
+| `name` | unset | Fixed basename or `{input: /filename}` pointing to a required, non-null string input |
+| `name_regex` | unset | Go regular expression, 1–4096 bytes, matched against the entire basename; case-folding flags are rejected |
+| `recursive` | `false` | Whether to include descendant directories |
+| `sort` | `{by: name, order: asc}` | Object with `by: name`, `modified_at` or `size`, and `order: asc` or `desc` |
+| `take` | `1` | Positive integer limiting selected files; REST direct requires `take: 1` and omitted `output.data` |
+| `scan_limit` | `10000` | Positive integer bounding all inspected entries across the request, including nonmatches, directories and reserved names |
+
+Exactly one of `name` and `name_regex` is required. Names are case-sensitive basenames without Unicode normalization. Equal sort values use ascending root-relative UTF-8 path order before applying `take`. Exceeding `scan_limit` returns `LIMIT_EXCEEDED` without a partial selection; no matching files returns `NOT_FOUND`. Symlinks, hardlinks, special files, filesystem boundaries and reserved temporary names are rejected. Complete producer writes in a private temporary file and atomically rename into the selected completed name. Preparation validates and fixes folder roots without saving business files; `validate` and `doctor` keep their non-destructive behavior. File input and `executor.write` are unavailable.
+
+DB SELECT capabilities can generate CSV from the same selected and validated rows:
+
+```yaml
+output:
+  data: {}
+  items:
+    properties:
+      id: {type: integer}
+      name: {type: string}
+  files:
+    format: csv
+    filename: customers.csv
+    columns: [id, name]
+    delivery: {rest: reference, mcp: reference}
+```
+
+Omit `data` to return files only. Declared columns fix CSV order; excluded data is excluded from generated CSV. An empty result still includes the header. Integer precision is preserved, and cells that could be interpreted as spreadsheet formulas are escaped. File reads return original bytes and cannot request CSV generation.
+
+File policy limits are `max_output_file_bytes` (default `32MiB`), `max_total_output_file_bytes` (`64MiB`), `max_output_files` (`16`), and `file_ttl` (`15m`). `mcp_inline_total_bytes` applies only to inline MCP delivery and defaults to `1MiB`. `runtime.transfer_timeout` defaults to `60s`, at most `300s`; it bounds one download or all inline files in one tool result. See [File Output](/api/files) for delivery and lifetime rules and [Gateway Configuration](/gateway/configuration#file-reference-origin) for the required reference origin.
 
 ## Metadata
 

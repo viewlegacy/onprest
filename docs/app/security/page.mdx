@@ -125,3 +125,10 @@ External HTTP responses and gateway stdout never include raw detail. Public erro
 DB-specific errors and SQL execution detail stay in agent-local logs; DB credentials, Agent keys, API keys, authorization values, and submitted param values are not emitted as public diagnostics. Standalone diagnostics use protected files separate from the rotating runtime log. See [Agent Local Logs](/agent/local-logs).
 
 Agent rate-limit rejections use a fixed public message and never include submitted params. Rejection logging is bounded; see [Agent Local Logs](/agent/local-logs).
+
+
+## File output boundary
+
+File references require the original API credential and current permission for the original capability on every retrieval. They are bound to the current definition and authenticated Agent connection, expire, and are lost on restart or reconnect. URI knowledge alone does not authorize a download. The Gateway does not enumerate retained files or fetch external resource URIs. It derives references only from the configured [file reference origin](/gateway/configuration#file-reference-origin).
+
+The Gateway enforces caller separation; the Agent validates its retained owner and connection generation. This boundary assumes an uncompromised Gateway: the Agent does not independently authenticate an end caller's assertion made by a compromised Gateway. Folder roots and private spool permissions remain operator responsibilities. Publish completed producer files by atomic rename and avoid modifying files in place during snapshot acquisition. See [File Output](/api/files).

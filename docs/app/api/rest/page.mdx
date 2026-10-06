@@ -30,7 +30,7 @@ Input follows the capability schema. Duplicate keys, invalid UTF-8, signed-int64
 }
 ```
 
-The Gateway assigns one request ID for the public response, Agent request and request log. SELECT data is a rows/count object; DML data is `{"count": n}` using native RowsAffected, including zero. Output selection and constraints come from `output`. Omitted output returns `data: null` and an empty files array while still executing. The current DB runtime publishes JSON only. See [Database JSON values](/databases#json-values) for the representation of database types.
+The Gateway assigns one request ID for the public response, Agent request and request log. SELECT data is a rows/count object; DML data is `{"count": n}` using native RowsAffected, including zero. Output selection and constraints come from `output`. Omitted output returns `data: null` and an empty files array while still executing. DB SELECT results can also generate CSV files, and file capabilities can return snapshots from configured folders. See [File Output](/api/files) for authenticated references and direct downloads. See [Database JSON values](/databases#json-values) for the representation of database types.
 
 ## Failure response
 

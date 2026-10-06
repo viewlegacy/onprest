@@ -55,6 +55,8 @@ This is client connection configuration. The `initialize` JSON below is a wire-p
 | `ping` | Liveness check |
 | `tools/list` | Return visible capabilities as MCP tools |
 | `tools/call` | Execute a capability |
+| `resources/list` | Return an empty resource catalogue |
+| `resources/read` | Read an authenticated returned file reference |
 
 ## `initialize`
 
@@ -88,7 +90,7 @@ The supported protocol schemas require `protocolVersion`, `capabilities`, and `c
 }
 ```
 
-The Gateway builds the tool list from cached Agent-owned OpenAPI metadata and filters it by the caller's API key capabilities. For `2025-03-26` behavior (including a request without the version header), each tool exposes its input schema but not `outputSchema`. For `2025-06-18` and `2025-11-25`, `outputSchema` is copied from the capability's OpenAPI JSON response schema.
+The Gateway builds the tool list from cached Agent-owned OpenAPI metadata and filters it by the caller's API key capabilities. For `2025-03-26` behavior (including a request without the version header), each tool exposes its input schema but not `outputSchema`. For `2025-06-18` and `2025-11-25`, `outputSchema` is generated from the capability's MCP delivery definition. It also describes inline file results when REST uses a direct body.
 
 The Gateway maps explicitly supplied `x-onprest-annotations` values to MCP's `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; omitted values remain omitted. These hints do not change authorization or execution. OpenAPI `x-onprest-examples` are not copied into MCP tools.
 
@@ -112,6 +114,10 @@ The tool name maps to a capability name and `arguments` maps to capability param
 
 SELECT data contains `rows` and `count`; mutation data contains the native affected `count`, including zero as success. Omitting output publishes `data: null` and `files: []` while still executing.
 
+## File resources
+
+Tools may return file references or verified inline text/blob resources. `resources/list` returns an empty resource catalogue. `resources/read` accepts a returned canonical URI and enforces the original credential, capability, definition, connection and TTL. Initialization advertises resources with `subscribe: false` and `listChanged: false`; there is no resource subscription method. See [File Output](/api/files) for version-specific content, byte limits and download behavior.
+
 ## IDs and notifications
 
 JSON-RPC request IDs may be strings or numbers. They are independent of the Gateway-assigned `request_id`. The Gateway accepts the official client-to-server notifications defined by the selected protocol version, including `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, and `notifications/roots/list_changed`; `notifications/tasks/status` is accepted only in `2025-11-25`. Notifications are validated but do not invoke capabilities.
@@ -122,4 +128,4 @@ A valid notification returns HTTP 202 with an empty body. Invalid parameters on 
 
 JSON parse/shape errors, unsupported JSON-RPC methods, and malformed tool-call parameters are JSON-RPC errors with HTTP 200. `tools/list` without usable Agent metadata also returns HTTP 200 with JSON-RPC error `-32000` and `error.data.code: AGENT_OFFLINE`.
 
-Business failures, including Agent `RATE_LIMITED` and a well-formed call to an undefined tool, return HTTP 200 with `isError: true` and the [common error envelope](/api/errors), including the observed outcome. Authentication, the Gateway's source-IP rate limit, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.
+Business failures, including Agent `RATE_LIMITED` and a well-formed call to an undefined tool, return HTTP 200 with `isError: true` and the [common error envelope](/api/errors), including the observed outcome. Authentication, the Gateway's source-IP rate limit, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. File response capacity exhaustion is an HTTP admission failure: HTTP 503 `BUSY` occurs before a new business call or collection. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.

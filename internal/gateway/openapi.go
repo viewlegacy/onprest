@@ -255,7 +255,7 @@ func metaData(raw []byte) (map[string]any, map[string]responseKind, error) {
 	kinds := make(map[string]responseKind, len(meta.ResponseKinds))
 	for name, kind := range meta.ResponseKinds {
 		switch responseKind(kind) {
-		case responseKindSelect, responseKindMutation:
+		case responseKindSelect, responseKindMutation, responseKind("generic"):
 			kinds[name] = responseKind(kind)
 		}
 	}

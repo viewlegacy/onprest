@@ -67,11 +67,39 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 	fingerprint := sha256.Sum256([]byte(key.KeyHash))
 	ctx := context.WithValue(r.Context(), callIdentityKey{}, callIdentity{ID: reqID, Binding: hex.EncodeToString(fingerprint[:])})
 	result := s.callAgent(ctx, name, params)
-	s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
 	if !result.OK() {
+		s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
 		writeJSON(w, result.Status, resultError(reqID, result))
 		return
 	}
+	s.agentMu.RLock()
+	meta := s.capabilities[name]
+	s.agentMu.RUnlock()
+	if meta.Output != nil && meta.Output.REST == "direct" {
+		envelope, e := decodeSuccess(result)
+		if e != nil || len(envelope.Result.Files) != 1 || envelope.Result.Data != nil {
+			result = invalidAgentResult(reqID)
+			s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
+			writeJSON(w, result.Status, resultError(reqID, result))
+			return
+		}
+		v, e := s.fileLookup(key, envelope.Result.Files[0].ID, false)
+		if e != nil {
+			result = fileTransferError(e)
+			s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
+			writeJSON(w, result.Status, resultError(reqID, result))
+			return
+		}
+		logged := deliveryFailure("OUTPUT_INVALID", "file transfer could not be completed", "unknown")
+		defer func() { s.accessExecutionLog("rest", reqID, key.Name, name, logged, start) }()
+		if failure := s.streamFile(w, r, v); failure != nil {
+			logged = *failure
+		} else {
+			logged = result
+		}
+		return
+	}
+	s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(result.Payload)
 }

@@ -147,6 +147,12 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 				failedCapability = snapshot.Definition().Name
 			}
 			return p, e
+		}, "file": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
+			cap := snapshot.Definition()
+			if _, writes := cap.Executor.Settings["write"]; writes || schemaHasFile(cap.Input) {
+				return nil, errors.New("file writes and file input are not available")
+			}
+			return prepareFileProvider(ctx, snapshot, nil)
 		}})
 		versioned, err := registry.Prepare(ctx, cf.Compiled, cfg.CapabilityFile, providers.ResolveOptions{})
 		if err != nil {
@@ -168,6 +174,9 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 		for _, name := range versioned.Names() {
 			snapshot, _ := versioned.Snapshot(name)
 			cap := snapshot.Definition()
+			if cap.Executor.Type != "db" {
+				continue
+			}
 			source, _ := snapshot.Source(providers.SourceKey{Group: "databases", Name: cap.Executor.Source})
 			if cf.Database.Driver == "" {
 				cf.Database = snapshotDatabase(source)

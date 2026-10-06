@@ -25,9 +25,6 @@ func prepareDBProvider(ctx context.Context, snapshot *providers.Snapshot) (provi
 }
 func prepareDBProviderObserved(ctx context.Context, snapshot *providers.Snapshot, observe preparationObserver) (providers.Provider, error) {
 	cap := snapshot.Definition()
-	if cap.Output.Files != nil {
-		return nil, errors.New("DB file output is not available")
-	}
 	source, ok := snapshot.Source(providers.SourceKey{Group: "databases", Name: cap.Executor.Source})
 	if !ok {
 		return nil, errors.New("database source is unavailable")

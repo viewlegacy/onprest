@@ -50,7 +50,19 @@ type Metrics struct {
 	InputFileBytes int64  `json:"input_file_bytes"`
 }
 
+type OutputMetadata struct {
+	REST            string         `json:"rest"`
+	MCP             string         `json:"mcp"`
+	MaxFileBytes    int64          `json:"max_file_bytes"`
+	MaxTotalBytes   int64          `json:"max_total_bytes"`
+	MaxFiles        int64          `json:"max_files"`
+	InlineBytes     int64          `json:"inline_bytes,omitempty"`
+	TTL             string         `json:"ttl"`
+	TransferTimeout string         `json:"transfer_timeout"`
+	MCPOutputSchema map[string]any `json:"mcp_output_schema"`
+}
 type CapabilityMetadata struct {
+	Output           *OutputMetadata  `json:"output,omitempty"`
 	DefinitionHash   string           `json:"definition_hash"`
 	ExecutorKind     string           `json:"executor_kind"`
 	ExecutionTimeout string           `json:"execution_timeout"`

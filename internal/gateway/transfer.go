@@ -297,15 +297,18 @@ func (s *Server) TransferInput(ctx context.Context, begin protocol.Frame, params
 // Agent connection. The caller supplies validated metadata and a finite budget.
 // destination must stop its I/O when the supplied context is canceled.
 func (s *Server) TransferOutput(ctx context.Context, requestID, fileID string, size int64, digest string, destination func(context.Context, []byte) (int, error)) (resultErr error) {
+	s.agentMu.RLock()
+	ac := s.agent
+	s.agentMu.RUnlock()
+	return s.transferOutputOn(ctx, ac, requestID, fileID, size, digest, destination)
+}
+func (s *Server) transferOutputOn(ctx context.Context, ac *agentConn, requestID, fileID string, size int64, digest string, destination func(context.Context, []byte) (int, error)) (resultErr error) {
 	if destination == nil || size < 0 || len(digest) != 64 {
 		return errors.New("invalid output sink or metadata")
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		return errors.New("transfer deadline required")
 	}
-	s.agentMu.RLock()
-	ac := s.agent
-	s.agentMu.RUnlock()
 	if ac == nil {
 		return errors.New("agent offline")
 	}

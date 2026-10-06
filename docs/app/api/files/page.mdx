@@ -1,0 +1,40 @@
+# File Output
+
+DB SELECT capabilities can generate CSV files. Read-only file capabilities return original bytes from configured folders. Declare outputs in [Capability YAML](/agent/capability-yaml#file-reads-and-csv-output); no upload or file write API is available.
+
+## References
+
+REST and MCP default to `reference` delivery. A successful capability response includes `result.files` descriptors with `id`, safe basename `name`, `mime_type`, `size_bytes`, lowercase `sha256`, `uri`, and `expires_at`. `result.data` may accompany files or be null. All files must pass validation and snapshot retention before the result is published; a failed later reader does not publish a partial file list.
+
+Set [ONPREST_PUBLIC_BASE_URL](/gateway/configuration#file-reference-origin) to the explicit public origin. For example, retrieve a returned URI with the same caller credential:
+
+```bash
+curl --fail --show-error \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  'https://gateway.example.com/api/v1/files/RETURNED_FILE_ID' \
+  --output report.csv
+```
+
+`GET /api/v1/files/{id}` requires Bearer or `X-API-Key` authentication and current permission for the original capability. A reference is bound to the original credential, definition and authenticated Agent connection; knowing a URI grants no access. Another credential with the same capability permission cannot use it. Rotating credentials, changing the definition, restarting either binary or reconnecting the Agent invalidates the old reference. References and snapshots expire at `file_ttl` (default `15m`). Downloads never rerun the capability. An expired or invalidated handle returns `NOT_FOUND`; obtaining a new result requires an explicit new business call.
+
+Successful downloads carry `Content-Type`, `Content-Length`, attachment `Content-Disposition`, and the original `X-Request-ID`; responses use `Cache-Control: no-store`. Range requests return `416` and are not resumable. The same output request permits one active transfer at a time; another simultaneous retrieval can return `BUSY` immediately without queueing. Management rate, concurrency, byte and transfer deadline limits apply independently of business execution limits.
+
+Errors before response bytes begin use the [common error envelope](/api/errors). If a transfer fails after bytes begin, Gateway aborts the HTTP response; clients must treat a truncated body or transport error as failure. Gateway withholds the final byte until size and SHA-256 match the transfer end, and waits for verified completion before returning an empty file. Client disconnect cancels the transfer and releases its reader and slot; a retained snapshot remains available until expiry.
+
+## Direct REST
+
+`output.files.delivery.rest: direct` requires files-only output with exactly one file. The capability POST returns that file body instead of a JSON success envelope, using the same download headers, completion checks and failure behavior as a reference GET.
+
+## MCP
+
+Reference tool results include the common envelope as text for every supported protocol version. `2025-06-18` and `2025-11-25` also include matching `structuredContent` and `resource_link` items. `2025-03-26` clients use the URI in the text envelope. Links do not guarantee that an MCP client automatically downloads a file.
+
+`resources/read` accepts only a canonical URI returned by this Gateway, with the configured origin and exact file path. It uses the same caller and lifetime checks, never fetches arbitrary URLs, and returns `contents` with `text` for valid UTF-8 `text/*` files and Base64 `blob` otherwise. `resources/list` returns an empty list; subscriptions and list-change notifications are not supported. A reference is not added to a discoverable resource catalogue.
+
+`output.files.delivery.mcp: inline` embeds verified bytes directly as text or Base64 resources. Descriptor `uri` and `expires_at` are omitted, and the text envelope and newer-version `structuredContent` describe the same result. The `mcp_inline_total_bytes` limit counts the entire encoded JSON-RPC response, including Base64, all content, structured content and request ID. Exceeding it returns `LIMIT_EXCEEDED`; delivery never silently changes to references. REST and MCP delivery are selected independently in YAML.
+
+MCP file tool responses and resource reads share four Gateway response slots, held through collection, encoding and the final HTTP write. A full response capacity returns HTTP 503 `BUSY` before a new business call or collection. The fixed transfer deadline also bounds HTTP delivery to a slow receiver, and client disconnect releases the response slot.
+
+## Storage and security
+
+Agent retains independent snapshots in its private spool after execution and before publication. Gateway keeps a bounded, volatile reference table and streams transfers; it does not persist file bodies. Cancelling one download does not remove a valid retained snapshot or invoke business work. File contents, names and credentials are not automatically enumerated in request logs. Operators control the folder roots, producer completion protocol, spool permissions and TLS/proxy environment; see [Security](/security).
