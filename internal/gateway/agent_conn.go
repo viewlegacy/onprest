@@ -147,6 +147,10 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 		ac.mu.Unlock()
 		return agentOfflineResult()
 	}
+	if len(ac.pending) >= 128 || ac.pending[id] != nil || ac.sendStates[id] != nil {
+		ac.mu.Unlock()
+		return deliveryFailure("BUSY", "request capacity is unavailable", "not_started")
+	}
 	if ac.pending == nil {
 		ac.pending = map[string]chan protocol.Response{}
 	}
@@ -168,17 +172,27 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 	} else {
 		writeResult := make(chan error, 1)
 		write := agentWrite{id: id, payload: payload, result: writeResult, ctx: ctx}
+		if lease, _ := ctx.Value(bodyLeaseKey{}).(*bodyLease); lease != nil {
+			write.releaseInput = lease.hold()
+		}
 		select {
 		case ac.send <- write:
 		case <-ac.done:
+			if write.releaseInput != nil {
+				write.releaseInput()
+			}
 			ac.removePending(id)
 			return agentOfflineFor(ac, id)
 		case <-ctx.Done():
+			if write.releaseInput != nil {
+				write.releaseInput()
+			}
 			ac.removePending(id)
 			failure := agentTimeoutFor(ac, id)
 			s.requestAgentCancel(ac, id)
 			return failure
 		}
+		write = agentWrite{}
 		select {
 		case err := <-writeResult:
 			if err != nil {
@@ -199,6 +213,10 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 			return failure
 		}
 	}
+
+	payload = nil
+	params = nil
+	releaseBody(ctx)
 
 	select {
 	case resp := <-ch:
@@ -331,6 +349,24 @@ func (s *Server) requestAgentCancel(ac *agentConn, id string) {
 }
 
 func (s *Server) writeAgent(ac *agentConn) {
+	defer func() {
+		for {
+			select {
+			case write := <-ac.send:
+				if write.releaseInput != nil {
+					write.releaseInput()
+				}
+				write.result <- context.Canceled
+			case write := <-ac.control:
+				if write.cancel != nil {
+					write.cancel()
+				}
+				write.result <- context.Canceled
+			default:
+				return
+			}
+		}
+	}()
 	for {
 		var write agentWrite
 		select {
@@ -348,6 +384,11 @@ func (s *Server) writeAgent(ac *agentConn) {
 			state := ac.sendStates[write.id]
 			if state == nil || state.phase == "canceled" {
 				ac.mu.Unlock()
+				write.payload = nil
+				if write.releaseInput != nil {
+					write.releaseInput()
+					write.releaseInput = nil
+				}
 				write.result <- context.Canceled
 				continue
 			}
@@ -357,6 +398,11 @@ func (s *Server) writeAgent(ac *agentConn) {
 		select {
 		case <-write.ctx.Done():
 			ac.finishSendState(write.id)
+			write.payload = nil
+			if write.releaseInput != nil {
+				write.releaseInput()
+				write.releaseInput = nil
+			}
 			write.result <- write.ctx.Err()
 			if write.cancel != nil {
 				write.cancel()
@@ -377,11 +423,18 @@ func (s *Server) writeAgent(ac *agentConn) {
 				select {
 				case err = <-completed:
 				case <-ac.done:
-					err = errors.New("agent disconnected")
+					ac.transferCancel()
+					err = <-completed
 				}
 			}
 		} else {
 			err = writeFrame()
+		}
+		writeFrame = nil
+		write.payload = nil
+		if write.releaseInput != nil {
+			write.releaseInput()
+			write.releaseInput = nil
 		}
 		if err != nil {
 			ac.finishSendState(write.id)
@@ -643,16 +696,23 @@ func validateMetadata(metadata protocol.Metadata) error {
 		}
 		_, hashErr := hex.DecodeString(v.DefinitionHash)
 		d, e := time.ParseDuration(v.ExecutionTimeout)
-		if e != nil || d <= 0 || d > 300*time.Second || len(v.DefinitionHash) != 64 || hashErr != nil || v.DefinitionHash != strings.ToLower(v.DefinitionHash) || (v.EffectClass != "none" && v.EffectClass != "possible") || !validExecutorKind(v.ExecutorKind) || v.InputSchema == nil || (len(v.InputLimits) != 3 && len(v.InputLimits) != 6) || v.InputLimits["max_input_bytes"] <= 0 || v.InputLimits["max_json_depth"] <= 0 || v.InputLimits["max_json_items"] <= 0 {
+		if e != nil || d <= 0 || d > 300*time.Second || len(v.DefinitionHash) != 64 || hashErr != nil || v.DefinitionHash != strings.ToLower(v.DefinitionHash) || (v.EffectClass != "none" && v.EffectClass != "possible") || !validExecutorKind(v.ExecutorKind) || v.InputSchema == nil || (len(v.InputLimits) != 3 && len(v.InputLimits) != 7) || v.InputLimits["max_input_bytes"] <= 0 || v.InputLimits["max_json_depth"] <= 0 || v.InputLimits["max_json_items"] <= 0 {
 			return fmt.Errorf("invalid capability metadata")
 		}
-		if len(v.InputLimits) == 6 {
+		if len(v.InputLimits) == 7 {
 			timeout, e := time.ParseDuration(v.InputTimeout)
 			if e != nil || timeout <= 0 || timeout > 300*time.Second || v.InputLimits["max_input_file_bytes"] <= 0 || v.InputLimits["max_total_input_file_bytes"] < v.InputLimits["max_input_file_bytes"] || v.InputLimits["max_input_files"] <= 0 {
 				return fmt.Errorf("invalid input transfer metadata")
 			}
 		} else if v.InputTimeout != "" {
 			return fmt.Errorf("unexpected input transfer timeout")
+		}
+		schema, _, schemaErr := inputSchema(v)
+		if schemaErr != nil || schema.HasFiles() != (v.InputTimeout != "") {
+			return fmt.Errorf("invalid internal input schema")
+		}
+		if len(v.InputLimits) == 7 && v.InputLimits["max_multipart_parts"] <= 0 {
+			return fmt.Errorf("invalid multipart metadata")
 		}
 		if err := validateOutputMetadata(v.Output); err != nil {
 			return err
@@ -699,7 +759,7 @@ func validateAgentResult(id string, resp protocol.Response, meta protocol.Capabi
 		return nil, nil, e
 	}
 	m := resp.Metrics
-	if !validExecutorKind(m.ExecutorKind) || known && m.ExecutorKind != meta.ExecutorKind || m.FileCount != int64(len(result.Files)) || m.InputFileCount != 0 || m.InputFileBytes != 0 || m.ResponseBytes < 0 || (m.ExecutorKind == "db" && m.ReturnedRows == nil && m.AffectedRows == nil) || m.ReturnedRows != nil && m.AffectedRows != nil || m.ExecutorKind != "db" && (m.ReturnedRows != nil || m.AffectedRows != nil) {
+	if !validExecutorKind(m.ExecutorKind) || known && m.ExecutorKind != meta.ExecutorKind || m.FileCount != int64(len(result.Files)) || !validInputMetrics(m, meta) || m.ResponseBytes < 0 || (m.ExecutorKind == "db" && m.ReturnedRows == nil && m.AffectedRows == nil) || m.ReturnedRows != nil && m.AffectedRows != nil || m.ExecutorKind != "db" && (m.ReturnedRows != nil || m.AffectedRows != nil) {
 		return nil, nil, fmt.Errorf("invalid metrics")
 	}
 	if m.ReturnedRows != nil && *m.ReturnedRows < 0 || m.AffectedRows != nil && *m.AffectedRows < 0 {
@@ -764,4 +824,15 @@ func validExecutorKind(kind string) bool {
 		return true
 	}
 	return false
+}
+
+// Input counters are confirmed by the Agent, and never inferred from wire size.
+func validInputMetrics(m *protocol.Metrics, meta protocol.CapabilityMetadata) bool {
+	if m == nil || m.InputFileCount < 0 || m.InputFileBytes < 0 {
+		return false
+	}
+	if meta.InputTimeout == "" {
+		return m.InputFileCount == 0 && m.InputFileBytes == 0
+	}
+	return m.InputFileCount <= meta.InputLimits["max_input_files"] && m.InputFileBytes <= meta.InputLimits["max_total_input_file_bytes"]
 }

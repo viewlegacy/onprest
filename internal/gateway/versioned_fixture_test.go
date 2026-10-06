@@ -73,11 +73,11 @@ func versionedTestResponse(req agentRequest, resp agentResponse) agentResponse {
 			if kind == "mutation" {
 				effect = "possible"
 			}
-			caps[name] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: "5s", EffectClass: effect, InputSchema: map[string]any{"type": "object"}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
+			caps[name] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: "5s", EffectClass: effect, InputSchema: map[string]any{"type": "object", "additionalProperties": true}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
 		}
 		// Empty OpenAPI fixtures still have one prepared hidden DB capability.
 		if len(caps) == 0 {
-			caps["fixture"] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: "5s", EffectClass: "none", InputSchema: map[string]any{"type": "object"}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
+			caps["fixture"] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: "5s", EffectClass: "none", InputSchema: map[string]any{"type": "object", "additionalProperties": true}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
 			kinds["fixture"] = "select"
 		}
 		m["capabilities"] = caps
@@ -117,7 +117,7 @@ func seedVersionedTestMetadata(s *Server) {
 	s.openapi = map[string]any{"openapi": "3.1.0", "paths": map[string]any{}}
 	s.capabilities = map[string]protocol.CapabilityMetadata{}
 	for _, name := range []string{"get_customer", "slow", "fast", "first", "second", "capability", "mutate"} {
-		s.capabilities[name] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: s.cfg.AgentTimeout.String(), EffectClass: "none", InputSchema: map[string]any{"type": "object"}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
+		s.capabilities[name] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: s.cfg.AgentTimeout.String(), EffectClass: "none", InputSchema: map[string]any{"type": "object", "additionalProperties": true}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
 	}
 	setVersionedTestKind(s, "mutate", responseKindMutation)
 }

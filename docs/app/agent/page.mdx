@@ -1,6 +1,6 @@
 # Agent
 
-`onprest-agent` runs in the on-prem or DB-adjacent environment. It reads `capability.yaml`, validates startup safety, executes prepared SQL or reads files from fixed folders, and keeps DB-specific detail local. It owns the meaning of every capability and is the only OSS core component that holds DB connection details and SQL.
+`onprest-agent` runs in the on-prem or DB-adjacent environment. It reads `capability.yaml`, validates startup safety, executes prepared SQL or reads/writes files in configured folders, and keeps DB-specific detail local. It owns the meaning of every capability and is the only OSS core component that holds DB connection details and SQL.
 
 The agent connects outbound to the gateway over WebSocket. It does not require inbound access to the on-prem network.
 
@@ -38,7 +38,7 @@ When the gateway sends a capability request, the agent:
 1. Rejects unknown capability names.
 2. Validates params against the YAML contract.
 3. Applies policy settings.
-4. Executes SQL with prepared parameters or selects completed files under fixed folder roots.
+4. Executes SQL with prepared parameters or reads/writes files under configured folder roots.
 5. Selects and validates output data and files, or validates the native affected count for DML.
 6. Returns the common `request_id/result` envelope with `result.data` and `result.files`. Enabled data output publishes SELECT rows/count or DML count; omitted output publishes null data. Failures return the common error envelope with an observed outcome.
 
@@ -47,6 +47,6 @@ Error detail remains local to the agent side.
 ## Topics
 
 - [Capability YAML](/agent/capability-yaml)
-- [File Output](/api/files)
+- [File Input and Output](/api/files)
 - [Local Logs](/agent/local-logs)
 - [Key Rotation](/agent/key-rotation)

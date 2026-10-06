@@ -134,7 +134,7 @@ func (s *Server) registerFiles(ac *agentConn, identity callIdentity, capability 
 	s.agentMu.Lock()
 	defer s.agentMu.Unlock()
 	if s.agent != ac {
-		return agentOfflineResult()
+		return deliveryFailure("AGENT_OFFLINE", "agent is not connected", "unknown")
 	}
 	if s.references == nil {
 		s.references = map[string]fileReference{}

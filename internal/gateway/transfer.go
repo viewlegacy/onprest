@@ -19,9 +19,16 @@ type onceReader struct {
 
 func (r *onceReader) Close() (e error) { r.once.Do(func() { e = r.ReadCloser.Close() }); return }
 
-type inputRejected string
+type inputExecutionError struct{ error }
 
-func (e inputRejected) Error() string { return string(e) }
+func (e inputExecutionError) Unwrap() error { return e.error }
+
+type inputRejected struct {
+	code    string
+	metrics *protocol.Metrics
+}
+
+func (e inputRejected) Error() string { return e.code }
 
 type inputExchange struct {
 	events        chan protocol.Frame
@@ -88,7 +95,7 @@ func (ac *agentConn) handleTransfer(raw []byte) error {
 	}
 }
 func (ac *agentConn) frame(ctx context.Context, f protocol.Frame) error {
-	return ac.scheduler.Submit(ctx, true, "", func() error {
+	write := func() error {
 		return ac.conn.WriteTextWithDeadlineStart(protocol.MustJSON(f), 5*time.Second, func() error {
 			if e := ctx.Err(); e != nil {
 				return e
@@ -98,7 +105,34 @@ func (ac *agentConn) frame(ctx context.Context, f protocol.Frame) error {
 			}
 			return nil
 		})
-	})
+	}
+	lease, _ := ctx.Value(bodyLeaseKey{}).(*bodyLease)
+	if f.Type != "request_commit" || lease == nil {
+		return ac.scheduler.Submit(ctx, true, "", write)
+	}
+	release := lease.hold()
+	done, e := ac.scheduler.Post(ctx, true, "", write)
+	write = nil
+	if e != nil {
+		f = protocol.Frame{}
+		release()
+		return e
+	}
+	finished := make(chan error, 1)
+	go func() {
+		e := <-done
+		f = protocol.Frame{}
+		release()
+		finished <- e
+	}()
+	select {
+	case e := <-finished:
+		return e
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-ac.transferCtx.Done():
+		return ac.transferCtx.Err()
+	}
 }
 func (ac *agentConn) exchange(until time.Time, id string) (*inputExchange, func(), error) {
 	return ac.newExchange(until, id, false)
@@ -143,7 +177,7 @@ func (v *inputExchange) event(ctx context.Context, ac *agentConn, kind, transfer
 		return f, nil
 	case r := <-v.result:
 		if r.Error != nil {
-			return protocol.Frame{}, inputRejected(r.Error.Code)
+			return protocol.Frame{}, inputRejected{r.Error.Code, r.Metrics}
 		}
 		return protocol.Frame{}, ws.ErrProtocol
 	case <-ctx.Done():
@@ -157,19 +191,25 @@ func (v *inputExchange) event(ctx context.Context, ac *agentConn, kind, transfer
 // fixed by the caller at body admission, and never restarted for another file.
 // The returned frame is internal; public rendering is added by later handlers.
 func (s *Server) TransferInput(ctx context.Context, begin protocol.Frame, params map[string]any, streams []InputStream) (protocol.Response, error) {
-	streams = append([]InputStream(nil), streams...)
 	for i := range streams {
 		if streams[i].Reader != nil {
 			streams[i].Reader = &onceReader{ReadCloser: streams[i].Reader}
 		}
 	}
-	defer func() {
+	defer closeStreams(streams)
+	return s.transferInput(ctx, begin, func(send func(InputStream) (protocol.Frame, error)) (map[string]any, error) {
 		for _, stream := range streams {
-			if stream.Reader != nil {
-				stream.Reader.Close()
+			if _, e := send(stream); e != nil {
+				return nil, e
 			}
 		}
-	}()
+		return params, nil
+	}, nil)
+}
+
+// transferInput admits the Agent before its producer reads any multipart bytes.
+// The producer validates EOF and the entire logical input before returning.
+func (s *Server) transferInput(ctx context.Context, begin protocol.Frame, produce func(func(InputStream) (protocol.Frame, error)) (map[string]any, error), committed func(*agentConn)) (response protocol.Response, resultErr error) {
 	s.agentMu.RLock()
 	ac := s.agent
 	metadata, known := s.capabilities[begin.Capability]
@@ -224,12 +264,21 @@ func (s *Server) TransferInput(ctx context.Context, begin protocol.Frame, params
 				ac.conn.Close()
 			}
 		}
-		for _, stream := range streams {
-			if stream.Reader != nil {
-				stream.Reader.Close()
+
+		ac.transfers.WaitRequest(begin.ID)
+		var rejected inputRejected
+		if errors.As(resultErr, &rejected) {
+			response.Metrics = rejected.metrics
+		}
+		if started && !denied && !success && resultErr != nil && response.Metrics == nil {
+			// Take an already-arrived receiver-confirmed cancellation measurement.
+			// Collecting metrics never extends the canceled or expired input phase.
+			select {
+			case r := <-exchange.result:
+				response.Metrics = r.Metrics
+			default:
 			}
 		}
-		ac.transfers.WaitRequest(begin.ID)
 	}()
 	if e = ac.scheduler.Submit(inputCtx, true, "", func() error {
 		beginMu.Lock()
@@ -249,47 +298,70 @@ func (s *Server) TransferInput(ctx context.Context, begin protocol.Frame, params
 		return protocol.Response{}, e
 	}
 	bindings := []protocol.FileBinding{}
-	for _, stream := range streams {
+	send := func(stream InputStream) (protocol.Frame, error) {
+		if stream.Reader != nil {
+			stream.Reader = &onceReader{ReadCloser: stream.Reader}
+			defer stream.Reader.Close()
+		}
 		if stream.Reader == nil {
-			return protocol.Response{}, errors.New("nil input reader")
+			return protocol.Frame{}, errors.New("nil input reader")
 		}
 		transfer := newID()
 		f := protocol.Frame{Type: "input_open", ID: begin.ID, TransferID: transfer, Pointer: stream.Pointer, Name: stream.Name, MIMEType: stream.MIMEType}
 		if e = ac.frame(inputCtx, f); e != nil {
-			return protocol.Response{}, e
+			return protocol.Frame{}, e
 		}
 		if _, e = exchange.event(inputCtx, ac, "input_accept", transfer); e != nil {
-			return protocol.Response{}, e
+			return protocol.Frame{}, e
 		}
 		done, e := ac.transfers.Send(inputCtx, begin.ID, transfer, stream.Reader, nil)
 		if e != nil {
-			return protocol.Response{}, e
+			return protocol.Frame{}, e
 		}
 		select {
 		case e = <-done:
 			if e != nil {
-				return protocol.Response{}, e
+				return protocol.Frame{}, e
 			}
+		case r := <-exchange.result:
+			if r.Error != nil {
+				return protocol.Frame{}, inputRejected{r.Error.Code, r.Metrics}
+			}
+			return protocol.Frame{}, ws.ErrProtocol
 		case <-inputCtx.Done():
-			return protocol.Response{}, inputCtx.Err()
+			return protocol.Frame{}, inputCtx.Err()
 		}
 		ready, e := exchange.event(inputCtx, ac, "input_ready", transfer)
 		if e != nil {
-			return protocol.Response{}, e
+			return protocol.Frame{}, e
 		}
 		bindings = append(bindings, protocol.FileBinding{Pointer: stream.Pointer, FileID: ready.FileID})
+		return ready, nil
+	}
+	params, e := produce(send)
+	produce = nil
+	if e != nil {
+		return protocol.Response{}, e
 	}
 	if e = ac.frame(inputCtx, protocol.Frame{Type: "request_commit", ID: begin.ID, Params: params, Files: bindings}); e != nil {
 		return protocol.Response{}, e
 	}
+	params = nil
+	bindings = nil
+	if committed != nil {
+		committed(ac)
+		committed = nil
+	}
+	executionCtx, executionCancel := context.WithTimeout(ctx, execution)
+	defer executionCancel()
 	select {
 	case r := <-exchange.result:
 		success = true
 		return r, nil
-	case <-ctx.Done():
-		return protocol.Response{}, ctx.Err()
+	case <-executionCtx.Done():
+		return protocol.Response{}, inputExecutionError{executionCtx.Err()}
 	case <-ac.transferCtx.Done():
-		return protocol.Response{}, errors.New("agent disconnected")
+		return protocol.Response{}, inputExecutionError{errors.New("agent disconnected")}
 	}
 }
 

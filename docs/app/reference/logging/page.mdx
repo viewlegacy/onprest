@@ -16,11 +16,11 @@ Request event fields:
 | `api_key_name` | API key name from config |
 | `http_status` | response status |
 | `count` | SELECT row count or mutation affected count on success; null on failure |
-| `executor_kind` | Executor kind on successful execution; currently `db` |
+| `executor_kind` | Executor kind on successful execution; currently `db` or `file` |
 | `returned_rows` / `affected_rows` | Measured SELECT row count or DML affected count on success; the other counter is null |
 | `file_count` | Number of published files on success |
 | `response_bytes` | Canonical published data bytes on success; `null` is four bytes |
-| `input_file_count` / `input_file_bytes` | Measured input file count and bytes on success |
+| `input_file_count` / `input_file_bytes` | Agent-confirmed input file count and decoded file bytes; separate from output counters. On rejection/cancellation, only confirmed measurements are included; otherwise omitted. See [Gateway Logs](/gateway/logs#request-event) |
 | `outcome` / `reason` | Observed outcome and optional fixed safe reason for business failures |
 | `error_code` | Public application code returned to the caller, or null |
 | `error_message` | Matching public response message, or null on success |

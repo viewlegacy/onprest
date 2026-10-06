@@ -559,6 +559,18 @@ func TestTransportSignedPendingRecentFixedDeadlineAndRateOnce(t *testing.T) {
 	for _, id := range []string{"pending-a", "pending-b"} {
 		conn.WriteText(protocol.MustJSON(protocol.CancelRequest{Type: "cancel", ID: id}))
 	}
+	// A pending cancellation emits the receiver-confirmed input usage for its
+	// own request ID. Consume both terminal responses before the next begin.
+	remaining := map[string]bool{"pending-a": true, "pending-b": true}
+	for range 2 {
+		raw, e := conn.ReadText()
+		var canceled protocol.Response
+		if e != nil || json.Unmarshal(raw, &canceled) != nil || !remaining[canceled.ID] || canceled.Error == nil || canceled.Error.Code != "EXECUTION_TIMEOUT" || canceled.Error.Outcome != "not_started" || canceled.Metrics == nil || canceled.Metrics.InputFileCount != 0 || canceled.Metrics.InputFileBytes != 0 {
+			t.Fatal("cancellation response ID/confirmed usage", string(raw), e)
+		}
+		delete(remaining, canceled.ID)
+		t.Logf("cancel response id=%s input_file_count=%d input_file_bytes=%d", canceled.ID, canceled.Metrics.InputFileCount, canceled.Metrics.InputFileBytes)
+	}
 	time.Sleep(30 * time.Millisecond)
 	inputBegin(t, r, conn, "last-slot", time.Now().Add(100*time.Millisecond))
 	inputError(t, conn, "EXECUTION_TIMEOUT")

@@ -158,6 +158,12 @@ For a private-CA rotation, first deploy a trust bundle containing both the old a
 
 Do not retire old trust or credentials until the post-restart capability check succeeds. A failed CA, expiry, or hostname check stops the connection; the Agent does not retry with a weaker mode or plaintext.
 
+## File inputs and saves
+
+For file input or saves, provision each configured business folder with the access needed by its `sources.folders` declaration. Container deployments mount these folders separately from private spool/identity directories. Destination directories must exist and the Agent user must have the required native filesystem permissions. Prepare with `validate` before starting the binary; preparation does not save business files or lock the running spool. Configure finite Gateway encoded JSON, multipart, and input-slot limits described in [Gateway configuration](/gateway/configuration#request-body-limit). TLS termination and proxy choice remain environment-owned; input forwarding must preserve multipart bytes and allow the configured finite input deadline.
+
+Configure finite client and proxy outer timeouts to cover the sum of input transfer (`runtime.transfer_timeout`), execution (`policy.timeout`), and output transfer within the same call (such as direct REST or inline MCP delivery, bounded by `runtime.transfer_timeout`). A shorter caller deadline or cancellation takes priority; these settings do not extend any server phase deadline.
+
 ## Docker Optional Usage
 
 Docker images and Docker Compose are supported operational paths, but Docker is not required by the OSS core. Container env-file handling must preserve `GATEWAY_API_KEYS_JSON` and bcrypt `$` characters.

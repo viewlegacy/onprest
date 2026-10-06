@@ -32,7 +32,9 @@ The sections below explain the most operationally important variables in more de
 
 ## Request Body Limit
 
-`GATEWAY_MAX_REQUEST_BODY_BYTES` applies to both `POST /api/v1/capabilities/{name}` and `POST /mcp`. The default is `1048576` bytes (1 MiB). The value must be a positive base-10 integer; non-integers, zero, negative values, and values larger than a signed 64-bit integer are startup errors rather than silent fallback. A restart is required after changing the environment. Size it for the largest legitimate JSON request while keeping a finite ingress memory bound; capability result limits such as `policy.max_output_bytes` are separate agent-side output controls.
+`GATEWAY_MAX_REQUEST_BODY_BYTES` applies to encoded JSON bodies at both `POST /api/v1/capabilities/{name}` and `POST /mcp`. The default is `1048576` bytes (1 MiB). The value must be a positive base-10 integer; non-integers, zero, negative values, and values larger than a signed 64-bit integer are startup errors rather than silent fallback. A restart is required after changing the environment. Size it for the largest legitimate JSON request while keeping a finite ingress memory bound; capability result limits such as `policy.max_output_bytes` are separate agent-side output controls.
+
+`GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` separately bounds complete multipart wire bodies (default `104857600`). `GATEWAY_MAX_REQUEST_BODY_BYTES` also bounds the cumulative encoded JSON parts within multipart. `GATEWAY_MAX_CONCURRENT_BODY_READERS` defaults to `16` and limits all REST/MCP input retention, including parsed JSON and queued Agent sends, until buffers are released. These are positive integers; invalid values prevent startup. Size the encoded JSON budget and concurrent slot count together for memory, allowing for decoder overhead and fixed transfer buffers. Full capacity returns 503 `BUSY` before reading another body. See [File input](/api/files#file-input) for framing, capability limits, and deadlines.
 
 ## Listen Address
 

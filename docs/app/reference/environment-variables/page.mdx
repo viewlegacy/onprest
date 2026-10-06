@@ -24,7 +24,9 @@ Empty values are treated the same as omitted values. `ONPREST_PUBLIC_BASE_URL` m
 | `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` | `10` | Per-source request rate |
 | `GATEWAY_RATE_LIMIT_BURST` | `20` | Per-source burst size |
 | `GATEWAY_EMIT_OPENAPI_SNAPSHOT` | `false` | When `true`, the gateway emits full cached OpenAPI metadata as an `openapi_snapshot` stdout event |
-| `GATEWAY_MAX_REQUEST_BODY_BYTES` | `1048576` | Maximum REST/MCP request body size in bytes; must be a positive integer |
+| `GATEWAY_MAX_REQUEST_BODY_BYTES` | `1048576` | Maximum encoded JSON/MCP body and cumulative multipart JSON-part bytes; positive integer |
+| `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` | `104857600` | Maximum entire multipart wire body; positive integer |
+| `GATEWAY_MAX_CONCURRENT_BODY_READERS` | `16` | Shared REST/MCP input slots held through complete sending and buffer release; positive integer |
 
 ## Example
 
@@ -44,6 +46,8 @@ GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$INgs32pPDl8EQAOTcQ1NN.e
 # GATEWAY_RATE_LIMIT_BURST=20
 # GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
 # GATEWAY_MAX_REQUEST_BODY_BYTES=1048576
+# GATEWAY_MAX_FILE_REQUEST_BODY_BYTES=104857600
+# GATEWAY_MAX_CONCURRENT_BODY_READERS=16
 ```
 
 ## Agent

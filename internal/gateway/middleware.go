@@ -33,6 +33,11 @@ func (s *Server) withRecovery(next http.Handler) http.Handler {
 
 func (s *Server) withAccess(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Early refusals must not trigger net/http's unread request-body drain.
+		// Input handlers clear this after acquiring their bounded body lease.
+		if r.URL.Path != "/ws/agent" && r.Body != nil && r.Body != http.NoBody {
+			w.Header().Set("Connection", "close")
+		}
 		start := time.Now()
 		corsAllowed := s.applyCORS(w, r)
 		if r.Method == http.MethodOptions {

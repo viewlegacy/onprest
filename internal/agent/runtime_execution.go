@@ -46,6 +46,7 @@ func (r *Runner) executeVersionedPrepared(ctx context.Context, req protocol.Requ
 				v.InputLimits["max_input_file_bytes"] = l.MaxFileBytes
 				v.InputLimits["max_total_input_file_bytes"] = l.MaxTotalFileBytes
 				v.InputLimits["max_input_files"] = l.MaxFiles
+				v.InputLimits["max_multipart_parts"] = r.versioned.Runtime()["input_limits"].(map[string]any)["max_multipart_parts"].(int64)
 				meta.Capabilities[name] = v
 			}
 		}

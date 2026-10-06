@@ -88,11 +88,13 @@ func (s *Scheduler) next() (scheduled, bool) {
 	var j scheduled
 	if len(s.control) > 0 {
 		j = s.control[0]
+		s.control[0] = scheduled{}
 		s.control = s.control[1:]
 		return j, true
 	}
 	if len(s.normal) > 0 && (len(s.order) == 0 || !s.lastNormal) {
 		j = s.normal[0]
+		s.normal[0] = scheduled{}
 		s.normal = s.normal[1:]
 		s.lastNormal = true
 		return j, true
@@ -103,6 +105,7 @@ func (s *Scheduler) next() (scheduled, bool) {
 		s.order = s.order[1:]
 		q := s.transfers[id]
 		j = q[0]
+		q[0] = scheduled{}
 		q = q[1:]
 		if len(q) > 0 {
 			s.order = append(s.order, id)
@@ -115,17 +118,45 @@ func (s *Scheduler) next() (scheduled, bool) {
 	return j, false
 }
 func (s *Scheduler) Run() error {
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		fail := s.failed
+		if fail == nil {
+			fail = context.Canceled
+		}
+		drain := func(q []scheduled) {
+			for i, j := range q {
+				q[i] = scheduled{}
+				j.run = nil
+				j.result <- fail
+			}
+		}
+		drain(s.control)
+		drain(s.normal)
+		for _, q := range s.transfers {
+			drain(q)
+		}
+		s.control = nil
+		s.normal = nil
+		s.transfers = nil
+		s.order = nil
+	}()
 	for {
 		j, ok := s.next()
 		if ok {
 			if s.ctx.Err() != nil {
+				j.run = nil
+				j.result <- s.ctx.Err()
 				return s.ctx.Err()
 			}
 			if j.ctx.Err() != nil {
+				j.run = nil
 				j.result <- j.ctx.Err()
 				continue
 			}
 			e := j.run()
+			j.run = nil
 			j.result <- e
 			if e != nil && !errors.Is(e, context.Canceled) && !errors.Is(e, context.DeadlineExceeded) {
 				s.mu.Lock()

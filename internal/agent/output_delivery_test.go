@@ -474,7 +474,7 @@ func TestFileProviderProductionReadPreparationSpoolFree(t *testing.T) {
 			var events []string
 			var detail bytes.Buffer
 			prepared, e := prepareAgent(context.Background(), Config{CapabilityFile: path}, memoryPreparationLog(&events, &detail))
-			if (e != nil) != input {
+			if e != nil {
 				t.Fatalf("input=%t error=%v", input, e)
 			}
 			if e == nil {

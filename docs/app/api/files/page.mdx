@@ -1,6 +1,50 @@
-# File Output
+# File Input and Output
 
-DB SELECT capabilities can generate CSV files. Read-only file capabilities return original bytes from configured folders. Declare outputs in [Capability YAML](/agent/capability-yaml#file-reads-and-csv-output); no upload or file write API is available.
+DB SELECT capabilities can generate CSV files. File capabilities save accepted input to configured writable folders and return independent snapshots from configured folders or their completed writes. Declare [file writes](/agent/capability-yaml#file-writes) and [outputs](/agent/capability-yaml#file-reads-and-csv-output) in YAML.
+
+## File input
+
+One capability call accepts files with ordinary arguments.
+
+### JSON and MCP
+
+REST JSON and MCP `tools/call.arguments` encode each declared file leaf as exactly `{"name":"report.pdf","mime_type":"application/pdf","data":"AQ=="}`. The `data` string uses canonical RFC 4648 padded Base64; whitespace, URL alphabet, missing padding and noncanonical trailing bits are rejected. Empty bytes use an empty string. `name` is a UTF-8 basename of 1–255 bytes with no path separators or control characters. MIME types are normalized to lowercase without parameters. Declared extensions, MIME types, `max_bytes` and `allow_empty` all apply. File leaves may appear in nested objects and arrays; their array order is preserved. Inputs cannot contain a host path, arbitrary URL, upload handle or internal file ID.
+
+### Multipart
+
+For larger files, use REST `multipart/form-data`. Each top-level file uses a binary part with the exact property name and a filename. A direct file array uses repeated binary parts with that same name. Other properties use JSON parts with `Content-Type: application/json`; nested files within those JSON parts use the inline representation. A filename-bearing binary file whose MIME type is `application/json` remains raw bytes. For example:
+
+```bash
+curl --fail --show-error \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  --form 'document=@./report.pdf;type=application/pdf' \
+  --form 'month="\"2026-10\"";type=application/json' \
+  'https://gateway.example.com/api/v1/capabilities/save_report'
+```
+
+The server accepts parts in any order and starts business work only after complete HTTP EOF and schema validation. It rejects duplicate scalar/object/single-file parts, unknown names, duplicate headers, transfer encodings, missing filenames, incomplete endings and nonempty epilogues. The normal ending CRLF is accepted. Omission differs from a zero-byte file. An explicitly empty direct file array must use JSON or MCP; multipart represents an optional array by omission. Required direct file arrays with `maxItems: 0` have no multipart media and return 415; optional zero-length arrays do not accept a binary part.
+
+### Input lifetime
+
+Gateway streams multipart to the Agent private spool over the existing outbound WebSocket. ACK backpressure stops HTTP reading. A late invalid argument cancels received input without running the capability. Input is request-owned and expires on cancellation, timeout or disconnect; it is not a resumable upload and has no public retrieval API. Successful writes remain business files, while returned output snapshots have independent lifetimes.
+
+### Limits and deadlines
+
+`GATEWAY_MAX_REQUEST_BODY_BYTES` defaults to 1 MiB for the entire encoded JSON/MCP request and for the sum of encoded multipart JSON parts. `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` defaults to 100 MiB for the entire multipart wire body. `GATEWAY_MAX_CONCURRENT_BODY_READERS` defaults to 16 and holds a shared input slot until sending finishes and all input buffers/queued payloads are released; a full capacity returns HTTP 503 `BUSY` before body reading. Multipart headers are limited to 8 KiB per part and aggregate framing to 1 MiB. Agent `runtime.input_limits.max_multipart_parts` defaults to 128.
+
+Input time starts at body admission and uses one fixed `runtime.transfer_timeout` budget, followed by a separate execution `policy.timeout`. JSON body reading also has a fixed 15-second Gateway upper bound. REST uses the shorter budget for the named capability; before a complete MCP request identifies the tool, its read budget uses the largest authorized input budget in the current metadata generation, bounded by 15 seconds. A fileless capability contributes the ordinary JSON budget. Selecting the tool does not restart its input clock. A disconnect during an ACK stall is bounded by that fixed input deadline. Encoded Base64 may hit the JSON wire limit before the decoded file limit; the client is never silently switched to another API.
+
+### Input errors
+
+REST returns 413 `LIMIT_EXCEEDED` for wire/JSON-part limits, 415 `INVALID_REQUEST` for unsupported media, 400 `INVALID_REQUEST` for malformed framing/JSON/Base64, 400 `VALIDATION_FAILED` for schema mismatch, and 422 `LIMIT_EXCEEDED` for capability input policy limits. MCP keeps HTTP authentication/capacity errors at the HTTP layer; errors before method parsing use the JSON-RPC parse error path, and recognized tool input failures return HTTP 200 with `isError: true` and the common error envelope.
+
+Confirmed pre-execution rejection has `outcome: not_started`. A REST timeout or cancellation after input commit returns HTTP 504 `EXECUTION_TIMEOUT` with `outcome: unknown`; a MCP tool carries the same common error in HTTP 200. A completed business effect cannot be inferred from a missing response. A REST body deadline returns HTTP 504; a MCP body failure before method parsing remains a JSON-RPC parse error.
+
+## OpenAPI clients
+
+Verified clients are Swagger UI 5.27.1 and OpenAPI Generator 7.25.0 `typescript-fetch` with TypeScript 5.9.3. Generate from the Gateway's OAS 3.1 document with `withoutRuntimeChecks=true`, `--type-mappings=null=null,Null=null` and `--global-property=skipFormModel=false`. Server input constraints remain authoritative. Media-specific schema titles prevent generated request model name collisions.
+
+The generated client selects JSON from this document. Its verified file input uses inline Base64, including file arrays, nested files and empty bytes; generated multipart is outside that client's verified support. Swagger UI supports repeated binary file parts and binary files with `application/json` MIME. JSON encoding limits still apply to the generated client. JavaScript numbers preserve only safe-range integers; use an HTTP client that preserves integer text for full int64 values. Swagger UI 5.27.1 emits ordinary string values as unquoted JSON-part bytes, which the server rejects. To send the JSON string `"x"` with that UI, its input must contain `"\"x\""`; omission and an empty JSON part also differ. These client limitations do not alter the input contract.
 
 ## References
 

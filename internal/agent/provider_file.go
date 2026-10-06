@@ -15,7 +15,7 @@ import (
 )
 
 // fileProvider shares the controller/transfer boundary for reads and writes.
-// Production prepares read-only definitions; writes remain internal.
+// Preparation validates file definitions without acquiring runtime input storage.
 type fileProvider struct {
 	cap            *contract.Capability
 	store          *artifacts.Store
@@ -28,7 +28,7 @@ type fileProvider struct {
 
 func prepareFileProvider(ctx context.Context, s *providers.Snapshot, store *artifacts.Store) (providers.Provider, error) {
 	p := &fileProvider{cap: s.Definition(), store: store, roots: map[string]*filesystem.Root{}, paths: map[string]string{}}
-	if p.cap.Executor.Type != "file" || (p.cap.Executor.Settings["write"] != nil && store == nil) {
+	if p.cap.Executor.Type != "file" {
 		return nil, errors.New("file provider needs private storage")
 	}
 	fail := func(e error) (providers.Provider, error) { return nil, errors.Join(e, p.Close()) }
@@ -170,7 +170,14 @@ func (p *fileProvider) Execute(ctx context.Context, in map[string]any, effects *
 	if len(files) > 0 {
 		var effect *providers.Effect
 		confirmed := 0
-		err = p.store.Save(ctx, files[0].Value.RequestID, files, OpenInput, func(confirmedFile bool) {
+		store := p.store
+		if store == nil {
+			store, _ = ctx.Value(artifactStoreKey{}).(*artifacts.Store)
+		}
+		if store == nil {
+			return result, errors.New("private storage is unavailable")
+		}
+		err = store.Save(ctx, files[0].Value.RequestID, files, OpenInput, func(confirmedFile bool) {
 			published = true
 			if effect == nil {
 				effect = effects.Begin()

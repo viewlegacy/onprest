@@ -275,6 +275,10 @@ func BuildOpenAPI(config *Config) map[string]any {
 			continue
 		}
 		input := c.InputMediaSchemas()
+		input.JSON["title"] = name + "JSONInput"
+		if input.Multipart != nil {
+			input.Multipart["title"] = name + "MultipartInput"
+		}
 		content := map[string]any{"application/json": map[string]any{"schema": input.JSON}}
 		if input.Multipart != nil {
 			content["multipart/form-data"] = map[string]any{"schema": input.Multipart, "encoding": input.Encoding}

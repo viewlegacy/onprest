@@ -944,10 +944,17 @@ func TestHTTPBodyReadDeadlineRejectsSlowBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
+	if resp.StatusCode != http.StatusGatewayTimeout {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("slow body status=%d body=%s", resp.StatusCode, body)
 	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || !bytes.Contains(body, []byte(`"code":"EXECUTION_TIMEOUT"`)) || !bytes.Contains(body, []byte(`"outcome":"not_started"`)) {
+		t.Fatalf("slow body response=%s err=%v", body, err)
+	}
+	waitForCondition(t, time.Second, func() bool { return len(s.bodySlots) == 0 }, "expired body input slot released")
+	t.Logf("incomplete Content-Length body returned HTTP %d, EXECUTION_TIMEOUT/not_started, input slots=%d", resp.StatusCode, len(s.bodySlots))
 	if s.httpSrv.IdleTimeout <= 0 {
 		t.Fatal("HTTP IdleTimeout is not configured")
 	}

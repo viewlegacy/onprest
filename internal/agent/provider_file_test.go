@@ -369,7 +369,7 @@ func TestFileProviderMissingDirectoryPreparationHasNoSideEffects(t *testing.T) {
 	}
 }
 
-func TestFileProviderProductionPrepareRemainsClosedAndSpoolFree(t *testing.T) {
+func TestFileProviderProductionPrepareWriteAndSpoolFree(t *testing.T) {
 	f := fileController(t, `{type: file, write: [{input: /document, source: exchange, name: x}]}`, "", "")
 	untouched := filepath.Join(f.base, "preflight-spool")
 	f.cf.Compiled.Runtime["spool_dir"] = untouched
@@ -378,13 +378,13 @@ func TestFileProviderProductionPrepareRemainsClosedAndSpoolFree(t *testing.T) {
 	var events []string
 	var detail bytes.Buffer
 	prepared, e := prepareAgent(context.Background(), Config{CapabilityFile: f.cf.ConfigPath}, memoryPreparationLog(&events, &detail))
-	if e == nil {
-		prepared.closeDatabase()
-		t.Fatal("production enabled file")
+	if e != nil {
+		t.Fatal(e)
 	}
+	prepared.closeDatabase()
 	for _, event := range preflightDriver.snapshot() {
 		if event != "load" {
-			t.Fatal("production file refusal opened database", event)
+			t.Fatal("file-only preparation opened database", event)
 		}
 	}
 	if _, e = os.Stat(untouched); !os.IsNotExist(e) {

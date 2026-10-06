@@ -17,6 +17,7 @@ import (
 type Server struct {
 	agentWire        func(*ws.Conn) textConn
 	cfg              Config
+	bodySlots        chan struct{}
 	logOut           io.Writer
 	logMu            sync.Mutex
 	agentMu          sync.RWMutex
@@ -59,12 +60,13 @@ type agentConn struct {
 }
 
 type agentWrite struct {
-	id      string
-	payload []byte
-	result  chan error
-	ctx     context.Context
-	control bool
-	cancel  context.CancelFunc
+	id           string
+	payload      []byte
+	result       chan error
+	ctx          context.Context
+	control      bool
+	releaseInput func()
+	cancel       context.CancelFunc
 }
 
 type requestSendState struct {
@@ -125,7 +127,13 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	if cfg.MaxRequestBodyBytes <= 0 {
 		cfg.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
 	}
-	s := &Server{cfg: cfg, logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, agentChallenges: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}, apiKeyAuthSlots: make(chan struct{}, maxConcurrentAPIKeyAuthentications)}
+	if cfg.MaxFileRequestBodyBytes <= 0 {
+		cfg.MaxFileRequestBodyBytes = 100 << 20
+	}
+	if cfg.MaxConcurrentBodyReaders <= 0 {
+		cfg.MaxConcurrentBodyReaders = 16
+	}
+	s := &Server{cfg: cfg, bodySlots: make(chan struct{}, cfg.MaxConcurrentBodyReaders), logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, agentChallenges: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}, apiKeyAuthSlots: make(chan struct{}, maxConcurrentAPIKeyAuthentications)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/ws/agent", s.handleAgentWS)

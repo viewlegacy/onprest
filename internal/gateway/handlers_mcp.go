@@ -92,7 +92,20 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := decodeMCPRequest(w, r, s.cfg.MaxRequestBodyBytes)
+	r, lease, admitted := s.acquireBody(r)
+	if !admitted {
+		w.Header().Set("Connection", "close")
+		s.mcpHTTPRejected(503, "BUSY", "input capacity is unavailable")
+		writeJSON(w, 503, commonAPIError(authRequestID(r), "BUSY", "input capacity is unavailable", "not_started"))
+		return
+	}
+	defer lease.Close()
+	w.Header().Del("Connection")
+	finishRead := startInputBodyRead(w, r, s.inputBodyReadBudget("", &key))
+	req, err := decodeMCPRequest(w, r, s.cfg.MaxRequestBodyBytes, s.inputDecodeLimits("", &key))
+	if phaseErr := finishRead(); phaseErr != nil {
+		err = phaseErr
+	}
 	if err != nil {
 		writeMCPError(w, nil, -32700, errJSONRPCParseError, "invalid json rpc")
 		return
@@ -195,7 +208,9 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	case "resources/read":
 		s.handleMCPResourceRead(w, r, req.ID, req.Params, key, protocolVersion)
 	case "tools/call":
-		s.handleMCPToolCall(w, r, req.ID, req.Params, key, protocolVersion, authRequestID(r), time.Now())
+		raw := req.Params
+		req.Params = nil
+		s.handleMCPToolCall(w, r, req.ID, raw, key, protocolVersion, authRequestID(r), time.Now())
 	default:
 		writeMCPError(w, req.ID, -32601, errJSONRPCMethodNotFound, "unsupported MCP method")
 	}
@@ -219,7 +234,7 @@ func mcpKnownClientNotificationMethod(method string) bool {
 	return false
 }
 
-func decodeMCPRequest(w http.ResponseWriter, r *http.Request, maxBodyBytes int64) (mcpRequest, error) {
+func decodeMCPRequest(w http.ResponseWriter, r *http.Request, maxBodyBytes int64, logical ...contract.Limits) (mcpRequest, error) {
 	var raw json.RawMessage
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.UseNumber()
@@ -230,6 +245,9 @@ func decodeMCPRequest(w http.ResponseWriter, r *http.Request, maxBodyBytes int64
 		return mcpRequest{}, err
 	}
 
+	if _, err := contract.DecodeWireJSON(raw, maxBodyBytes, logical...); err != nil {
+		return mcpRequest{}, err
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
 		return mcpRequest{}, nil
@@ -823,7 +841,8 @@ func mcpAcceptsJSON(values []string) bool {
 }
 
 func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id any, rawParams json.RawMessage, key APIKey, protocolVersion, requestID string, start time.Time) {
-	name, arguments, ok := decodeMCPToolCallParams(rawParams, protocolVersion)
+	name, arguments, ok := decodeMCPToolCallParams(rawParams, protocolVersion, s.inputDecodeLimits("", &key))
+	rawParams = nil
 	if !ok {
 		s.accessLogProtocol("mcp", requestID, key.Name, "", http.StatusOK, errJSONRPCInvalidParams, "invalid tools/call params", start)
 		writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "invalid tools/call params")
@@ -854,7 +873,9 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 	}
 	fingerprint := sha256.Sum256([]byte(key.KeyHash))
 	ctx := context.WithValue(deliveryCtx, callIdentityKey{}, callIdentity{ID: requestID, Binding: hex.EncodeToString(fingerprint[:])})
-	result := s.callAgent(ctx, name, arguments)
+	ctx = context.WithValue(ctx, inputConsumedKey{}, func() { arguments = nil })
+	result := s.callInput(ctx, name, arguments)
+	arguments = nil
 	if output != nil {
 		duration, _ := time.ParseDuration(output.TransferTimeout)
 		var finish func()
@@ -898,7 +919,7 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 	logged = result
 }
 
-func decodeMCPToolCallParams(raw json.RawMessage, protocolVersion string) (string, map[string]any, bool) {
+func decodeMCPToolCallParams(raw json.RawMessage, protocolVersion string, logical ...contract.Limits) (string, map[string]any, bool) {
 	fields, ok := mcpJSONObjectFields(raw)
 	if !ok {
 		return "", nil, false
@@ -930,7 +951,7 @@ func decodeMCPToolCallParams(raw json.RawMessage, protocolVersion string) (strin
 	if _, ok := mcpJSONObjectFields(argumentsRaw); !ok {
 		return "", nil, false
 	}
-	value, err := contract.DecodeJSON(argumentsRaw, contract.Limits{MaxBytes: 16 << 20, MaxDepth: 32, MaxItems: 100000})
+	value, err := contract.DecodeWireJSON(argumentsRaw, int64(len(argumentsRaw)), logical...)
 	if err != nil {
 		return "", nil, false
 	}

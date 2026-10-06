@@ -101,9 +101,9 @@ func (f Frame) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(m)
 }
-func DecodeFrame(raw []byte) (Frame, error) {
+func DecodeFrame(raw []byte, logical ...contract.Limits) (Frame, error) {
 	var f Frame
-	value, e := contract.DecodeJSON(raw, contract.Limits{MaxBytes: ManagementBytes, MaxDepth: 32, MaxItems: 100000})
+	value, e := contract.DecodeWireJSON(raw, ManagementBytes, logical...)
 	if e != nil {
 		return f, e
 	}

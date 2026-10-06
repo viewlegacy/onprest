@@ -17,22 +17,24 @@ import (
 const defaultMaxRequestBodyBytes int64 = 1 << 20
 
 type Config struct {
-	Addr                string
-	PublicURL           string
-	PublicBaseURL       string
-	AgentPublicKey      string
-	APIKeys             []APIKey
-	CORSAllowedOrigins  []string
-	IPAllowList         []*net.IPNet
-	TrustedProxies      []*net.IPNet
-	RateLimit           RateLimitConfig
-	AgentTimeout        time.Duration
-	AgentWriteTimeout   time.Duration
-	AgentPingInterval   time.Duration
-	AgentPongTimeout    time.Duration
-	BodyReadTimeout     time.Duration
-	MaxRequestBodyBytes int64
-	EmitOpenAPISnapshot bool
+	Addr                     string
+	PublicURL                string
+	PublicBaseURL            string
+	AgentPublicKey           string
+	APIKeys                  []APIKey
+	CORSAllowedOrigins       []string
+	IPAllowList              []*net.IPNet
+	TrustedProxies           []*net.IPNet
+	RateLimit                RateLimitConfig
+	AgentTimeout             time.Duration
+	AgentWriteTimeout        time.Duration
+	AgentPingInterval        time.Duration
+	AgentPongTimeout         time.Duration
+	BodyReadTimeout          time.Duration
+	MaxRequestBodyBytes      int64
+	MaxFileRequestBodyBytes  int64
+	MaxConcurrentBodyReaders int
+	EmitOpenAPISnapshot      bool
 }
 
 type APIKey struct {
@@ -75,6 +77,20 @@ func LoadConfigFromEnv() (Config, error) {
 		return Config{}, errors.New("GATEWAY_MAX_REQUEST_BODY_BYTES must be > 0")
 	}
 
+	maxFileBytes, err := envInt64("GATEWAY_MAX_FILE_REQUEST_BODY_BYTES", 100<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxFileBytes <= 0 {
+		return Config{}, errors.New("GATEWAY_MAX_FILE_REQUEST_BODY_BYTES must be > 0")
+	}
+	bodyReaders, err := envInt("GATEWAY_MAX_CONCURRENT_BODY_READERS", 16)
+	if err != nil {
+		return Config{}, err
+	}
+	if bodyReaders <= 0 {
+		return Config{}, errors.New("GATEWAY_MAX_CONCURRENT_BODY_READERS must be > 0")
+	}
 	rps, err := envFloat("GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND", 10)
 	if err != nil {
 		return Config{}, err
@@ -101,12 +117,14 @@ func LoadConfigFromEnv() (Config, error) {
 			RequestsPerSecond: rps,
 			Burst:             burst,
 		},
-		AgentTimeout:        30 * time.Second,
-		AgentWriteTimeout:   5 * time.Second,
-		AgentPingInterval:   15 * time.Second,
-		AgentPongTimeout:    10 * time.Second,
-		BodyReadTimeout:     15 * time.Second,
-		MaxRequestBodyBytes: maxRequestBodyBytes,
+		AgentTimeout:             30 * time.Second,
+		AgentWriteTimeout:        5 * time.Second,
+		AgentPingInterval:        15 * time.Second,
+		AgentPongTimeout:         10 * time.Second,
+		BodyReadTimeout:          15 * time.Second,
+		MaxRequestBodyBytes:      maxRequestBodyBytes,
+		MaxFileRequestBodyBytes:  maxFileBytes,
+		MaxConcurrentBodyReaders: bodyReaders,
 	}
 	publicURL, err := normalizePublicURL(os.Getenv("GATEWAY_PUBLIC_URL"))
 	if err != nil {

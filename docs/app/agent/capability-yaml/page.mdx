@@ -46,7 +46,7 @@ capabilities:
       data: {}
 ```
 
-The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, and read-only file executors without file input. CSV, HTTP and Wasm executors, file writes and file input fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads select a named folder source.
+The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, and file read/write executors with file input. CSV, HTTP and Wasm executors fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads and writes select named folder sources.
 
 Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `onprest_` are reserved.
 
@@ -61,7 +61,7 @@ Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `
 | `runtime` | Execution concurrency, private spool, and persistent identity directory |
 | `gateway` | Gateway WebSocket URL and Agent signing key |
 | `sources.databases` | Named database connections selected by DB executors |
-| `sources.folders` | Fixed folder roots selected by file reads |
+| `sources.folders` | Fixed folder roots selected by file reads and writes |
 | `logging` | Local detail log settings; see [Agent Local Logs](/agent/local-logs#rotation) |
 | `defaults` | Applicable policy defaults |
 | `capabilities` | At least one named executable operation |
@@ -70,7 +70,7 @@ Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `
 
 Normal Agent startup opens `runtime.spool_dir` (default `./spool`, relative to the configuration directory) before receiving requests. It must be a private, writable directory owned by the Agent user, dedicated to one Agent process. Unsafe permissions, links, another process's lock, or recovery failure prevent startup. `runtime.spool_total_bytes` defaults to `1GiB`; this quota covers temporary input and output snapshots, unfinished save files, and cleanup reservations. Input and output snapshots do not survive restart as usable handles. Preserve the spool directory across restarts when it contains persistent cleanup records; see [spool recovery](/operations/troubleshooting#private-spool-recovery-prevents-startup) for startup failures and safe recovery. `validate` and `doctor` do not open the running Agent's spool.
 
-`runtime.control_limits` applies independently of capability rate limits to Agent management requests. Its fixed `read`, `write`, `cancel`, and `transfer` classes each accept `requests`, `per`, `burst`, and `max_concurrent`. The shared logical I/O budget uses `bytes_per_second` (default `8MiB`) and `burst_bytes` (default `16MiB`). `max_concurrent_transfers` defaults to `4`, with an effective concurrency cap of `8`. Refused management operations return `RATE_LIMITED` or `BUSY` and do not replace existing request state. File downloads use these fixed management limits in addition to their transfer deadline. They do not enable file input or file writes.
+`runtime.control_limits` applies independently of capability rate limits to Agent management requests. Its fixed `read`, `write`, `cancel`, and `transfer` classes each accept `requests`, `per`, `burst`, and `max_concurrent`. The shared logical I/O budget uses `bytes_per_second` (default `8MiB`) and `burst_bytes` (default `16MiB`). `max_concurrent_transfers` defaults to `4`, with an effective concurrency cap of `8`. Refused management operations return `RATE_LIMITED` or `BUSY` and do not replace existing request state. File downloads use these fixed management limits in addition to their transfer deadline. These same management limits also bound input transfers.
 
 ## Sources and protected files
 
@@ -85,6 +85,10 @@ Database connection fields are under `sources.databases.<name>`. `password` and 
 Supported string formats are `email`, `uuid`, `date`, `date-time`, and `uri`. Patterns use a common subset: literals, character classes, groups, alternation, repetition, and `^`/`$` anchors. Lookaround, backreferences, inline flags, Unicode-property/POSIX classes, and unsupported escapes are rejected at compile time. `\d` and `\w` use ASCII classes; anchor a pattern when it must match the whole value.
 
 JSON integers remain signed int64. The API rejects duplicate JSON keys, invalid UTF-8, integer overflow, non-finite numbers, and excessive bytes, depth, or item count. The Agent applies `max_input_bytes`, `max_json_depth`, and `max_json_items` before and after default application. DB input does not accept files. SQL named parameters must refer to declared scalar input properties.
+
+File input uses `type: file`, optional `extensions`, `mime_types`, positive `max_bytes`, and `allow_empty` (default true). Extensions are ASCII names without a leading dot, normalized to lowercase; MIME restrictions and extensions both apply. The [public file input representations](/api/files#file-input) are generated from this schema. `policy.max_input_file_bytes`, `max_total_input_file_bytes`, and `max_input_files` default to `32MiB`, `64MiB`, and `16`. A leaf's `max_bytes` can narrow the single-file policy. JSON and file bytes use separate budgets.
+
+`runtime.input_limits` sets positive `max_pending_requests` (default 16), `max_multipart_parts` (128), and `max_recent_requests` (4096). `runtime.transfer_timeout` defaults to `60s`, at most `300s`, and bounds the full input phase without restarting for another part. `policy.timeout` bounds execution after complete validated input.
 
 ## Policy
 
@@ -114,6 +118,30 @@ Normal output selects declared fields recursively, then validates their types an
 The DB adapter normalizes native driver values before output validation; output declarations never coerce strings to numbers or other types. See [Database JSON values](/databases#json-values) for decimal, binary, timestamp and NULL representations.
 
 DML runs in one transaction. The Agent validates affected count, output selection/types/constraints and capacity before commit. Validation failure confirms rollback before reporting `rolled_back`; an unconfirmed commit or rollback reports `OUTCOME_UNKNOWN` with `unknown`. A successful commit is never executed again. Check independent database state before retrying any mutation with an unknown outcome.
+
+## File writes
+
+A file executor's `write` list binds existing required file positions with RFC 6901 pointers, such as `/document` or `/documents`. Direct file arrays used by a required write binding must declare `minItems: 1`. Each write chooses a prepared `source` folder with `access: write` or `read_write`, optional relative `path`, and exactly one of a fixed `name` or `name_from: input`. Destination directories must already exist. Input display names become business names only with explicit `name_from: input`.
+
+```yaml
+sources:
+  folders:
+    exchange: {root: ./exchange, access: read_write}
+capabilities:
+  save_report:
+    executor:
+      type: file
+      write: [{input: /document, source: exchange, name: report.pdf}]
+      read: {written: true}
+    input:
+      properties:
+        document: {type: file, extensions: [pdf], mime_types: [application/pdf], max_bytes: 8MiB}
+        month: {type: string}
+      required: [document]
+    output: {files: {}}
+```
+
+Writes validate all destination names and capacity before publication, stage privately, and publish using native no-replace operations. Existing files conflict by default. `overwrite: true` uses safe native exchange on Linux/macOS; replacing an existing target is rejected on Windows and on filesystems without the required primitive. The server rejects links, changed identities, reserved names, and unsafe destinations. A later partial publication reports an unknown outcome and does not delete completed business files. `read.written: true` returns completed writes in write/array order; `read.source` selects independently after all saves. Save-only capabilities succeed with `data: null` and `files: []`. Validation and doctor prepare definitions without writing business files or acquiring the running spool.
 
 ## File reads and CSV output
 
@@ -153,7 +181,7 @@ The `executor.read.selector` settings are:
 | `take` | `1` | Positive integer limiting selected files; REST direct requires `take: 1` and omitted `output.data` |
 | `scan_limit` | `10000` | Positive integer bounding all inspected entries across the request, including nonmatches, directories and reserved names |
 
-Exactly one of `name` and `name_regex` is required. Names are case-sensitive basenames without Unicode normalization. Equal sort values use ascending root-relative UTF-8 path order before applying `take`. Exceeding `scan_limit` returns `LIMIT_EXCEEDED` without a partial selection; no matching files returns `NOT_FOUND`. Symlinks, hardlinks, special files, filesystem boundaries and reserved temporary names are rejected. Complete producer writes in a private temporary file and atomically rename into the selected completed name. Preparation validates and fixes folder roots without saving business files; `validate` and `doctor` keep their non-destructive behavior. File input and `executor.write` are unavailable.
+Exactly one of `name` and `name_regex` is required. Names are case-sensitive basenames without Unicode normalization. Equal sort values use ascending root-relative UTF-8 path order before applying `take`. Exceeding `scan_limit` returns `LIMIT_EXCEEDED` without a partial selection; no matching files returns `NOT_FOUND`. Symlinks, hardlinks, special files, filesystem boundaries and reserved temporary names are rejected. Complete producer writes in a private temporary file and atomically rename into the selected completed name. Preparation validates and fixes folder roots without saving business files; `validate` and `doctor` keep their non-destructive behavior. File inputs and `executor.write` use the same schema and prepared folder roots; see [File writes](#file-writes) and [File input](/api/files#file-input).
 
 DB SELECT capabilities can generate CSV from the same selected and validated rows:
 

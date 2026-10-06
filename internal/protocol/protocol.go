@@ -107,6 +107,9 @@ func (r Response) MarshalJSON() ([]byte, error) {
 	} else if r.Error != nil {
 		m["type"] = "error"
 		m["error"] = r.Error
+		if r.Metrics != nil {
+			m["metrics"] = r.Metrics
+		}
 	} else {
 		var value map[string]json.RawMessage
 		if e := json.Unmarshal(r.Result, &value); e != nil {
@@ -162,6 +165,16 @@ func (r *Response) UnmarshalJSON(b []byte) error {
 		raw, _ := json.Marshal(m["metrics"])
 		e = decodeFixedFields(raw, &r.Metrics)
 	case "error":
+		allowed["metrics"] = true
+		if metrics, present := m["metrics"]; present {
+			if _, ok := metrics.(map[string]any); !ok {
+				return errors.New("metrics must be object")
+			}
+			raw, _ := json.Marshal(metrics)
+			if e = decodeFixedFields(raw, &r.Metrics); e != nil {
+				return e
+			}
+		}
 		allowed["error"] = true
 		if _, ok := m["error"].(map[string]any); !ok {
 			return errors.New("error is required")
@@ -188,8 +201,14 @@ func decodeFixedFields(raw []byte, target any) error {
 	return decoder.Decode(target)
 }
 
-func (r *Request) UnmarshalJSON(b []byte) error {
-	value, e := contract.DecodeJSON(b, contract.Limits{MaxBytes: 16 << 20, MaxDepth: 32, MaxItems: 100000})
+func DecodeRequest(b []byte, logical contract.Limits) (Request, error) {
+	var r Request
+	e := r.decodeJSON(b, logical)
+	return r, e
+}
+func (r *Request) UnmarshalJSON(b []byte) error { return r.decodeJSON(b) }
+func (r *Request) decodeJSON(b []byte, logical ...contract.Limits) error {
+	value, e := contract.DecodeWireJSON(b, 16<<20, logical...)
 	if e != nil {
 		return e
 	}

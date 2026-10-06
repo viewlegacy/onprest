@@ -58,6 +58,20 @@ func (r *Runner) serveTransport(parent context.Context, conn *ws.Conn) {
 	s := &transportSession{runner: r, ctx: ctx, cancel: cancel, conn: conn, generation: randomTransportID(), calls: map[string]*inputCall{}, owners: map[string]retainedOwner{}, opens: map[string]*pendingTransfer{}, inflight: &inflightRegistry{cancels: map[string]context.CancelFunc{}}}
 	s.scheduler = ws.NewScheduler(ctx)
 	s.transfers = ws.NewTransfers(ctx, s.sendTransferFrame)
+	wireLimits := contract.Limits{MaxDepth: 32, MaxItems: 100000, MaxFiles: 16}
+	for _, name := range r.versioned.Names() {
+		snapshot, _ := r.versioned.Snapshot(name)
+		l := snapshot.Definition().Limits()
+		if l.MaxDepth > wireLimits.MaxDepth {
+			wireLimits.MaxDepth = l.MaxDepth
+		}
+		if l.MaxItems > wireLimits.MaxItems {
+			wireLimits.MaxItems = l.MaxItems
+		}
+		if l.MaxFiles > wireLimits.MaxFiles {
+			wireLimits.MaxFiles = l.MaxFiles
+		}
+	}
 	runtime := r.versioned.Runtime()
 	s.recentMax = int(runtime["input_limits"].(map[string]any)["max_recent_requests"].(int64))
 	s.wg.Add(2)
@@ -156,7 +170,7 @@ func (r *Runner) serveTransport(parent context.Context, conn *ws.Conn) {
 			default:
 				return
 			}
-			f, e := protocol.DecodeFrame(raw)
+			f, e := protocol.DecodeFrame(raw, wireLimits)
 			if e != nil {
 				return
 			}
@@ -181,8 +195,8 @@ func (r *Runner) serveTransport(parent context.Context, conn *ws.Conn) {
 			s.dispatch(protocol.Frame{Type: "cancel", ID: string(guard.ID)})
 			continue
 		}
-		var req protocol.Request
-		if json.Unmarshal(raw, &req) != nil {
+		req, decodeErr := protocol.DecodeRequest(raw, wireLimits)
+		if decodeErr != nil {
 			s.respond(ctx, protocol.Response{ID: string(guard.ID), Error: inputFailure("INVALID_REQUEST")})
 			continue
 		}
@@ -410,7 +424,7 @@ func (s *transportSession) dispatch(f protocol.Frame) {
 			c := s.calls[f.ID]
 			s.mu.Unlock()
 			if c != nil {
-				s.abort(c, "", false)
+				s.abort(c, "EXECUTION_TIMEOUT", true)
 			}
 		case "transfer_cancel":
 			s.mu.Lock()
@@ -536,8 +550,8 @@ func (s *transportSession) abort(c *inputCall, code string, notify bool) {
 			}
 		}()
 	}
-	if notify && code != "" {
-		s.respond(s.ctx, protocol.Response{ID: c.owner.RequestID, Error: inputFailure(code)})
+	if notify && code != "" && !executing {
+		s.respond(s.ctx, protocol.Response{ID: c.owner.RequestID, Error: inputFailure(code), Metrics: inputCallMetrics(c)})
 	}
 }
 func (s *transportSession) openInput(f protocol.Frame, release, opened func()) {
@@ -657,7 +671,7 @@ func (s *transportSession) commit(f protocol.Frame) {
 	execution, _ := time.ParseDuration(c.cap.Policy["timeout"].(string))
 	ctx, cancel := context.WithDeadline(c.ctx, time.Now().Add(execution))
 	defer cancel()
-	out, failure := s.runner.controller.Execute(ctx, ExecutionRequest{ID: f.ID, Capability: c.owner.Capability, DefinitionHash: c.owner.DefinitionHash, Params: params, Deadline: deadlineOfContext(ctx), admitted: true, input: c.request, owner: c.owner, stager: scope})
+	out, failure := s.runner.controller.Execute(context.WithValue(ctx, artifactStoreKey{}, s.runner.store), ExecutionRequest{ID: f.ID, Capability: c.owner.Capability, DefinitionHash: c.owner.DefinitionHash, Params: params, Deadline: deadlineOfContext(ctx), admitted: true, input: c.request, owner: c.owner, stager: scope})
 	if out != nil {
 		defer out.Close()
 	}
@@ -666,14 +680,14 @@ func (s *transportSession) commit(f protocol.Frame) {
 	c.terminal = true
 	s.mu.Unlock()
 	if failure != nil {
-		s.respond(s.ctx, protocol.Response{ID: f.ID, Error: failure})
+		s.respond(s.ctx, protocol.Response{ID: f.ID, Error: failure, Metrics: inputCallMetrics(c)})
 		return
 	}
 	descriptors := []contract.PublicFileDescriptor{}
 	if scope != nil {
 		retained, e := scope.Retain(out.Files)
 		if e != nil {
-			s.respond(s.ctx, protocol.Response{ID: f.ID, Error: inputFailure(artifactCode(e))})
+			s.respond(s.ctx, protocol.Response{ID: f.ID, Error: &contract.ErrorValue{Code: artifactCode(e), Message: executionMessage(artifactCode(e)), Outcome: "unknown"}, Metrics: inputCallMetrics(c)})
 			return
 		}
 		owner := retainedOwner{owner: c.owner, files: map[string]artifacts.Descriptor{}}
@@ -769,4 +783,9 @@ func (s *transportSession) capacity(id string) bool {
 	}
 	s.inflight.mu.Unlock()
 	return ids[id] || len(ids) < s.recentMax
+}
+
+func inputCallMetrics(c *inputCall) *protocol.Metrics {
+	count, bytes := c.request.InputUsage(c.owner)
+	return &protocol.Metrics{ExecutorKind: c.cap.Executor.Type, InputFileCount: count, InputFileBytes: bytes}
 }

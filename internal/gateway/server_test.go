@@ -312,7 +312,7 @@ func TestCapabilityEndpointHTTPErrorCases(t *testing.T) {
 		wantCode    string
 		wantMessage string
 	}{
-		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusUnsupportedMediaType, wantCode: errGatewayInvalidRequest, wantMessage: "Content-Type must be application/json"},
+		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusUnsupportedMediaType, wantCode: errGatewayInvalidRequest, wantMessage: "unsupported input media type"},
 		{name: "invalid-json", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest, wantMessage: "invalid json body"},
 		{name: "method", method: http.MethodGet, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed, wantCode: errGatewayMethodNotAllowed, wantMessage: "use POST"},
 		{name: "empty-name", method: http.MethodPost, path: "/api/v1/capabilities/", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound, wantMessage: "capability not found"},
@@ -976,8 +976,8 @@ func TestCapabilityErrorsAreAccessLoggedWithoutSensitiveData(t *testing.T) {
 	if entry["http_status"] != float64(http.StatusUnsupportedMediaType) || entry["error_code"] != errGatewayInvalidRequest {
 		t.Fatalf("unexpected access log status/code: %#v", entry)
 	}
-	if entry["error_message"] != "Content-Type must be application/json" {
-		t.Fatalf("error_message = %#v, want Content-Type must be application/json", entry["error_message"])
+	if entry["error_message"] != "unsupported input media type" {
+		t.Fatalf("error_message = %#v, want unsupported input media type", entry["error_message"])
 	}
 	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "password") {
 		t.Fatalf("access log leaked request params: %s", logs.String())

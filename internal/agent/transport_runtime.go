@@ -57,6 +57,7 @@ func randomTransportID() string {
 	return hex.EncodeToString(b[:])
 }
 
+type artifactStoreKey struct{}
 type inputAccessKey struct{}
 type inputAccess struct {
 	request *artifacts.Request

@@ -15,12 +15,12 @@ The public gateway handles routing, identity, edge rate limits, and observabilit
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
-Read-only folder downloads and DB-generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Output](https://docs.onprest.viewlegacy.com/api/files).
+File capabilities accept files in REST JSON, streaming multipart, or MCP calls, save them to configured writable folders, and return independent folder snapshots. File outputs and DB-generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Input and Output](https://docs.onprest.viewlegacy.com/api/files).
 
 ## Start Here
 
 - **Try it locally:** [Quick Start](#quick-start)
-- **Download a file without a database:** [File download example](examples/file-output/)
+- **Use files without a database:** [File input example](examples/file-input/) and [file download example](examples/file-output/)
 - **Understand the architecture:** [Architecture](#architecture), [Responsibility Split](#responsibility-split), [Trust Boundary](#trust-boundary)
 - **Define capabilities:** [Capability Boundary](#capability-boundary)
 - **Use with AI agents:** [AI Agents and MCP](#ai-agents-and-mcp)
@@ -117,7 +117,7 @@ The gateway can be useful without being trusted with meaning.
 | Database credentials | No | Yes |
 | Raw database schema knowledge | No | Yes |
 | Business logic and execution meaning | No | Yes |
-| Parameter validation | No | Yes |
+| Parameter validation | Metadata-based ingress validation | Revalidation before execution |
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
 | SELECT output allow-list / mutation count-only contract | No | Yes |
@@ -433,7 +433,7 @@ Docker is optional. The primary deployment unit is the binary.
 
 Onprest exposes the same approved capabilities through REST and MCP.
 
-- `POST /api/v1/capabilities/{name}` calls a capability with JSON params
+- `POST /api/v1/capabilities/{name}` calls a capability with JSON params or declared multipart file inputs
 - `GET /api/v1/files/{id}` downloads a returned file reference with the original caller credential
 - `POST /mcp` supports MCP `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, and `resources/read`
 - `GET /openapi.json` returns API-key-filtered OpenAPI
@@ -465,7 +465,7 @@ Recommended next reads:
 - [Gateway configuration](https://docs.onprest.viewlegacy.com/gateway/configuration)
 - [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)
 - [REST API](https://docs.onprest.viewlegacy.com/api/rest)
-- [File Output](https://docs.onprest.viewlegacy.com/api/files)
+- [File Input and Output](https://docs.onprest.viewlegacy.com/api/files)
 - [MCP](https://docs.onprest.viewlegacy.com/api/mcp)
 - [Security model](https://docs.onprest.viewlegacy.com/security)
 - [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment)

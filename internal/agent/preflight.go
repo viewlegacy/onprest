@@ -148,10 +148,6 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 			}
 			return p, e
 		}, "file": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
-			cap := snapshot.Definition()
-			if _, writes := cap.Executor.Settings["write"]; writes || schemaHasFile(cap.Input) {
-				return nil, errors.New("file writes and file input are not available")
-			}
 			return prepareFileProvider(ctx, snapshot, nil)
 		}})
 		versioned, err := registry.Prepare(ctx, cf.Compiled, cfg.CapabilityFile, providers.ResolveOptions{})

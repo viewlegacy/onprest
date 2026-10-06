@@ -2,7 +2,7 @@
 
 Onprest is designed to expose only agent-defined capabilities, not the database itself.
 
-The agent prepares DB and read-only file capabilities at startup. DB capabilities are classified as SELECT or mutation. Mutations execute in explicit transactions. When data output is enabled, they publish native affected count only after a successful commit; omitted output publishes null data while retaining measured metrics. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+The agent prepares DB and file read/write capabilities at startup. DB capabilities are classified as SELECT or mutation. Mutations execute in explicit transactions. When data output is enabled, they publish native affected count only after a successful commit; omitted output publishes null data while retaining measured metrics. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
 
 ```text
 [API user / MCP client]
@@ -25,7 +25,7 @@ The agent prepares DB and read-only file capabilities at startup. DB capabilitie
 3. Start the agent inside the customer network.
 4. The agent connects outbound to the gateway.
 5. REST and MCP clients call only capabilities their API key can access.
-6. The agent validates input, applies policy, executes prepared SQL or reads completed files from a fixed folder, validates selected output, and returns data or independent file snapshots.
+6. The agent validates input, applies policy, executes prepared SQL or reads/writes files in configured folders, validates selected output, and returns data or independent file snapshots.
 
 The gateway does not receive private schema knowledge, SQL, DSNs, DB credentials, or execution rules. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations. The gateway receives only the agent-generated public capability contract needed for OpenAPI and MCP discovery.
 
@@ -59,7 +59,7 @@ Even if the gateway is compromised, the attacker can learn the Agent-defined pub
 | Database credentials | No | Yes |
 | Raw database schema knowledge | No | Yes |
 | Business logic and execution meaning | No | Yes |
-| Parameter validation | No | Yes |
+| Parameter validation | Metadata-based ingress validation | Revalidation before execution |
 | Execution policy | No | Yes |
 | Prepared SQL execution | No | Yes |
 | SELECT output allow-list / mutation count-only contract | No | Yes |
@@ -80,7 +80,7 @@ The OSS core is two independent binaries.
 | Component | Deployment unit | Responsibility |
 |---|---|---|
 | gateway | `onprest-gateway` | REST / MCP / OpenAPI / healthz / WebSocket / API key auth / capability auth |
-| agent | `onprest-agent` | YAML lint / source preparation / input validation / SQL execution or folder reads / output validation / local detail logs |
+| agent | `onprest-agent` | YAML lint / source preparation / input validation / SQL execution or configured folder reads/writes / output validation / local detail logs |
 
 ## Gateway Responsibilities
 
@@ -98,7 +98,7 @@ The gateway is a Go single binary and does not persist application state. It rea
 - agent WebSocket endpoint
 - stdout JSON logging
 - graceful shutdown
-- one request-body limit for both REST and MCP, configured by gateway env and defaulting to 1 MiB
+- separate encoded JSON and multipart input limits; see [Gateway configuration](/gateway/configuration#request-body-limit)
 
 Agent connections are limited to one live connection. Before upgrade, the gateway issues a one-time, one-minute challenge that is included in the Ed25519-signed handshake and consumed atomically. Issued challenges do not survive a gateway restart, so a complete pre-restart handshake cannot be replayed afterward. Non-loopback agent transport requires `wss://` by default. The gateway sends WebSocket ping frames and requires timely pong traffic, so a stale TCP session is closed and a replacement may connect. If another agent tries to connect while the existing session is still live, the gateway rejects it and writes a warning log.
 
@@ -113,7 +113,7 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - `capability.yaml` lint
 - DB ping
 - SQL EXPLAIN verification
-- folder root validation and read-only file snapshots
+- folder root validation, input ownership, atomic file saves, and independent snapshots
 - input schema validation
 - policy enforcement
 - optional per-capability Agent rate limiting before execution admission
@@ -128,7 +128,7 @@ Normal startup and `onprest-agent validate` share the same configuration and dat
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 
-File snapshots are retained in the Agent private spool. Gateway issues authenticated, expiring references from an explicit configured origin and streams downloads without persisting bodies. File writes and file input are not available. See [File Output](/api/files) for lifetime, caller separation and transfer limits.
+File snapshots are retained in the Agent private spool. Gateway issues authenticated, expiring references from an explicit configured origin and streams downloads without persisting bodies. File input uses one REST JSON/multipart or MCP arguments call. Complete input validation and EOF precede execution; multipart streams to Agent spool with ACK backpressure. File saves target prepared writable folders. See [File Output](/api/files) for lifetime, caller separation and transfer limits.
 
 ## Capability Tunnel
 

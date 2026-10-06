@@ -105,6 +105,30 @@ func writeCanonical(b *bytes.Buffer, v any) error {
 	return nil
 }
 
+// DecodeWireJSON checks JSON syntax, duplicate keys and encoding within a
+// finite encoded byte budget. Capability depth/item limits apply afterwards to
+// the logical input, independently of transport envelope and inline file data.
+func DecodeWireJSON(data []byte, maxBytes int64, logical ...Limits) (any, error) {
+	l := Limits{MaxDepth: 32, MaxItems: 100000, MaxFiles: 16}
+	if len(logical) > 0 {
+		l = logical[0]
+	}
+	// Envelope fields and inline file metadata are not logical input values.
+	// Saturate against the encoded wire size before adding finite allowances.
+	add := func(value, extra int64) int64 {
+		if value < 0 || value >= maxBytes || extra >= maxBytes-value {
+			return maxBytes
+		}
+		return value + extra
+	}
+	fileValues := maxBytes
+	if l.MaxFiles >= 0 && l.MaxFiles < maxBytes/8 {
+		fileValues = l.MaxFiles * 8
+	}
+	items := add(add(l.MaxItems, fileValues), 128)
+	return DecodeJSON(data, Limits{MaxBytes: maxBytes, MaxDepth: add(l.MaxDepth, 8), MaxItems: items})
+}
+
 // DecodeJSON rejects duplicate keys and invalid Unicode before encoding/json
 // can replace them, and bounds bytes, nesting, and total values during decode.
 func DecodeJSON(data []byte, limits Limits) (any, error) {

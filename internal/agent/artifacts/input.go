@@ -348,3 +348,13 @@ func join(a, b error) error {
 	}
 	return safe(errors.Join(a, b))
 }
+
+// InputUsage reports receiver-validated file admissions and accepted spool bytes.
+func (r *Request) InputUsage(o Owner) (int64, int64) {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	if o != r.owner {
+		return 0, 0
+	}
+	return int64(len(r.files)), r.bytes
+}

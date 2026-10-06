@@ -26,7 +26,7 @@ Accept: application/json, text/event-stream
 
 Application requests other than `POST` return HTTP 405. Browser requests must use an origin allowed by `GATEWAY_CORS_ALLOWED_ORIGINS`; requests without `Origin` remain valid for non-browser clients. See [Gateway Configuration](/gateway/configuration) for CORS settings.
 
-The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The gateway also bounds body-read time. See [Gateway Configuration](/gateway/configuration).
+The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The Gateway also bounds body-read time. All methods acquire a shared input slot before parsing; a full `GATEWAY_MAX_CONCURRENT_BODY_READERS` capacity returns HTTP 503 `BUSY`. See [Gateway Configuration](/gateway/configuration).
 
 ## Client configuration
 
@@ -113,6 +113,10 @@ The Gateway maps explicitly supplied `x-onprest-annotations` values to MCP's `re
 The tool name maps to a capability name and `arguments` maps to capability params. `name` is required, and `arguments` must be a JSON object when supplied. Business results use the [REST envelope](/api/rest), with a Gateway-assigned `request_id` and `result.data` / `result.files`. Every supported version includes that envelope as a text `content` item. `2025-06-18` and `2025-11-25` additionally include the same JSON as `structuredContent`; `2025-03-26` omits it. The same version distinction applies to execution-error results.
 
 SELECT data contains `rows` and `count`; mutation data contains the native affected `count`, including zero as success. Omitting output publishes `data: null` and `files: []` while still executing.
+
+## File arguments
+
+All three protocol versions accept inline file values in declared `tools/call.arguments` positions, including nested objects and file arrays. Use the exact `name`, `mime_type`, and canonical Base64 `data` fields described in [File input](/api/files#file-input). Preserve signed-int64 input values with a client that can encode them exactly. MCP attachment widgets and resource URIs are not automatically converted into file input, and the MCP endpoint accepts JSON only. A recognized tool's schema/file-input rejection returns HTTP 200 with `isError: true` and the common safe error envelope. Files reach the Agent input barrier before execution; outputs follow the independent configured MCP delivery mode.
 
 ## File resources
 

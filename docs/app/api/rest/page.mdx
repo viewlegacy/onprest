@@ -8,7 +8,7 @@ Execute a prepared capability with `POST /api/v1/capabilities/{name}`, `Authoriz
 }
 ```
 
-Input follows the capability schema. Duplicate keys, invalid UTF-8, signed-int64 overflow, extra top-level values and non-object bodies are rejected. The Gateway body limit defaults to 1 MiB and uses `GATEWAY_MAX_REQUEST_BODY_BYTES`; wire-body overflow returns HTTP 413 `LIMIT_EXCEEDED`, and an unsupported REST content type returns HTTP 415 `INVALID_REQUEST`. Capability input limits are also enforced by the Agent.
+Input follows the capability schema. Duplicate keys, invalid UTF-8, signed-int64 overflow, extra top-level values and non-object bodies are rejected. The Gateway encoded JSON body limit defaults to 1 MiB and uses `GATEWAY_MAX_REQUEST_BODY_BYTES`; wire-body overflow returns HTTP 413 `LIMIT_EXCEEDED`, and an unsupported REST content type returns HTTP 415 `INVALID_REQUEST`. Gateway and Agent enforce the same capability input limits. File schemas also accept streaming `multipart/form-data`; see [File Input and Output](/api/files#file-input).
 
 ## Success response
 

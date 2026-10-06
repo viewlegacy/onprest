@@ -22,6 +22,15 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
 
 Every request event has `count`. Successful SELECT and mutation calls use a non-negative JSON integer; every failure and pre-agent branch uses `null`. This preserves the difference between a successful zero-row mutation and a failure. Rows, SQL, and params are never logged.
 
+Agent-confirmed input metrics are separate from output counters:
+
+| Field | Meaning |
+|---|---|
+| `input_file_count` | Measured input file count |
+| `input_file_bytes` | Measured decoded input file bytes; excludes encoded Base64 and multipart framing |
+
+Successful calls include these counters. Rejections and cancellations include only measurements confirmed by the Agent; unconfirmed measurements are omitted. The Gateway does not delay a timeout or cancellation response for late measurements. They describe received input, while `file_count` counts published output files and `response_bytes` measures published data. Logs do not enumerate file contents, names, Base64, or local paths.
+
 The request log is intentionally small. It is useful for observability without turning gateway into a sensitive data sink.
 
 `protocol` is `rest` for REST capability calls and `mcp` for MCP `tools/call` calls. Each REST capability call emits one request event; its status and public error code/message match the HTTP response.

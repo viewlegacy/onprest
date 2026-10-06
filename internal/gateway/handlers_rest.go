@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"github.com/viewlegacy/onprest/internal/contract"
+	"github.com/viewlegacy/onprest/internal/protocol"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -41,39 +43,80 @@ func (s *Server) handleCapability(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, commonAPIError(reqID, errGatewayMethodNotAllowed, "use POST", "not_started"))
 		return
 	}
-	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		s.accessLog(reqID, key.Name, name, http.StatusUnsupportedMediaType, errGatewayInvalidRequest, "Content-Type must be application/json", start)
-		writeJSON(w, http.StatusUnsupportedMediaType, commonAPIError(reqID, errGatewayInvalidRequest, "Content-Type must be application/json", "not_started"))
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes))
-	if err != nil {
-		status, code := 400, "INVALID_REQUEST"
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			status, code = 413, "LIMIT_EXCEEDED"
-		}
-		s.accessLog(reqID, key.Name, name, status, code, "invalid request body", start)
-		writeJSON(w, status, commonAPIError(reqID, code, "invalid request body", "not_started"))
-		return
-	}
-	value, err := contract.DecodeJSON(body, contract.Limits{MaxBytes: s.cfg.MaxRequestBodyBytes, MaxDepth: 32, MaxItems: 100000})
-	params, ok := value.(map[string]any)
-	if err != nil || !ok || params == nil {
-		s.accessLog(reqID, key.Name, name, 400, "INVALID_REQUEST", "invalid json body", start)
-		writeJSON(w, 400, commonAPIError(reqID, "INVALID_REQUEST", "invalid json body", "not_started"))
+	media, attributes, mediaErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if mediaErr != nil || media != "application/json" && media != "multipart/form-data" || media == "multipart/form-data" && attributes["boundary"] == "" {
+		s.accessLog(reqID, key.Name, name, 415, "INVALID_REQUEST", "unsupported input media type", start)
+		writeJSON(w, 415, commonAPIError(reqID, "INVALID_REQUEST", "unsupported input media type", "not_started"))
 		return
 	}
 	fingerprint := sha256.Sum256([]byte(key.KeyHash))
-	ctx := context.WithValue(r.Context(), callIdentityKey{}, callIdentity{ID: reqID, Binding: hex.EncodeToString(fingerprint[:])})
-	result := s.callAgent(ctx, name, params)
+	r = r.WithContext(context.WithValue(r.Context(), callIdentityKey{}, callIdentity{ID: reqID, Binding: hex.EncodeToString(fingerprint[:])}))
+	var meta protocol.CapabilityMetadata
+	if media == "multipart/form-data" {
+		var e error
+		meta, e = s.ingressMetadata(name)
+		if e != nil {
+			result := inputResult(e)
+			w.Header().Set("Connection", "close")
+			s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
+			writeJSON(w, result.Status, resultError(reqID, result))
+			return
+		}
+	}
+	r, lease, admitted := s.acquireBody(r)
+	if !admitted {
+		w.Header().Set("Connection", "close")
+		s.accessLog(reqID, key.Name, name, 503, "BUSY", "input capacity is unavailable", start)
+		writeJSON(w, 503, commonAPIError(reqID, "BUSY", "input capacity is unavailable", "not_started"))
+		return
+	}
+	defer lease.Close()
+	w.Header().Del("Connection")
+	var result agentCallResult
+	if media == "multipart/form-data" {
+		result = s.callMultipart(w, r, name, meta, attributes["boundary"])
+	} else {
+		finishRead := startInputBodyRead(w, r, s.inputBodyReadBudget(name, nil))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.cfg.MaxRequestBodyBytes))
+		if phaseErr := finishRead(); phaseErr != nil {
+			result := inputResult(phaseErr)
+			s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
+			writeJSON(w, result.Status, resultError(reqID, result))
+			return
+		}
+		if err != nil {
+			status, code := 400, "INVALID_REQUEST"
+			var large *http.MaxBytesError
+			if errors.As(err, &large) {
+				status, code = 413, "LIMIT_EXCEEDED"
+			}
+			s.accessLog(reqID, key.Name, name, status, code, "invalid request body", start)
+			writeJSON(w, status, commonAPIError(reqID, code, "invalid request body", "not_started"))
+			return
+		}
+		value, err := contract.DecodeWireJSON(body, s.cfg.MaxRequestBodyBytes, s.inputDecodeLimits(name, nil))
+		body = nil
+		params, ok := value.(map[string]any)
+		value = nil
+		if err != nil || !ok || params == nil {
+			s.accessLog(reqID, key.Name, name, 400, "INVALID_REQUEST", "invalid json body", start)
+			writeJSON(w, 400, commonAPIError(reqID, "INVALID_REQUEST", "invalid json body", "not_started"))
+			return
+		}
+		ctx := context.WithValue(r.Context(), inputConsumedKey{}, func() { params = nil })
+		result = s.callInput(ctx, name, params)
+		params = nil
+	}
 	if !result.OK() {
+		if media == "multipart/form-data" {
+			w.Header().Set("Connection", "close")
+		}
 		s.accessExecutionLog("rest", reqID, key.Name, name, result, start)
 		writeJSON(w, result.Status, resultError(reqID, result))
 		return
 	}
 	s.agentMu.RLock()
-	meta := s.capabilities[name]
+	meta = s.capabilities[name]
 	s.agentMu.RUnlock()
 	if meta.Output != nil && meta.Output.REST == "direct" {
 		envelope, e := decodeSuccess(result)
