@@ -56,17 +56,17 @@ The command outputs a plaintext API key and bcrypt `key_hash`. Store only the ha
 ./onprest-agent validate --config ./capability.yaml --format json
 ```
 
-`validate` uses the same startup preparation as normal Agent startup: full YAML load and lint, database open, a Ping bounded to 10 seconds, and driver-specific EXPLAIN for every capability using its effective policy timeout. It exits before Gateway challenge retrieval or WebSocket connection and never executes a SELECT or mutation capability. A successful check therefore does not prove Gateway reachability or runtime behavior.
+`validate` uses the same startup preparation as normal Agent startup: full YAML load and lint, then preparation of only referenced providers and sources. DB capabilities open their databases, use a Ping bounded to 10 seconds, and run driver-specific EXPLAIN with their effective policy timeout. HTTP preparation snapshots its fixed source and credentials without sending business HTTP. It exits before Gateway challenge retrieval or WebSocket connection and never executes a capability. A successful check therefore does not prove Gateway reachability or runtime behavior.
 
 The config path priority is the same as normal startup: `--config`, `--capability-file`, `AGENT_CAPABILITY_FILE`, then `capability.yaml` beside the binary. `--format` is case-sensitive and accepts `text` (default) or `json`.
 
-Text success is one stdout line:
+For a DB configuration, text success is one stdout line:
 
 ```text
 validation succeeded: driver=postgres capabilities=2
 ```
 
-JSON success is one stdout object:
+For the same DB configuration, JSON success is one stdout object:
 
 ```json
 {
@@ -75,6 +75,8 @@ JSON success is one stdout object:
   "capabilities": 2
 }
 ```
+
+Without DB capabilities, JSON success omits `database_driver` and the text `driver=` value is empty. No database is required.
 
 Validation failures use exit `1`. Text failures go to stderr; JSON failures go to stdout with `valid:false`, a fixed `stage`, and a safe `message`. The fixed stages are `config`, `busy`, `detail_log`, `database_open`, `database_ping`, `capability_explain`, `canceled`, and `internal`. Usage errors, including unknown flags, formats, commands, and positional arguments, use exit `2`; help and successful validation use exit `0`.
 
@@ -91,7 +93,7 @@ After a crash, recovery remains bounded to strictly named validation temporary f
 ./onprest-agent doctor --config ./capability.yaml --format json
 ```
 
-`doctor` runs the same configuration and database preparation as `validate`, then checks the configured Gateway's DNS, TCP connection, TLS, challenge, and Agent-key verification. Each Gateway network stage is bounded to 10 seconds and the complete command to 60 seconds. A failed stage is reported as `failed` and dependent stages as `skipped`; `ws://` reports TLS as `skipped` with code `NOT_APPLICABLE`. The command does not replace a running Agent connection or execute a capability.
+`doctor` runs the same configuration and referenced-provider preparation as `validate`, then checks the configured Gateway's DNS, TCP connection, TLS, challenge, and Agent-key verification. Each Gateway network stage is bounded to 10 seconds and the complete command to 60 seconds. A failed stage is reported as `failed` and dependent stages as `skipped`; `ws://` reports TLS as `skipped` with code `NOT_APPLICABLE`. The command does not replace a running Agent connection or execute a capability.
 
 Default text writes one safe line per check to stdout:
 

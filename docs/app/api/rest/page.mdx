@@ -30,7 +30,7 @@ Input follows the capability schema. Duplicate keys, invalid UTF-8, signed-int64
 }
 ```
 
-The Gateway assigns one request ID for the public response, Agent request and request log. DB SELECT and CSV data use a rows/count object; DML data is `{"count": n}` using native RowsAffected, including zero. Output selection and constraints come from `output`. Omitted output returns `data: null` and an empty files array while still executing. DB SELECT and CSV results can also generate CSV files, and file capabilities can return snapshots from configured folders. See [File Output](/api/files) for authenticated references and direct downloads. See [Database JSON values](/databases#json-values) for the representation of database types.
+The Gateway assigns one request ID for the public response, Agent request and request log. DB SELECT and CSV data use a rows/count object; DML data is `{"count": n}` using native RowsAffected, including zero. Generic JSON data can be an object, array, scalar or null, selected and validated by `output` without a rows/count wrapper. [HTTP responses](/agent/capability-yaml#responses-and-redirects) also support original file output through the common file delivery modes. Output selection and constraints come from `output`. Omitted output returns `data: null` and an empty files array while still executing. DB SELECT and CSV results can also generate CSV files, and file capabilities can return snapshots from configured folders. See [File Output](/api/files) for authenticated references and direct downloads. See [Database JSON values](/databases#json-values) for the representation of database types.
 
 ## Failure response
 
@@ -47,4 +47,4 @@ The Gateway assigns one request ID for the public response, Agent request and re
 
 Success and error are mutually exclusive. Errors contain safe code/message/outcome and optionally a fixed safe reason. See [Errors](/api/errors) for status mappings and outcomes. Driver errors, SQL, source details, credentials and input values remain in local diagnostics.
 
-The deadline uses the prepared capability's timeout and caller cancellation. DB SELECT `max_rows` truncates results; CSV returns `LIMIT_EXCEEDED` when its filtered row total exceeds `max_rows`. DML validates count, common output and limits before commit; a confirmed rollback is reported explicitly. After an unknown outcome, verify state through an independent read before retrying a mutation.
+The deadline uses the prepared capability's timeout and caller cancellation. DB SELECT `max_rows` truncates results; CSV returns `LIMIT_EXCEEDED` when its filtered row total exceeds `max_rows`. DML validates count, common output and limits before commit; a confirmed rollback is reported explicitly. After an unknown outcome, verify state through an independent read before retrying a mutation. For fixed APIs, see the [HTTP response and redirect contract](/agent/capability-yaml#responses-and-redirects).

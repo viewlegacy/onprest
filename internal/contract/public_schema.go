@@ -286,6 +286,10 @@ func BuildOpenAPI(config *Config) map[string]any {
 		responseContent := map[string]any{"application/json": map[string]any{"schema": c.SuccessSchema("rest")}}
 		if c.Output.Files != nil && c.Output.Files["delivery"].(map[string]any)["rest"] == "direct" {
 			mime, _ := c.Output.Files["mime_type"].(string)
+			if mime == "" && c.Executor.Type == "http" {
+				response := c.Executor.Settings["response"].(map[string]any)
+				mime, _ = response["mime_type"].(string)
+			}
 			if mime == "" {
 				mime = "application/octet-stream"
 			}

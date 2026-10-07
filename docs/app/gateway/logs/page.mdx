@@ -20,7 +20,7 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
 }
 ```
 
-Every request event has `count`. Successful SELECT and mutation calls use a non-negative JSON integer; every failure and pre-agent branch uses `null`. This preserves the difference between a successful zero-row mutation and a failure. Rows, SQL, and params are never logged.
+Every request event has `count`. Successful DB SELECT/CSV and mutation calls use a non-negative JSON integer; HTTP/file success, every failure and pre-agent branch use `null`. This preserves the difference between a successful zero-row mutation and a failure. Rows, SQL, and params are never logged.
 
 Agent-confirmed input metrics are separate from output counters:
 

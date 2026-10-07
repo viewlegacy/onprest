@@ -312,3 +312,32 @@ func TestCompilerDatabaseEmptyPasswordPresenceAndExclusivity(t *testing.T) {
 		t.Fatal("empty inline plus file accepted")
 	}
 }
+
+func TestHTTPHeaderCollisionsSameAndDifferentValues(t *testing.T) {
+	for _, value := range []string{"same", "different"} {
+		t.Run(value, func(t *testing.T) {
+			cap := `executor: {type: http, source: api, method: POST, path: /, headers: {X-Test: {value: same}, x-test: {value: ` + value + `}}, response: {kind: json}}`
+			if _, err := Compile([]byte(fixture(cap, ""))); err == nil {
+				t.Fatal("executor header collision accepted")
+			}
+			cap = `executor: {type: http, source: api, method: POST, path: /, headers: {x-test: {value: ` + value + `}}, response: {kind: json}}`
+			config := strings.Replace(fixture(cap, ""), "allowed_methods: [GET, POST]", "allowed_methods: [GET, POST], headers: {X-Test: same}", 1)
+			if _, err := Compile([]byte(config)); err == nil {
+				t.Fatal("source/executor header collision accepted")
+			}
+			config = strings.Replace(fixture(wasm, ""), "allowed_methods: [GET, POST]", "allowed_methods: [GET, POST], headers: {X-Test: same, x-test: "+value+"}", 1)
+			if _, err := Compile([]byte(config)); err == nil {
+				t.Fatal("source header collision accepted")
+			}
+		})
+	}
+	for _, name := range []string{"Content-Type", "Content-Length", "Transfer-Encoding"} {
+		t.Run(name, func(t *testing.T) {
+			cap := `executor: {type: http, source: api, method: POST, path: /, body: {kind: form, fields: {}}, response: {kind: json}}`
+			config := strings.Replace(fixture(cap, ""), "allowed_methods: [GET, POST]", "allowed_methods: [GET, POST], headers: {"+name+": '0'}", 1)
+			if _, err := Compile([]byte(config)); err == nil {
+				t.Fatal("source body header override accepted")
+			}
+		})
+	}
+}

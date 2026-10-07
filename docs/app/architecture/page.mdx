@@ -2,7 +2,7 @@
 
 Onprest is designed to expose only agent-defined capabilities, not the database itself.
 
-The agent prepares DB and file read/write capabilities at startup. DB capabilities are classified as SELECT or mutation. Mutations execute in explicit transactions. When data output is enabled, they publish native affected count only after a successful commit; omitted output publishes null data while retaining measured metrics. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+The agent prepares only the providers and sources referenced by configured capabilities at startup. DB capabilities are classified as SELECT or mutation. Mutations execute in explicit transactions. When data output is enabled, they publish native affected count only after a successful commit; omitted output publishes null data while retaining measured metrics. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
 
 ```text
 [API user / MCP client]
@@ -15,7 +15,7 @@ The agent prepares DB and file read/write capabilities at startup. DB capabiliti
 [onprest-agent + capability.yaml]
   |
   v
-[legacy database / configured folder]
+[configured on-prem source]
 ```
 
 ## Mental Model
@@ -25,7 +25,7 @@ The agent prepares DB and file read/write capabilities at startup. DB capabiliti
 3. Start the agent inside the customer network.
 4. The agent connects outbound to the gateway.
 5. REST and MCP clients call only capabilities their API key can access.
-6. The agent validates input, applies policy, executes prepared SQL or reads/writes files in configured folders, validates selected output, and returns data or independent file snapshots.
+6. The agent validates input, applies policy, executes the prepared capability against its approved sources, validates selected output, and returns data or independent file snapshots.
 
 The gateway does not receive private schema knowledge, SQL, DSNs, DB credentials, or execution rules. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations. The gateway receives only the agent-generated public capability contract needed for OpenAPI and MCP discovery.
 
@@ -38,7 +38,7 @@ This separation is the core of Onprest.
 - The gateway does not store SQL text.
 - The gateway does not store DB host, user, or password.
 - Runtime gateway requests carry the capability name, HTTP params, deadline, prepared definition hash, and caller binding.
-- The agent validates HTTP params against `input`, enforces policy, and validates the selected output against `output.items` for SELECT or `output.properties` for DML. Omitting output still executes but publishes `result.data: null`.
+- The agent validates HTTP params against `input`, enforces policy, and selects and validates data/files using the configured `output`; DB SELECT uses `output.items` and DML uses `output.properties`. Omitting output still executes but publishes `result.data: null`.
 - OpenAPI / MCP tools are generated from the agent definition.
 
 Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL, holds no DB credentials, and cannot bypass the capability contract and execution policies enforced by the Agent.
@@ -56,14 +56,14 @@ Even if the gateway is compromised, the attacker can learn the Agent-defined pub
 | OpenAPI/MCP filtering by API key | Yes | No |
 | Public capability metadata | Cache and API-key-filtered serving | Source |
 | SQL text | No | Yes |
-| Database credentials | No | Yes |
+| Source credentials | No | Yes |
 | Raw database schema knowledge | No | Yes |
 | Business logic and execution meaning | No | Yes |
 | Parameter validation | Metadata-based ingress validation | Revalidation before execution |
 | Execution policy | No | Yes |
-| Prepared SQL execution | No | Yes |
-| SELECT output allow-list / mutation count-only contract | No | Yes |
-| Detailed DB errors | No | Local only |
+| Prepared capability execution | No | Yes |
+| Output selection and validation | No | Yes |
+| Detailed execution errors | No | Local only |
 | Agent private key | No | Yes |
 | Agent public key | Yes | No |
 
@@ -80,7 +80,7 @@ The OSS core is two independent binaries.
 | Component | Deployment unit | Responsibility |
 |---|---|---|
 | gateway | `onprest-gateway` | REST / MCP / OpenAPI / healthz / WebSocket / API key auth / capability auth |
-| agent | `onprest-agent` | YAML lint / source preparation / input validation / SQL execution or configured folder reads/writes / output validation / local detail logs |
+| agent | `onprest-agent` | YAML lint / source preparation / input validation / prepared capability execution / output validation / local detail logs |
 
 ## Gateway Responsibilities
 
@@ -111,20 +111,20 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - outbound WebSocket connection to the gateway
 - Connection signing with an Ed25519 private key
 - `capability.yaml` lint
-- DB ping
-- SQL EXPLAIN verification
+- preparation of referenced providers and sources
+- DB ping and SQL EXPLAIN verification for DB capabilities
 - folder root validation, input ownership, atomic file saves, and independent snapshots
 - input schema validation
 - policy enforcement
 - optional per-capability Agent rate limiting before execution admission
-- prepared statement execution
-- output selection and schema enforcement for SELECT and DML
+- execution of prepared capabilities against approved sources
+- output selection and schema enforcement
 - OpenAPI spec generation
 - runtime detail output to the local log
 - reconnect every 30 seconds
 - up to `runtime.max_concurrent_requests` concurrent capability executions per connection (default 16), with an equally bounded waiting queue
 
-Normal startup and `onprest-agent validate` share the same configuration and database preparation. Validation closes those resources and exits without connecting to the Gateway or executing a capability. `onprest-agent doctor` reuses that preparation to diagnose Gateway connectivity and Agent-key authentication without changing the running connection. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
+Normal startup and `onprest-agent validate` share the same configuration and referenced-provider preparation. DB Ping/EXPLAIN apply only to DB capabilities; HTTP preparation sends no business request. See [HTTP executors](/agent/capability-yaml#http-executors). Validation closes those resources and exits without connecting to the Gateway or executing a capability. `onprest-agent doctor` reuses that preparation to diagnose Gateway connectivity and Agent-key authentication without changing the running connection. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
 
 `capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
 

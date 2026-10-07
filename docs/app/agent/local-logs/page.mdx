@@ -9,7 +9,7 @@ onprest-agent.log.2
 onprest-agent.log.3
 ```
 
-The local log is the place for DB-specific and SQL execution detail. Gateway stdout and HTTP responses intentionally omit those details.
+The local log is the place for private preparation and capability execution detail, including DB-specific errors, SQL execution and HTTP failures. Gateway stdout and HTTP responses intentionally omit those details.
 
 Captured passwords, connection strings, signing keys, TLS certificate/key material, and configured SQL statements are redacted from preparation and runtime diagnostic records. Redaction uses the same private source snapshot as the connector and never reopens secret files; nonsecret diagnostic context remains available.
 
@@ -30,7 +30,7 @@ The runtime Agent writes `onprest-agent.log` detail when:
 
 - DB ping fails at startup.
 - SQL EXPLAIN fails at startup.
-- Runtime capability execution fails.
+- Runtime capability execution fails, including HTTP status, response parsing, transport or output validation failures.
 - DB permissions, syntax, timeout, or connectivity errors occur.
 - `RATE_LIMITED` rejections are sampled at most once per minute per capability. A sample records the fixed code, message, detail, and request ID when present; it never includes params or values.
 
@@ -52,6 +52,6 @@ When `onprest-agent.log` exceeds `logging.max_size`, agent rotates the file by s
 
 ## Operational Guidance
 
-Treat agent local logs as sensitive operational artifacts. They may contain DB-specific detail required for debugging. Keep them on the on-prem side and do not forward them to the gateway or remote aggregation pipelines.
+Treat agent local logs as sensitive operational artifacts. They may contain private source and execution detail required for debugging. Keep them on the on-prem side and do not forward them to the gateway or remote aggregation pipelines.
 
 Runtime rotation settings do not apply to validation or doctor files. Each completed diagnostic is limited to 1 MiB. Unix creates these files with mode `0600`; Windows restricts them to the invoking user, SYSTEM, and Administrators. See [Troubleshooting](/operations/troubleshooting) for failure-specific actions.

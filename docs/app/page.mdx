@@ -1,6 +1,6 @@
 # Onprest
 
-Onprest is an OSS core for safely exposing existing databases and files in configured folders in on-premises or private-network environments through REST API and MCP.
+Onprest is an OSS core for safely exposing legacy databases, files in configured folders, and fixed HTTP APIs in on-premises or private-network environments through REST API and MCP.
 
 It does not expose the database itself. Only capabilities defined on the on-prem side in `capability.yaml` can be called through the gateway.
 
@@ -13,7 +13,7 @@ Many legacy systems still hold valuable business data inside internal databases.
 Onprest narrows that boundary.
 
 - The gateway handles only routing, identity, and observability.
-- The agent, running on the on-prem side, owns each capability's meaning, SQL, and DB connection settings.
+- The agent, running on the on-prem side, owns each capability's meaning, executable definition and private source settings.
 - API users and MCP clients can call only explicitly allowed capabilities.
 - The gateway does not hold SQL text or DB credentials.
 - The agent connects to the gateway over outbound WebSocket, so Onprest does not require inbound access to the on-prem network.
@@ -30,7 +30,7 @@ It is a narrow capability tunnel for approved business operations, defined on-pr
 
 MCP is a first-class surface in Onprest, not an afterthought. AI agents should receive named business tools, not a DSN, raw SQL executor, or schema-wide database surface.
 
-Onprest's capability model fits AI/MCP because the cloud-facing side is intentionally not trusted with business meaning. The gateway can authenticate callers and route capability calls, but the on-prem agent owns SQL, parameter validation, execution policy, SELECT output filtering, and DML affected-count validation. AI agents and MCP clients see only the capabilities their API key is allowed to list and call.
+Onprest's capability model fits AI/MCP because the cloud-facing side is intentionally not trusted with business meaning. The gateway can authenticate callers and route capability calls, but the on-prem agent owns executable definitions, parameter validation, execution policy and output validation. DB capabilities retain SELECT output filtering and DML affected-count validation. AI agents and MCP clients see only the capabilities their API key is allowed to list and call.
 
 ## OSS Core
 
@@ -39,7 +39,7 @@ The OSS core consists of two independent Go single binaries.
 | Binary | Role |
 |---|---|
 | `onprest-gateway` | API key authentication, capability authorization, REST/MCP/OpenAPI, and agent WebSocket handling |
-| `onprest-agent` | `capability.yaml` loading, source preparation, input/policy validation, SQL execution, CSV parsing, configured folder reads/writes, and output validation |
+| `onprest-agent` | `capability.yaml` loading, source preparation, input/policy validation, prepared capability execution and output validation |
 
 This `/docs` site is a public documentation project built with Nextra / Next.js. Node.js, Nextra, and Next.js are not required to run or distribute the OSS core.
 
@@ -48,6 +48,7 @@ This `/docs` site is a public documentation project built with Nextra / Next.js.
 - [Quick Start](/quick-start): Start the gateway and agent, then verify REST / MCP / OpenAPI / healthz.
 - [Architecture](/architecture): Understand Onprest's trust boundaries and gateway / agent responsibilities.
 - [Security](/security): Review the compromise model, key rotation, and detail redaction policy.
-- [Capability YAML](/agent/capability-yaml): Define inputs and policy, plus DB/CSV output selection; DML is count-only.
+- [Capability YAML](/agent/capability-yaml): Define approved sources, inputs, executors, policy and published output.
+- [HTTP executors](/agent/capability-yaml#http-executors): Bind arguments to a fixed API without a database.
 - [File Input and Output](/api/files): Save file inputs and retrieve independent folder snapshots or generated CSV through REST or MCP.
 - [Release Gate](/operations/release-gate): See how published release binaries are tested.

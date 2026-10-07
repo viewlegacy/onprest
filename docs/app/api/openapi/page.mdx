@@ -15,7 +15,7 @@ The Agent generates OpenAPI from `capability.yaml`, excluding capabilities with 
 
 The Gateway validates the document and its capability metadata before caching them. Until valid metadata and definition hashes are available, business calls return `AGENT_OFFLINE` without execution. If metadata requires file references but `ONPREST_PUBLIC_BASE_URL` is missing, the Gateway rejects the whole metadata set: capabilities remain unavailable and are not advertised, and calls return `DEPENDENCY_UNAVAILABLE` without execution. See [File Output](/api/files) and [File Reference Origin](/gateway/configuration#file-reference-origin). A service whose capabilities are all hidden can have an empty OpenAPI `paths` map while retaining its internal capability metadata.
 
-For JSON and reference delivery, the HTTP 200 `application/json` schema describes the common envelope: `request_id` and `result`, with `result.data` and `result.files` always present. Configured `output` determines the schema of published data. A SELECT with data output returns `result.data.rows` and a non-negative `int64` `result.data.count`; INSERT/UPDATE/DELETE data output returns the native affected-row count in `result.data.count`. Omitting output returns `result.data: null` and `result.files: []` while still executing the operation.
+For JSON and reference delivery, the HTTP 200 `application/json` schema describes the common envelope: `request_id` and `result`, with `result.data` and `result.files` always present. Configured `output` determines the schema of published data. A SELECT with data output returns `result.data.rows` and a non-negative `int64` `result.data.count`; INSERT/UPDATE/DELETE data output returns the native affected-row count in `result.data.count`. Generic JSON data follows the configured object/array/scalar/null schema without a rows/count wrapper; [HTTP responses](/agent/capability-yaml#responses-and-redirects) can also publish original files. Omitting output returns `result.data: null` and `result.files: []` while still executing the operation.
 
 REST direct delivery instead advertises the configured binary media type and binary response schema for HTTP 200, and returns the file bytes without a JSON envelope. See [File Output](/api/files).
 
@@ -43,7 +43,7 @@ The cached document also feeds the optional `openapi_snapshot` stdout event. See
 OpenAPI metadata must not include:
 
 - SQL text
-- DB host, user, password, or DSN
+- private source connection settings or credentials, including DB host, user, password, or DSN
 - agent private key
 - runtime params
 - agent error detail

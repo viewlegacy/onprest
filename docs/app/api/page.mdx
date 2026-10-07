@@ -6,6 +6,8 @@ All public API surfaces use API key authentication except `/healthz`. REST, MCP,
 
 REST JSON, streaming multipart and MCP calls accept declared file inputs. File capabilities save to configured writable folders and return independent snapshots; file outputs and generated CSV support authenticated references, direct REST bodies, or inline MCP resources.
 
+Success data follows each capability's output schema inside the [common REST/MCP envelope](/api/rest#success-response). Generic JSON retains its selected shape; see [HTTP executors](/agent/capability-yaml#http-executors) for fixed API bindings and response files.
+
 ## Topics
 
 - [REST](/api/rest)

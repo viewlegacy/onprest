@@ -77,7 +77,7 @@ validation and startup.
 3. Create a customer-specific `gateway.env`.
 4. Start a dedicated gateway process for the customer.
 5. Deliver `onprest-agent` and a `capability.yaml` template to the on-prem environment.
-6. Fill in gateway URL, agent private key, DB credentials, and capabilities.
+6. Fill in gateway URL, agent private key, referenced source settings/credentials, and capabilities.
 7. Run `onprest-agent validate --config PATH` against the completed file.
 8. Start the agent.
 9. Verify `/healthz`, `/openapi.json`, REST, and MCP.
@@ -148,7 +148,7 @@ Use compatible Gateway and Agent binaries. The WebSocket handshake requires both
 
 For OS-managed binary operation, follow the separate [new-service installation and existing-service change procedures](/operations/capability-changes). They validate the exact registered file before starting or stopping a service and include post-start health, OpenAPI, REST, and MCP checks. See [CLI Reference](/reference/cli#agent-service-commands) for individual service command syntax and aliases. Service installation does not enable automatic start on OS boot; configure that separately with the host OS if required.
 
-When the agent runs as an OS service, stdout/stderr are handled by the service manager. On macOS service installs, process events go to `/var/log/onprest-agent.stdout.log` and fatal stderr output goes to `/var/log/onprest-agent.stderr.log`. DB-specific detail still belongs in `onprest-agent.log` next to the agent binary.
+When the agent runs as an OS service, stdout/stderr are handled by the service manager. On macOS service installs, process events go to `/var/log/onprest-agent.stdout.log` and fatal stderr output goes to `/var/log/onprest-agent.stderr.log`. Private execution detail still belongs in `onprest-agent.log` next to the agent binary.
 
 ### Database TLS certificate rotation
 
@@ -198,7 +198,7 @@ docker run --rm \
 
 A named volume is also suitable when the operator initializes its ownership and permissions before use. In Compose, mount the same persistent volume read/write at `runtime.identity_dir` and keep it when recreating the Agent. The Agent creates a protected `config-hmac.key`; losing or replacing this key changes prepared definition bindings. A read-only YAML mount alone cannot provide the default configuration-relative identity or spool directories. The spool is exclusive temporary storage for one Agent process; do not share it between Agent instances or use it for business data. Spool snapshots are not usable after restart.
 
-The mounted `capability.yaml` must use database and gateway addresses reachable from inside the container. Container platforms manage process start/stop and stdout/stderr collection. Do not use `onprest-agent service install` inside a container. `docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
+The mounted `capability.yaml` must use configured source and gateway addresses reachable from inside the container. Container platforms manage process start/stop and stdout/stderr collection. Do not use `onprest-agent service install` inside a container. `docker-compose.yml` is a convenience for local or container-based evaluation, not a required production deployment model.
 
 ## Deployment Boundary
 

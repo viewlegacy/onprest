@@ -1,6 +1,6 @@
 # Onprest
 
-Onprest is an **agent-defined capability tunnel** for legacy databases and files in configured folders.
+Onprest is an **agent-defined capability tunnel** for legacy databases, files in configured folders, and fixed on-prem HTTP APIs.
 
 It exposes selected on-prem-defined business capabilities through REST and MCP, without exposing SQL, database credentials, raw schema access, cloud data replicas, or inbound firewall ports.
 
@@ -17,9 +17,12 @@ MCP is a first-class surface, not an afterthought: AI agents call named business
 
 File capabilities accept files in REST JSON, streaming multipart, or MCP calls, save them to configured writable folders, and return independent folder snapshots. CSV capabilities parse configured folder files or uploaded files, filter rows, and publish selected JSON and generated CSV. File outputs and generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Input and Output](https://docs.onprest.viewlegacy.com/api/files).
 
+HTTP capabilities bind declared arguments and input files to fixed API sources, then publish validated JSON or original response files. See the [HTTP example](examples/http/) and [HTTP executor reference](https://docs.onprest.viewlegacy.com/agent/capability-yaml#http-executors).
+
 ## Start Here
 
 - **Try it locally:** [Quick Start](#quick-start)
+- **Call an API without a database:** [HTTP example](examples/http/)
 - **Use files without a database:** [CSV filtering example](examples/csv/), [file input example](examples/file-input/), and [file download example](examples/file-output/)
 - **Understand the architecture:** [Architecture](#architecture), [Responsibility Split](#responsibility-split), [Trust Boundary](#trust-boundary)
 - **Define capabilities:** [Capability Boundary](#capability-boundary)
@@ -93,12 +96,12 @@ onprest-gateway
 onprest-agent + capability.yaml
         |
         v
-legacy database / configured folder
+configured on-prem source
 ```
 
 The gateway knows routing, identity, edge rate limits, and which API keys may call which capability names.
 
-The agent knows what each capability means, how parameters are validated, which prepared SQL is executed, and—for SELECT—which result fields are allowed to leave the customer environment. Mutations return affected count only.
+The agent knows what each capability means, how parameters are validated, which prepared operation is executed, and which configured data/files may leave the customer environment. DB SELECT filters declared fields; DB mutations return affected count only.
 
 ## Responsibility Split
 
@@ -114,14 +117,14 @@ The gateway can be useful without being trusted with meaning.
 | Request observability | Yes | No |
 | OpenAPI/MCP filtering by API key | Yes | No |
 | SQL text | No | Yes |
-| Database credentials | No | Yes |
+| Source credentials | No | Yes |
 | Raw database schema knowledge | No | Yes |
 | Business logic and execution meaning | No | Yes |
 | Parameter validation | Metadata-based ingress validation | Revalidation before execution |
 | Execution policy | No | Yes |
-| Prepared SQL execution | No | Yes |
-| SELECT output allow-list / mutation count-only contract | No | Yes |
-| Detailed DB errors | No | Local only |
+| Prepared capability execution | No | Yes |
+| Output selection and validation | No | Yes |
+| Detailed execution errors | No | Local only |
 | Agent private key | No | Yes |
 | Agent public key | Yes | No |
 
@@ -133,7 +136,7 @@ Onprest assumes the public gateway may be observed or compromised.
 
 That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or capability execution rules. It can authenticate callers, apply edge rate limits, check whether an API key may call a capability name, serve the agent-defined public contract, and forward the request to the connected agent.
 
-The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes prepared SQL, filters SELECT output or returns DML affected count, and keeps detailed DB errors local.
+The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes approved capabilities, selects and validates published data/files, and keeps detailed execution errors local. DB SELECT filters declared fields and DML returns affected count only.
 
 In short:
 
@@ -157,7 +160,7 @@ Instead of giving an AI agent a DSN, schema, or SQL executor, you give it narrow
 - `get_invoice_status`
 - `list_recent_shipments`
 
-Each tool is backed by a registered executor, validated inputs, and execution limits. Configured `output` selects and validates published data: SELECT rows or the native mutation affected count. Omitting output still executes and publishes null data.
+Each tool is backed by a registered executor, validated inputs, and execution limits. Configured `output` selects and validates published data and files; DB data uses SELECT rows or the native mutation affected count. Omitting output still executes and publishes null data.
 
 This makes MCP useful without turning the legacy database into an unrestricted AI-accessible surface.
 
@@ -170,12 +173,12 @@ It defines:
 - service metadata
 - agent runtime limits, including concurrent request execution
 - gateway connection settings
-- database connection fields
+- private source connection settings
 - agent private key
 - default execution policies
 - capability definitions
 - parameter contracts
-- SELECT result output contracts and the DML count-only contract
+- data/file output contracts, including SELECT rows and the DML count-only contract
 - local agent detail logging
 
 A capability is a named business operation:
@@ -212,7 +215,7 @@ capabilities:
             type: string
 ```
 
-The agent loads and validates this file at startup, including checks for each SQL statement, before connecting to the gateway. Changes require an agent restart.
+The agent loads and validates this file at startup, including preparation of referenced providers and sources and checks for DB SQL statements, before connecting to the gateway. Changes require an agent restart.
 
 For the full schema, policy options, logging settings, and examples, see [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml).
 
@@ -226,7 +229,7 @@ Onprest is designed as if components may be compromised.
 - The agent connects outbound to the gateway; no inbound firewall path into the customer network is required.
 - API keys are capability-scoped.
 - Unknown capability names are rejected by the agent.
-- Parameters are validated before SQL runs.
+- Parameters are validated before capability execution.
 - SQL parameters are bound through `database/sql`.
 - Agent-owned policies restrict allowed operations, bound execution time, response size, and row counts, and control OpenAPI/MCP exposure.
 - Declared SELECT fields are selected in normal output mode. Schema-free data output or passthrough can publish all fields; review the [output configuration](https://docs.onprest.viewlegacy.com/agent/capability-yaml#output). DML data output publishes a validated native count object inside the common response envelope.

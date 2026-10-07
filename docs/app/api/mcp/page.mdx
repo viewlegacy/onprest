@@ -2,7 +2,7 @@
 
 MCP is a first-class API surface in Onprest. It exposes agent-defined capabilities as tools, so clients call named business operations instead of receiving raw database access.
 
-The Gateway knows which named capabilities a caller may use, but not their SQL, database credentials, or business meaning. It builds `tools/list` from Agent-owned public metadata, applies API-key filtering, and forwards `tools/call` to the Agent. The Agent remains responsible for parameter validation, policy enforcement, SQL execution, and result validation.
+The Gateway knows which named capabilities a caller may use, but not their executable definitions, private source credentials, or business meaning. It builds `tools/list` from Agent-owned public metadata, applies API-key filtering, and forwards `tools/call` to the Agent. The Agent remains responsible for parameter validation, policy enforcement, prepared capability execution, and result validation.
 
 The MCP endpoint uses stateless JSON-RPC over HTTP. Version selection is resolved per request, and responses use JSON.
 
@@ -112,7 +112,7 @@ The Gateway maps explicitly supplied `x-onprest-annotations` values to MCP's `re
 
 The tool name maps to a capability name and `arguments` maps to capability params. `name` is required, and `arguments` must be a JSON object when supplied. Business results use the [REST envelope](/api/rest), with a Gateway-assigned `request_id` and `result.data` / `result.files`. Every supported version includes that envelope as a text `content` item. `2025-06-18` and `2025-11-25` additionally include the same JSON as `structuredContent`; `2025-03-26` omits it. The same version distinction applies to execution-error results.
 
-SELECT data contains `rows` and `count`; mutation data contains the native affected `count`, including zero as success. Omitting output publishes `data: null` and `files: []` while still executing.
+Generic JSON data retains its configured object/array/scalar/null shape; original files use the common [file delivery](/api/files) modes. See [HTTP responses](/agent/capability-yaml#responses-and-redirects). DB SELECT and CSV data contain `rows` and `count`; DB mutation data contains the native affected `count`, including zero as success. Omitting output publishes `data: null` and `files: []` while still executing.
 
 ## File arguments
 

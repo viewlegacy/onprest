@@ -1,10 +1,10 @@
 # Capability YAML
 
-`capability.yaml` defines sources, accepted input, executors, policy, and published output. Normal startup, `onprest-agent validate --config PATH`, and the preparation portion of `doctor` compile and prepare the same definition. Preparation resolves protected secret/TLS files, opens and Pings the configured databases, and performs driver-specific EXPLAIN without executing business SQL. Validation does not connect to the Gateway or reload a running Agent.
+`capability.yaml` defines sources, accepted input, executors, policy, and published output. Normal startup, `onprest-agent validate --config PATH`, and the preparation portion of `doctor` compile and prepare the same definition. Preparation resolves protected secret/TLS files for referenced providers and sources. DB capabilities open and Ping their databases and perform driver-specific EXPLAIN; HTTP preparation sends no business request. No capability executes during preparation. Validation does not connect to the Gateway or reload a running Agent.
 
 ## Structure
 
-This is a capability excerpt, not a complete configuration. The [Quick Start configuration](/quick-start) includes `schema_version`, gateway, and database sources.
+This is a capability excerpt, not a complete configuration. The [Quick Start DB configuration](/quick-start) includes `schema_version`, gateway, and database sources. The [HTTP example](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/examples/http) supplies a complete configuration without a database.
 
 ```yaml
 capabilities:
@@ -46,7 +46,7 @@ capabilities:
       data: {}
 ```
 
-The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, CSV executors reading configured folders or uploaded files, and file read/write executors with file input. HTTP and Wasm executors fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads and writes select named folder sources.
+The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, CSV executors reading configured folders or uploaded files, file read/write executors with file input, and HTTP executors calling fixed API sources. Wasm executors fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads and writes select named folder sources.
 
 Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `onprest_` are reserved.
 
@@ -62,6 +62,7 @@ Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `
 | `gateway` | Gateway WebSocket URL and Agent signing key |
 | `sources.databases` | Named database connections selected by DB executors |
 | `sources.folders` | Fixed folder roots selected by CSV reads and file reads/writes |
+| `sources.http` | Fixed API sources selected by [HTTP executors](#http-executors) |
 | `logging` | Local detail log settings; see [Agent Local Logs](/agent/local-logs#rotation) |
 | `defaults` | Applicable policy defaults |
 | `capabilities` | At least one named executable operation |
@@ -111,7 +112,7 @@ Byte sizes accept positive integer bytes or units such as `KB`/`MB`. SQL must be
 
 ## Output
 
-`output.data: {}` opts in to JSON publication. DB SELECT and CSV declare their row schema through `output.items`; DML describes its count object with `output.properties`. An omitted output still executes and records measured metrics, but succeeds with `result.data: null` and `result.files: []`. Publishing DB SELECT or CSV data returns `{rows: [...], count: n}` inside `result.data`; DML returns `{count: n}`, where count is native non-negative `RowsAffected()` and zero is success.
+`output.data: {}` opts in to JSON publication. DB SELECT and CSV declare their row schema through `output.items`; DML describes its count object with `output.properties`. An omitted output still executes and records measured metrics, but succeeds with `result.data: null` and `result.files: []`. Generic JSON output retains the selected object, array, scalar or null without adding a rows/count wrapper; see [HTTP responses](#responses-and-redirects). Publishing DB SELECT or CSV data returns `{rows: [...], count: n}` inside `result.data`; DML returns `{count: n}`, where count is native non-negative `RowsAffected()` and zero is success.
 
 Normal output selects declared fields recursively, then validates their types and constraints. Empty `properties: {}` publishes no fields. Omitted type/properties allows JSON values; `mode: passthrough` preserves fields and still validates declared constraints. Output `nullable` defaults to true; null and required presence are separate rules. Declared DB SELECT and CSV columns are checked against column metadata even with zero rows. A DML output must retain count.
 
@@ -186,6 +187,77 @@ Folder files follow selector order; uploaded arrays follow input order. Every fi
 Parsed values pass through [common output selection and validation](#output) without string-to-number conversion. [CSV generation](#file-reads-and-csv-output) uses the same selected rows; `columns` can select and order a subset. Omit `data` for files only or `files` for JSON only. Use a file executor to return original bytes.
 
 Publish completed folder inputs through temporary files and atomic rename. Folder raw snapshots consume the Agent's shared `runtime.spool_total_bytes` quota until parsing and output validation complete; uploaded inputs already consume that quota. Quota exhaustion returns `LIMIT_EXCEEDED`. The quota is a disk budget, not a process RSS limit. JSON structure limits apply to filtered rows before output selection; `max_output_bytes` measures published JSON and selected CSV source data, not discarded CSV columns.
+
+## HTTP executors
+
+HTTP executors bind validated inputs to a configured API and apply the [common output definition](#output) to its JSON or original response bytes. They require no database. The [two-binary HTTP example](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/examples/http) demonstrates arguments → upstream API → selected JSON.
+
+```yaml
+sources:
+  http:
+    inventory:
+      base_url: https://inventory.internal.example
+      allowed_methods: [POST]
+      credential_file: ./secrets/inventory-token
+capabilities:
+  get_inventory:
+    executor:
+      type: http
+      source: inventory
+      method: POST
+      path: /stock
+      query: {region: {value: east}}
+      headers: {X-Channel: {value: onprest}}
+      body: {kind: json, fields: {item: {input: /item}}}
+      response: {kind: json}
+    input: {properties: {item: {type: string}}, required: [item]}
+    output: {properties: {item: {type: string}, available: {type: integer}}, data: {}}
+```
+
+### Sources and bindings
+
+`sources.http.<name>` requires an HTTP(S) `base_url` and an `allowed_methods` array. `allowed_cidrs` optionally narrows destination IPs. Without CIDRs, private IPs are allowed while loopback, link-local and multicast are denied; permit these explicitly only when intended. Every connection checks DNS/IP and HTTPS certificates. Ambient proxy settings are ignored. Optional fixed `headers` are string values. `credential` or protected `credential_file` supplies an exact UTF-8 Bearer token; the two are mutually exclusive, empty/CRLF values are rejected, and a token must not include the `Bearer ` prefix. Preparation captures the secret once without sending a business request.
+
+`method`, `source`, and the absolute `path` are fixed configuration. The absolute path determines the destination path, replacing any path in `base_url`. Put query parameters in `query`, not in the path. Each query/header/body field binds either `{input: /pointer}` or `{value: fixedJSON}`, never both. Pointers use RFC 6901, including `''` for the entire input object, and must reference declared schema positions. Values use validated inputs after defaults. There is no string interpolation or automatic forwarding of all params. JSON bindings cannot contain input files.
+
+`query` accepts non-null scalars or scalar arrays; `headers` accepts non-null scalars. Strings are sent unchanged, booleans as `true`/`false`, and numbers with canonical JSON v1 notation, preserving int64 precision. Query and form values are URL-encoded: spaces become `+`, arrays repeat a name in input order, and empty arrays contribute no fields. Fields are ordered by UTF-8 key bytes. Missing optional bindings omit their field; explicit null is preserved by JSON and rejected before sending by text/query/header/form/file bindings.
+
+Header names are case-insensitive: duplicates within or between source and executor maps fail even when values match. Host, Authorization and connection-control overrides are forbidden. Header CR/LF is rejected. When a body is configured, Content-Type, Content-Length and Transfer-Encoding are Agent-managed and cannot also appear in either header map.
+
+### Request bodies
+
+Omitting `body` sends zero body bytes; the Agent adds no body Content-Type, Content-Length or Transfer-Encoding. Standard HTTP framing may still add `Content-Length: 0` for POST/PUT/PATCH. A whole-body `input` Pointer must be guaranteed present, including every ancestor and array index.
+
+| `body.kind` | Configuration and upstream encoding |
+|---|---|
+| `json` | Exactly one of `fields` (name → binding map), `input` (whole-value Pointer), or `value` (fixed JSON). Object/array/scalar/null retain their shape. Sends canonical JSON v1 UTF-8 with `application/json`, no BOM or appended newline |
+| `form` | Required `fields` map using query scalar/array rules; sends `application/x-www-form-urlencoded` |
+| `multipart` | Required ordered `parts` array. Each part has a fixed `name`, `kind: text/json/file`, and one input/value binding. Text sends the scalar text as `text/plain; charset=utf-8`; JSON sends canonical JSON as `application/json`; file accepts only input file/file arrays, with optional fixed `content_type` |
+| `file` | Required `input` to one required file; sends its original bytes with optional fixed `content_type`, otherwise the validated input MIME |
+
+Multipart names cannot be repeated in configuration. File arrays expand to repeated same-name parts in array order; empty arrays and missing optional files contribute no parts. File names come from validated input metadata, and `content_type` overrides only the MIME. Text/JSON parts have no filename. The Agent creates the boundary and Content-Disposition; callers cannot supply multipart headers. For example:
+
+```yaml
+body:
+  kind: multipart
+  parts:
+    - {name: item, kind: text, input: /item}
+    - {name: attachment, kind: file, input: /documents}
+```
+
+Declare `documents` with `items: {type: file}` for multiple attachments. Onprest's [one-call file input forms](/api/files#file-input) are independent of this upstream encoding: REST JSON, REST multipart and MCP can all feed the same HTTP executor.
+
+The complete request is spooled and validated before any HTTP send. `executor.limits.max_http_request_bytes` and `max_http_response_bytes` each default to `32MiB`; request size includes multipart framing. Query/header/control metadata is bounded to `64KiB`. Request and response temporary files share `runtime.spool_total_bytes`. A pre-send input or capacity failure has `outcome: not_started`.
+
+### Responses and redirects
+
+`response.kind: json` parses one strict JSON value, then applies common output selection/validation without a DB `rows/count` wrapper. Use `output.data: {}` to publish it, or an explicit `files.format: csv` to generate CSV from an object array. `response.kind: file` uses the response bytes unchanged; `response.filename` defaults to `response.bin` and `mime_type` to `application/octet-stream`. Add `output.files: {}` to publish it; an output MIME override takes precedence. [File delivery](/api/files) supplies reference, REST direct or MCP inline delivery. Upstream headers and error bodies are not forwarded.
+
+`success_statuses` is a nonempty explicit set, defaulting to 200–299. Other statuses produce a safe `EXECUTION_FAILED` with reason `UPSTREAM_HTTP_STATUS`. Malformed JSON or output mismatch produces `OUTPUT_INVALID`; byte/structure/quota excess produces `LIMIT_EXCEEDED`. Full response validation completes before any success or partial result is published.
+
+`response.redirect` defaults to `{enabled: false, max_hops: 3}`. When enabled, 301/302/303/307/308 redirects retain the configured method and completed body, including for POST; they do not switch to GET. Each hop must stay at the source origin and pass method, DNS/IP, credential and hop-limit checks. No failure is automatically retried.
+
+The one `policy.timeout` budget covers construction, all hops, response reading and output validation. HTTP status and `executor.effects: none` are not evidence of rollback or safe retry. Effects default to `possible`; after a request is sent, a failure can have `outcome: unknown`. Keep application-specific retry decisions outside automatic transport behavior.
 
 ## File reads and CSV output
 

@@ -7,7 +7,7 @@ Onprest is designed to reduce the boundary under the assumption that every compo
 | Boundary | Holds secrets | Holds SQL | External role |
 |---|---:|---:|---|
 | gateway | agent public key, API key hashes | No | routing, identity, observability, filtered public metadata |
-| agent | agent private key, DB credentials | Yes | capability execution |
+| agent | agent private key, source credentials | Yes | capability execution |
 
 The gateway routes capability names and params and serves the Agent-generated public contract. DB connection information, SQL text, and raw agent detail are never written to gateway HTTP responses or stdout logs. HTTP errors return a stable `code` and public `message`.
 
@@ -62,8 +62,9 @@ The agent is the only OSS core component that owns capability meaning.
 At startup:
 
 - It lints the YAML structure and required fields.
-- It verifies SQL with each DB's EXPLAIN mechanism.
-- It stops startup if DB ping fails.
+- It prepares only referenced providers and sources; HTTP preparation sends no business request.
+- For DB capabilities, it verifies SQL with each DB's EXPLAIN mechanism.
+- It stops startup if preparation fails, including a referenced DB Ping failure.
 
 At runtime:
 
@@ -73,6 +74,12 @@ At runtime:
 - After capability and params validation, it applies any capability rate limit before execution-queue or database admission. Unknown capabilities and invalid params do not consume tokens.
 - DB capabilities pass parameters through prepared statements.
 - It applies configured output selection and validation; field filtering depends on the declared output schema and mode. See [Output](/agent/capability-yaml#output).
+
+## Fixed HTTP sources
+
+HTTP capabilities keep source origins, paths, headers and credentials on the Agent. Callers supply only declared arguments; they cannot replace the destination URL or authorization headers. The Agent checks destination DNS/IP and HTTPS certificates on every hop, ignores ambient proxies, and restricts configured redirects to the same origin. Private IPs are allowed by default; loopback/link-local/multicast need explicit CIDRs. See [HTTP sources and bindings](/agent/capability-yaml#sources-and-bindings).
+
+Review each capability's permitted method, explicit input bindings and output exposure. An HTTP request can have an irreversible business effect even if its response is lost or invalid. `effects: none` is a descriptive hint; it does not authorize an automatic retry or prove rollback. Requests are not automatically retried after failure.
 
 ## Agent Secret Leakage
 

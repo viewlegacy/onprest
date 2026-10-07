@@ -15,9 +15,9 @@ Request event fields:
 | `capability` | capability name when available |
 | `api_key_name` | API key name from config |
 | `http_status` | response status |
-| `count` | DB SELECT or CSV filtered row count, or DML affected count on success; null on failure |
-| `executor_kind` | Executor kind on successful execution; currently `db`, `csv`, or `file` |
-| `returned_rows` / `affected_rows` | Measured DB SELECT or CSV filtered row count, or DML affected count on success; the other counter is null |
+| `count` | DB SELECT or CSV filtered row count, or DML affected count on success; null for HTTP/file success and every failure |
+| `executor_kind` | Executor kind on successful execution; currently `db`, `csv`, `file`, or `http` |
+| `returned_rows` / `affected_rows` | Measured DB SELECT or CSV filtered row count, or DML affected count on success; the other counter is null; both are null for HTTP/file |
 | `file_count` | Number of published files on success |
 | `response_bytes` | Canonical published data bytes on success; `null` is four bytes |
 | `input_file_count` / `input_file_bytes` | Agent-confirmed input file count and decoded file bytes; separate from output counters. On rejection/cancellation, only confirmed measurements are included; otherwise omitted. See [Gateway Logs](/gateway/logs#request-event) |
@@ -58,6 +58,6 @@ logging:
   max_files: 3
 ```
 
-`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. DB-specific runtime detail belongs in the rotating local detail log. OS service managers may redirect agent stdout/stderr to separate process log files; those files do not replace `onprest-agent.log`.
+`max_size` defaults to `10MB`; `max_files` defaults to `3`. Agent stdout is for process-level events. Private preparation and runtime execution detail belongs in the rotating local detail log, including DB-specific errors and HTTP failures. OS service managers may redirect agent stdout/stderr to separate process log files; those files do not replace `onprest-agent.log`.
 
 The standalone `validate` and `doctor` commands use separate, non-rotating diagnostic files. See [Agent Local Logs](/agent/local-logs) for their lifecycle and access controls.

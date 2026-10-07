@@ -78,7 +78,7 @@ For database-open, Ping, EXPLAIN, or similar recorded failures, inspect only the
 
 Do not edit or remove the validation lock file. If another validation is running, wait for it to finish. See [Agent Local Logs](/agent/local-logs) for the authoritative fixed-file, temporary-file, recovery, size, and access-control rules. Check any diagnostic before sending it to support.
 
-Validation success covers YAML lint, DB Ping, and startup EXPLAIN. It does not cover Gateway reachability, real capability results, data-dependent constraints, or trigger runtime behavior.
+Validation success covers YAML lint and preparation of referenced providers; DB Ping and startup EXPLAIN apply only to DB capabilities. HTTP preparation does not test the upstream business API; use the [HTTP executor reference](/agent/capability-yaml#http-executors) and check an explicit call's observed outcome. It does not cover Gateway reachability, real capability results, data-dependent constraints, or trigger runtime behavior.
 
 Common causes:
 
