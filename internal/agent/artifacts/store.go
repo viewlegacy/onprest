@@ -332,6 +332,7 @@ type Stage struct {
 	identity                         os.FileInfo
 	hash                             hash.Hash
 	size                             int64
+	reserved                         int64
 	sealed, ready, retained, retired bool
 	writeErr                         error
 	readers                          map[*Reader]bool
@@ -419,9 +420,11 @@ func (st *Stage) Write(p []byte) (int, error) {
 			return 0, fail("LIMIT_EXCEEDED", nil)
 		}
 	}
-	if e := s.reserveLocked(n64); e != nil {
+	prepaid := min(n64, st.reserved)
+	if e := s.reserveLocked(n64 - prepaid); e != nil {
 		return 0, e
 	}
+	st.reserved -= prepaid
 	n, e := s.write(st.file, p)
 	if n < 0 || n > len(p) {
 		n = 0
@@ -458,6 +461,8 @@ func (st *Stage) sealLocked() error {
 		return safe(st.writeErr)
 	}
 	st.sealed = true
+	st.store.used -= st.reserved
+	st.reserved = 0
 	err := errors.Join(st.writeErr, st.ctx.Err(), st.store.syncFile(st.file), st.file.Close())
 	st.file = nil
 	st.writeErr = err
@@ -519,7 +524,8 @@ func (st *Stage) cleanupLocked() error {
 		st.store.poisoned = true
 		return safe(e)
 	}
-	st.store.used -= st.size
+	st.store.used -= st.size + st.reserved
+	st.reserved = 0
 	delete(st.store.stages, st.id)
 	if st.request != nil {
 		st.request.releaseSlotLocked()

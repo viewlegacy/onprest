@@ -15,6 +15,27 @@ func (s *Store) Scratch() contract.ArtifactStager { return scratchStager{s} }
 // Capacity is the immutable shared disk budget, not a process memory limit.
 func (s *Store) Capacity() int64 { return s.options.QuotaBytes }
 
+// NewScratch reserves a known body length atomically with its private stage.
+// Writes consume that reservation rather than counting the same bytes twice.
+// Unknown lengths use zero and reserve each chunk before writing.
+func (s *Store) NewScratch(ctx context.Context, name, media string, bytes int64) (*Stage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if bytes < 0 {
+		return nil, fail("VALIDATION_FAILED", nil)
+	}
+	if err := s.reserveLocked(bytes); err != nil {
+		return nil, err
+	}
+	stage, err := s.newStage(ctx, Owner{"scratch", "scratch", "scratch", "scratch", "scratch"}, "o", name, media)
+	if err != nil {
+		s.used -= bytes
+		return nil, err
+	}
+	stage.reserved = bytes
+	return stage, nil
+}
+
 type scratchStager struct{ store *Store }
 
 func (v scratchStager) Begin(ctx context.Context, name, media string) (contract.ArtifactStage, error) {
