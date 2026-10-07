@@ -57,6 +57,14 @@ input: {properties: {months: {items: {type: string}}, minimum: {type: integer}},
 			t.Fatal(csv)
 		}
 	}
+	for _, schema := range []string{`type: array`, `type: [array, string], items: {type: string}`, `items: {}`, `items: {type: integer}`} {
+		// The unconfigured column is string; in needs a typed, array-only input.
+		cap := `executor: {type: csv, read: {source: read, selector: {name: input.csv}}, where: [{column: month, op: in, input: /months}]}
+input: {properties: {months: {` + schema + `}}, required: [months]}`
+		if _, e := Compile([]byte(fixture(cap, ""))); e == nil {
+			t.Fatal(schema)
+		}
+	}
 }
 func TestOutputSyntaxProviderShapeAndCSVColumnLint(t *testing.T) {
 	for _, cap := range []string{

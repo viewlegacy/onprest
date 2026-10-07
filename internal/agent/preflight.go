@@ -149,6 +149,8 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 			return p, e
 		}, "file": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
 			return prepareFileProvider(ctx, snapshot, nil)
+		}, "csv": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
+			return prepareCSVProvider(ctx, snapshot)
 		}})
 		versioned, err := registry.Prepare(ctx, cf.Compiled, cfg.CapabilityFile, providers.ResolveOptions{})
 		if err != nil {

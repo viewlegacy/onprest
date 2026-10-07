@@ -69,9 +69,9 @@ At runtime:
 
 - It checks whether the capability is defined.
 - It rejects unknown input properties by default, plus invalid types, enum violations, out-of-range values, and invalid formats.
-- It applies timeout and max-bytes policy to every operation, and max rows only to SELECT.
+- It applies timeout and max-bytes policy to every operation, and max rows to DB SELECT and CSV.
 - After capability and params validation, it applies any capability rate limit before execution-queue or database admission. Unknown capabilities and invalid params do not consume tokens.
-- It passes parameters through prepared statements.
+- DB capabilities pass parameters through prepared statements.
 - It applies configured output selection and validation; field filtering depends on the declared output schema and mode. See [Output](/agent/capability-yaml#output).
 
 ## Agent Secret Leakage

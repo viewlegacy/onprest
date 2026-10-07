@@ -206,7 +206,8 @@ func compileCSVExecutor(m rawMap, input *Schema, sources Sources) (map[string]an
 				return nil, e
 			}
 			if op == "in" {
-				if !contains(s.Types, "array") || s.Items == nil {
+				types := without(s.Types, "null")
+				if len(types) != 1 || types[0] != "array" || s.Items == nil {
 					return nil, errors.New("in binding must reference typed array")
 				}
 				s = s.Items

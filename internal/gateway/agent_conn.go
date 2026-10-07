@@ -759,7 +759,7 @@ func validateAgentResult(id string, resp protocol.Response, meta protocol.Capabi
 		return nil, nil, e
 	}
 	m := resp.Metrics
-	if !validExecutorKind(m.ExecutorKind) || known && m.ExecutorKind != meta.ExecutorKind || m.FileCount != int64(len(result.Files)) || !validInputMetrics(m, meta) || m.ResponseBytes < 0 || (m.ExecutorKind == "db" && m.ReturnedRows == nil && m.AffectedRows == nil) || m.ReturnedRows != nil && m.AffectedRows != nil || m.ExecutorKind != "db" && (m.ReturnedRows != nil || m.AffectedRows != nil) {
+	if !validExecutorKind(m.ExecutorKind) || known && m.ExecutorKind != meta.ExecutorKind || m.FileCount != int64(len(result.Files)) || !validInputMetrics(m, meta) || m.ResponseBytes < 0 || (m.ExecutorKind == "db" && m.ReturnedRows == nil && m.AffectedRows == nil) || m.ReturnedRows != nil && m.AffectedRows != nil || m.ExecutorKind == "csv" && (m.ReturnedRows == nil || m.AffectedRows != nil) || m.ExecutorKind != "db" && m.ExecutorKind != "csv" && (m.ReturnedRows != nil || m.AffectedRows != nil) {
 		return nil, nil, fmt.Errorf("invalid metrics")
 	}
 	if m.ReturnedRows != nil && *m.ReturnedRows < 0 || m.AffectedRows != nil && *m.AffectedRows < 0 {
@@ -769,7 +769,7 @@ func validateAgentResult(id string, resp protocol.Response, meta protocol.Capabi
 		return nil, nil, fmt.Errorf("metric effect class mismatch")
 	}
 
-	if m.ExecutorKind == "db" && value != nil {
+	if (m.ExecutorKind == "db" || m.ExecutorKind == "csv") && value != nil {
 		object, ok := value.(map[string]any)
 		if !ok {
 			return nil, nil, fmt.Errorf("invalid DB data shape")

@@ -15,12 +15,12 @@ The public gateway handles routing, identity, edge rate limits, and observabilit
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
-File capabilities accept files in REST JSON, streaming multipart, or MCP calls, save them to configured writable folders, and return independent folder snapshots. File outputs and DB-generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Input and Output](https://docs.onprest.viewlegacy.com/api/files).
+File capabilities accept files in REST JSON, streaming multipart, or MCP calls, save them to configured writable folders, and return independent folder snapshots. CSV capabilities parse configured folder files or uploaded files, filter rows, and publish selected JSON and generated CSV. File outputs and generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Input and Output](https://docs.onprest.viewlegacy.com/api/files).
 
 ## Start Here
 
 - **Try it locally:** [Quick Start](#quick-start)
-- **Use files without a database:** [File input example](examples/file-input/) and [file download example](examples/file-output/)
+- **Use files without a database:** [CSV filtering example](examples/csv/), [file input example](examples/file-input/), and [file download example](examples/file-output/)
 - **Understand the architecture:** [Architecture](#architecture), [Responsibility Split](#responsibility-split), [Trust Boundary](#trust-boundary)
 - **Define capabilities:** [Capability Boundary](#capability-boundary)
 - **Use with AI agents:** [AI Agents and MCP](#ai-agents-and-mcp)

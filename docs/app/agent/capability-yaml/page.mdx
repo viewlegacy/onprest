@@ -46,7 +46,7 @@ capabilities:
       data: {}
 ```
 
-The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, and file read/write executors with file input. CSV, HTTP and Wasm executors fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads and writes select named folder sources.
+The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, CSV executors reading configured folders or uploaded files, and file read/write executors with file input. HTTP and Wasm executors fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads and writes select named folder sources.
 
 Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `onprest_` are reserved.
 
@@ -61,7 +61,7 @@ Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `
 | `runtime` | Execution concurrency, private spool, and persistent identity directory |
 | `gateway` | Gateway WebSocket URL and Agent signing key |
 | `sources.databases` | Named database connections selected by DB executors |
-| `sources.folders` | Fixed folder roots selected by file reads and writes |
+| `sources.folders` | Fixed folder roots selected by CSV reads and file reads/writes |
 | `logging` | Local detail log settings; see [Agent Local Logs](/agent/local-logs#rotation) |
 | `defaults` | Applicable policy defaults |
 | `capabilities` | At least one named executable operation |
@@ -98,7 +98,7 @@ File input uses `type: file`, optional `extensions`, `mime_types`, positive `max
 |---|---|---|
 | `readonly` | `true` | DB only: true permits SELECT; false also permits INSERT, UPDATE and DELETE |
 | `timeout` | `5s` | One execution/output-validation budget, at most `300s`; caller cancellation/deadline can shorten it |
-| `max_rows` | `100` | DB SELECT only: truncates at this row count |
+| `max_rows` | `100` | DB SELECT truncates at this row count; CSV returns `LIMIT_EXCEEDED` if the filtered total across all files exceeds it |
 | `max_affected_rows` | unset | DB DML only: count limit; exceeding it rolls back |
 | `max_input_bytes` / `max_output_bytes` | `1MB` | Input bytes / published JSON data and selected data used to generate CSV; original file bytes use the file policy limits below |
 | `max_json_depth` / `max_json_items` | `32` / `100000` | Recursive structure limits |
@@ -111,9 +111,9 @@ Byte sizes accept positive integer bytes or units such as `KB`/`MB`. SQL must be
 
 ## Output
 
-`output.data: {}` opts in to JSON publication. SELECT declares its row schema through `output.items`; DML describes its count object with `output.properties`. An omitted output still executes and records measured metrics, but succeeds with `result.data: null` and `result.files: []`. Publishing SELECT returns `{rows: [...], count: n}` inside `result.data`; DML returns `{count: n}`, where count is native non-negative `RowsAffected()` and zero is success.
+`output.data: {}` opts in to JSON publication. DB SELECT and CSV declare their row schema through `output.items`; DML describes its count object with `output.properties`. An omitted output still executes and records measured metrics, but succeeds with `result.data: null` and `result.files: []`. Publishing DB SELECT or CSV data returns `{rows: [...], count: n}` inside `result.data`; DML returns `{count: n}`, where count is native non-negative `RowsAffected()` and zero is success.
 
-Normal output selects declared fields recursively, then validates their types and constraints. Empty `properties: {}` publishes no fields. Omitted type/properties allows JSON values; `mode: passthrough` preserves fields and still validates declared constraints. Output `nullable` defaults to true; null and required presence are separate rules. Declared SELECT columns are checked against column metadata even with zero rows. A DML output must retain count.
+Normal output selects declared fields recursively, then validates their types and constraints. Empty `properties: {}` publishes no fields. Omitted type/properties allows JSON values; `mode: passthrough` preserves fields and still validates declared constraints. Output `nullable` defaults to true; null and required presence are separate rules. Declared DB SELECT and CSV columns are checked against column metadata even with zero rows. A DML output must retain count.
 
 The DB adapter normalizes native driver values before output validation; output declarations never coerce strings to numbers or other types. See [Database JSON values](/databases#json-values) for decimal, binary, timestamp and NULL representations.
 
@@ -142,6 +142,50 @@ capabilities:
 ```
 
 Writes validate all destination names and capacity before publication, stage privately, and publish using native no-replace operations. Existing files conflict by default. `overwrite: true` uses safe native exchange on Linux/macOS; replacing an existing target is rejected on Windows and on filesystems without the required primitive. The server rejects links, changed identities, reserved names, and unsafe destinations. A later partial publication reports an unknown outcome and does not delete completed business files. `read.written: true` returns completed writes in write/array order; `read.source` selects independently after all saves. Save-only capabilities succeed with `data: null` and `files: []`. Validation and doctor prepare definitions without writing business files or acquiring the running spool.
+
+## CSV executors
+
+CSV executors parse every input file, filter rows, then apply the common output definition to JSON and generated CSV. They do not require a database. See the [two-binary CSV example](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/examples/csv) for a folder download and uploaded-file conversion.
+
+```yaml
+sources:
+  folders:
+    reports: {root: ./reports, access: read}
+capabilities:
+  selected_sales:
+    executor:
+      type: csv
+      read: {source: reports, selector: {name: sales.csv}}
+      csv: {columns: {amount: {type: integer}}}
+      where: [{column: month, op: eq, input: /month}]
+    input: {properties: {month: {type: string}}, required: [month]}
+    output:
+      items: {properties: {id: {type: string}, amount: {type: integer}}}
+      data: {}
+      files: {format: csv, filename: selected-sales.csv}
+```
+
+### Read inputs
+
+`read` requires either a folder `source` and [selector](#file-reads-and-csv-output), or `input: /documents`. The input Pointer must identify a required file or required file array with `minItems` at least 1; every enclosing object and referenced array index must also exist. Folder selector settings cannot accompany `read.input`. With uploaded input, declare `documents` under `input.properties` as `{items: {type: file, extensions: [csv]}, minItems: 1}` and add it to `required`. The [file request forms](/api/files#file-input) apply unchanged; the CSV executor does not save uploaded originals into a business folder.
+
+### Parsing
+
+`executor.csv` is optional. Omitted or empty settings use `header: true`, `encoding: utf-8`, and `delimiter: comma` (`,`). A delimiter is one character other than NUL, CR, LF, double quote, or the replacement character. With a header, omitted or empty `columns` reads every column as a string. A partial map changes parsing only for named columns; other columns remain available to filters and output selection. Numeric-looking strings such as `00123` and empty strings are preserved.
+
+Each column accepts `type` (`string`, `integer`, `number`, `boolean`; default `string`), `nullable` (default `false`), and `null_values` (default `[]`). Only exact matches in `null_values` become null, and only when `nullable: true`; a configured null with `nullable: false` fails parsing. Integers are signed decimal digits within int64; numbers are finite decimal values with optional exponent. Whitespace, hexadecimal numbers, NaN and infinity are rejected. Booleans are exactly `true` or `false`. With `header: false`, every column needs a unique, contiguous zero-based `position`. Configured columns must exist even when there are no data rows.
+
+Supported encodings are strict `utf-8`, `shift_jis` (JIS X 0208), and `cp932` (Windows-31J, including Windows extensions). They are not aliases: for example `0x8160` becomes `〜` in Shift_JIS and `～` in CP932. Invalid or truncated bytes and unassigned characters fail parsing. A UTF-8 BOM is preserved as U+FEFF, including in the first header name; it is not silently removed. Record boundaries use LF or CRLF; CR/LF inside quoted fields are preserved. Quotes escape through doubled quotes. Duplicate or empty headers, broken quoting, and mismatched field counts fail.
+
+### Filtering and output
+
+`where` is an optional array of `{column, op, input}` conditions combined with AND. Operators are `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, and `in`. Input Pointers must identify required values with the parsed column type; `in` requires a typed array of that same type. Nested objects and array indices must have guaranteed presence. Omitted parser columns have type `string`. Actual null arguments or null array elements fail before CSV reads; null CSV cells match no operator, including `ne`. String ordering uses UTF-8 byte order, integers retain int64 precision, and boolean ordering is `false` before `true`.
+
+Folder files follow selector order; uploaded arrays follow input order. Every file must have the same column names and order. All rows, including filtered-out rows, must parse successfully. `max_rows` applies to the filtered total across all files, and exceeding it returns `LIMIT_EXCEEDED`. A zero-row filter succeeds with `rows: []` and `count: 0`; a folder selector with no match returns `NOT_FOUND`. Malformed CSV fails with `EXECUTION_FAILED`; an output type or declared-column mismatch fails with `OUTPUT_INVALID`. Failed parsing never publishes partial JSON or a generated-file prefix.
+
+Parsed values pass through [common output selection and validation](#output) without string-to-number conversion. [CSV generation](#file-reads-and-csv-output) uses the same selected rows; `columns` can select and order a subset. Omit `data` for files only or `files` for JSON only. Use a file executor to return original bytes.
+
+Publish completed folder inputs through temporary files and atomic rename. Folder raw snapshots consume the Agent's shared `runtime.spool_total_bytes` quota until parsing and output validation complete; uploaded inputs already consume that quota. Quota exhaustion returns `LIMIT_EXCEEDED`. The quota is a disk budget, not a process RSS limit. JSON structure limits apply to filtered rows before output selection; `max_output_bytes` measures published JSON and selected CSV source data, not discarded CSV columns.
 
 ## File reads and CSV output
 
@@ -178,12 +222,12 @@ The `executor.read.selector` settings are:
 | `name_regex` | unset | Go regular expression, 1–4096 bytes, matched against the entire basename; case-folding flags are rejected |
 | `recursive` | `false` | Whether to include descendant directories |
 | `sort` | `{by: name, order: asc}` | Object with `by: name`, `modified_at` or `size`, and `order: asc` or `desc` |
-| `take` | `1` | Positive integer limiting selected files; REST direct requires `take: 1` and omitted `output.data` |
+| `take` | `1` | Positive integer limiting selected files; REST direct requires omitted `output.data` and, for original file output, `take: 1` |
 | `scan_limit` | `10000` | Positive integer bounding all inspected entries across the request, including nonmatches, directories and reserved names |
 
 Exactly one of `name` and `name_regex` is required. Names are case-sensitive basenames without Unicode normalization. Equal sort values use ascending root-relative UTF-8 path order before applying `take`. Exceeding `scan_limit` returns `LIMIT_EXCEEDED` without a partial selection; no matching files returns `NOT_FOUND`. Symlinks, hardlinks, special files, filesystem boundaries and reserved temporary names are rejected. Complete producer writes in a private temporary file and atomically rename into the selected completed name. Preparation validates and fixes folder roots without saving business files; `validate` and `doctor` keep their non-destructive behavior. File inputs and `executor.write` use the same schema and prepared folder roots; see [File writes](#file-writes) and [File input](/api/files#file-input).
 
-DB SELECT capabilities can generate CSV from the same selected and validated rows:
+DB SELECT and CSV capabilities can generate CSV from the same selected and validated rows:
 
 ```yaml
 output:
@@ -199,10 +243,10 @@ output:
     delivery: {rest: reference, mcp: reference}
 ```
 
-Omit `data` to return files only. Declared columns fix CSV order; excluded data is excluded from generated CSV. An empty result still includes the header. Integer precision is preserved, and cells that could be interpreted as spreadsheet formulas are escaped. File reads return original bytes and cannot request CSV generation.
+Omit `data` to return files only. Declared columns fix CSV order; excluded data is excluded from generated CSV. An empty result still includes the header. Integer precision is preserved, and cells that could be interpreted as spreadsheet formulas are escaped by default (`formula_escape: true`). File reads return original bytes and cannot request CSV generation.
 
 File policy limits are `max_output_file_bytes` (default `32MiB`), `max_total_output_file_bytes` (`64MiB`), `max_output_files` (`16`), and `file_ttl` (`15m`). `mcp_inline_total_bytes` applies only to inline MCP delivery and defaults to `1MiB`. `runtime.transfer_timeout` defaults to `60s`, at most `300s`; it bounds one download or all inline files in one tool result. See [File Output](/api/files) for delivery and lifetime rules and [Gateway Configuration](/gateway/configuration#file-reference-origin) for the required reference origin.
 
 ## Metadata
 
-`description`, explicit boolean `annotations`, and validated `examples.params` describe a capability. Field descriptions belong in `input.properties.<name>.description`, SELECT `output.items.properties.<column>.description`, or DML `output.properties.<name>.description`. OpenAPI 3.1 and MCP input/output schemas derive from the same compiled contract. SQL, source connection details, secrets and hidden capabilities are not advertised. Examples appear in OpenAPI; MCP uses annotation hints and advertises outputSchema only for protocol versions that support it.
+`description`, explicit boolean `annotations`, and validated `examples.params` describe a capability. Field descriptions belong in `input.properties.<name>.description`, DB SELECT/CSV `output.items.properties.<column>.description`, or DML `output.properties.<name>.description`. OpenAPI 3.1 and MCP input/output schemas derive from the same compiled contract. SQL, source connection details, secrets and hidden capabilities are not advertised. Examples appear in OpenAPI; MCP uses annotation hints and advertises outputSchema only for protocol versions that support it.

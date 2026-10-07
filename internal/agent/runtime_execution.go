@@ -78,6 +78,7 @@ func (r *Runner) executeVersionedPrepared(ctx context.Context, req protocol.Requ
 			return protocol.Response{ID: req.ID, Error: inputFailure(artifactCode(e))}
 		}
 	}
+	ctx = context.WithValue(ctx, artifactStoreKey{}, r.store)
 	out, failure := r.controller.Execute(ctx, ExecutionRequest{ID: req.ID, Capability: req.Capability, DefinitionHash: req.DefinitionHash, Params: req.Params, Deadline: req.Deadline, admitted: admitted, owner: owner, stager: scope})
 	if failure != nil {
 		return protocol.Response{Type: "error", ID: req.ID, Error: failure}
