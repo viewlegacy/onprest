@@ -60,6 +60,7 @@ var wasiPlumbing = map[string]bool{
 	"clock_time_get": true, "clock_res_get": true, "random_get": true, "sched_yield": true,
 	"proc_exit": true, "poll_oneoff": true, "fd_read": true, "fd_write": true, "fd_close": true,
 	"fd_prestat_get": true, "fd_prestat_dir_name": true, "fd_fdstat_set_flags": true,
+	"path_open": true, "path_create_directory": true, "path_remove_directory": true, "path_unlink_file": true, "path_rename": true, "path_filestat_get": true, "path_filestat_set_size": true, "path_filestat_set_times": true, "path_readlink": true, "path_symlink": true, "path_link": true, "fd_readdir": true, "fd_pread": true, "fd_pwrite": true, "fd_allocate": true, "fd_filestat_set_size": true, "fd_filestat_set_times": true, "fd_advise": true,
 	"fd_seek": true, "fd_tell": true, "fd_fdstat_get": true, "fd_filestat_get": true, "fd_sync": true, "fd_datasync": true,
 }
 

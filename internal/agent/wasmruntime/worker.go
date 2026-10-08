@@ -13,8 +13,11 @@ import (
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
-	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
+	"github.com/tetratelabs/wazero/experimental/sysfs"
 	"github.com/tetratelabs/wazero/sys"
+	"github.com/viewlegacy/onprest/internal/agent/filesystem"
+	"path/filepath"
+	"strings"
 )
 
 // HandleWorker is checked before public CLI dispatch. Bare invocation cannot
@@ -74,7 +77,9 @@ func worker(in, out *os.File) error {
 		return e
 	}
 	defer compiled.Close(context.Background())
-	_, e = wasi_snapshot_preview1.Instantiate(ctx, runtime)
+	var earlyRPC func(packet) packet
+	allocation := &rawAllocation{}
+	_, e = instantiateWASI(ctx, runtime, func(p packet) packet { return earlyRPC(p) }, allocation)
 	if e != nil {
 		return e
 	}
@@ -111,6 +116,7 @@ func worker(in, out *os.File) error {
 		}
 		return response
 	}
+	earlyRPC = rpc
 	host := runtime.NewHostModuleBuilder(ABI)
 	host.NewFunctionBuilder().WithFunc(func(_ context.Context, m api.Module, ptr, n uint32) int64 {
 		if n > Chunk {
@@ -158,6 +164,21 @@ func worker(in, out *os.File) error {
 	}
 	// No filesystem mount, host environment, argv, socket or business imports.
 	config := wazero.NewModuleConfig().WithName("request").WithStdin(bytes.NewReader(params)).WithStdout(os.Stdout).WithStderr(os.Stderr).WithSysWalltime().WithSysNanotime().WithSysNanosleep().WithRandSource(rand.Reader)
+	if b.Business {
+		for k, v := range b.Environment {
+			config = config.WithEnv(k, v)
+		}
+		mount := wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(&wasiFS{rpc: rpc, prefix: "/", allocation: allocation}, "/")
+		if b.Base != "" {
+			prefix := filepath.ToSlash(b.Base)
+			if !strings.HasSuffix(prefix, "/") {
+				prefix += "/"
+			}
+			mount = mount.(sysfs.FSConfig).WithSysFSMount(&wasiFS{rpc: rpc, prefix: prefix, allocation: allocation}, filesystem.WASIPath(b.Base))
+			config = config.WithEnv("PWD", filesystem.WASIPath(b.Base))
+		}
+		config = config.WithFSConfig(mount)
+	}
 	_, e = runtime.InstantiateModule(ctx, compiled, config)
 	var exit *sys.ExitError
 	if e != nil && !(errors.As(e, &exit) && exit.ExitCode() == 0) {

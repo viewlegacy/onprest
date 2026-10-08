@@ -164,6 +164,8 @@ func (c *ExecutionController) Execute(parent context.Context, req ExecutionReque
 		}()
 		ctx = context.WithValue(ctx, inputAccessKey{}, inputAccess{req.input, req.owner})
 	}
+	ctx = context.WithValue(ctx, wasmDiagnosticKey{}, c.sink)
+	ctx = context.WithValue(ctx, wasmRequestIDKey{}, req.ID)
 	effects.Start()
 	publish := func(result contract.ProviderResult) (*contract.PreparedOutput, error) {
 		stager := req.stager
@@ -190,6 +192,7 @@ func (c *ExecutionController) Execute(parent context.Context, req ExecutionReque
 		var uncertain *providers.Failure
 		var oe *contract.OutputError
 		var pf *providers.Failure
+		var terminal *providers.PublicTerminal
 		switch {
 		case errors.As(err, &uncertain) && uncertain.Code == "OUTCOME_UNKNOWN":
 			public = fail("OUTCOME_UNKNOWN")
@@ -201,6 +204,11 @@ func (c *ExecutionController) Execute(parent context.Context, req ExecutionReque
 			public = fail("EXECUTION_TIMEOUT")
 		case errors.As(err, &oe):
 			public = fail(oe.Code)
+		case errors.As(err, &terminal):
+			candidate := &contract.ErrorValue{Code: terminal.Code, Message: terminal.Message, Outcome: effects.Outcome()}
+			if strings.HasPrefix(candidate.Code, "APP_") && candidate.Validate() == nil {
+				public = candidate
+			}
 		case errors.As(err, &pf) && !strings.HasPrefix(pf.Code, "APP_"):
 			candidate := fail(pf.Code)
 			candidate.Reason = pf.Reason

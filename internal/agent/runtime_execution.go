@@ -26,7 +26,7 @@ func (r *Runner) executeVersionedPrepared(ctx context.Context, req protocol.Requ
 			if c.Executor.Type != "db" {
 				meta.ResponseKinds[name] = "generic"
 				v := meta.Capabilities[name]
-				if c.Executor.Type == "csv" || c.Executor.Type == "file" && c.Executor.Settings["write"] == nil || c.Executor.Type == "http" && c.Executor.Settings["effects"] == "none" {
+				if c.Executor.Type == "csv" || c.Executor.Type == "file" && c.Executor.Settings["write"] == nil || (c.Executor.Type == "http" || c.Executor.Type == "wasm") && c.Executor.Settings["effects"] == "none" {
 					v.EffectClass = "none"
 				}
 				meta.Capabilities[name] = v

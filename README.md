@@ -1,6 +1,6 @@
 # Onprest
 
-Onprest is an **agent-defined capability tunnel** for legacy databases, files in configured folders, and fixed on-prem HTTP APIs.
+Onprest is an **agent-defined capability tunnel** for legacy databases, files in configured folders, fixed on-prem HTTP APIs, and reviewed Wasm modules.
 
 It exposes selected on-prem-defined business capabilities through REST and MCP, without exposing SQL, database credentials, raw schema access, cloud data replicas, or inbound firewall ports.
 
@@ -11,13 +11,15 @@ Most AI/database integrations start from the wrong primitive: database access.
 
 Onprest starts from a smaller primitive: a named business capability. AI agents, SaaS products, internal tools, and partner systems call explicit operations such as `get_customer`, `search_orders`, or `check_inventory`. They never receive a DSN, raw SQL access, or a schema-wide CRUD surface.
 
-The public gateway handles routing, identity, edge rate limits, and observability. The on-prem agent owns SQL, credentials, validation, per-capability execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the only operations that can exist.
+The public gateway handles routing, identity, edge rate limits, and observability. The on-prem agent owns SQL, credentials, validation, per-capability execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the registered executable capabilities.
 
 MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
 
 File capabilities accept files in REST JSON, streaming multipart, or MCP calls, save them to configured writable folders, and return independent folder snapshots. CSV capabilities parse configured folder files or uploaded files, filter rows, and publish selected JSON and generated CSV. File outputs and generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Input and Output](https://docs.onprest.viewlegacy.com/api/files).
 
 HTTP capabilities bind declared arguments and input files to fixed API sources, then publish validated JSON or original response files. See the [HTTP example](examples/http/) and [HTTP executor reference](https://docs.onprest.viewlegacy.com/agent/capability-yaml#http-executors).
+
+Wasm capabilities execute prepared command modules with request-owned input and result files. Choose OS-user access or explicit sandbox grants, and review the deployed code and its argument handling. See the [Wasm example](examples/wasm/), [configuration](https://docs.onprest.viewlegacy.com/agent/capability-yaml#wasm-executors), and [code security boundary](https://docs.onprest.viewlegacy.com/security#wasm-code-boundary).
 
 ## Start Here
 

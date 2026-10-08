@@ -14,18 +14,22 @@ type packet struct {
 	Token    string    `json:"token,omitempty"`
 	Handle   int64     `json:"handle,omitempty"`
 	Data     []byte    `json:"data,omitempty"`
+	Offset   int64     `json:"offset,omitempty"`
 	Count    int32     `json:"count,omitempty"`
 	Metadata *Metadata `json:"metadata,omitempty"`
 	Error    string    `json:"error,omitempty"`
 }
 type bootstrap struct {
-	Token      string `json:"token"`
-	Limits     Limits `json:"limits"`
-	Deadline   int64  `json:"deadline"`
-	ModuleSize int    `json:"module_size"`
-	ParamsSize int    `json:"params_size"`
-	Validate   bool   `json:"validate"`
-	Version    string `json:"version"`
+	Token       string            `json:"token"`
+	Limits      Limits            `json:"limits"`
+	Deadline    int64             `json:"deadline"`
+	ModuleSize  int               `json:"module_size"`
+	ParamsSize  int               `json:"params_size"`
+	Validate    bool              `json:"validate"`
+	Version     string            `json:"version"`
+	Environment map[string]string `json:"environment,omitempty"`
+	Base        string            `json:"base,omitempty"`
+	Business    bool              `json:"business,omitempty"`
 }
 
 func send(w io.Writer, v any) error {

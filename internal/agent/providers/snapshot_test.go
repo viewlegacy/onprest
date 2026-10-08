@@ -303,7 +303,7 @@ func TestPreparedWasmTrustedMaterialBaseAndEnvironment(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if first.Environment()["REGION"] != "private-region" || len(first.Environment()) != 1 {
+	if first.Environment()["REGION"] != "private-region" || len(first.Environment()) != 2 {
 		t.Fatal(first.Environment())
 	}
 	grant := first.Definition().Executor.Settings["sandbox"].(map[string]any)["permissions"].(map[string]any)["filesystem"].([]any)[0].(map[string]any)

@@ -1,5 +1,5 @@
-// Package wasmruntime implements the private worker/result foundation. It is
-// deliberately not a production provider and grants no business host access.
+// Package wasmruntime owns isolated Wasm execution and the request-scoped
+// business bridge used by the production Agent provider.
 package wasmruntime
 
 import (
@@ -25,22 +25,25 @@ const Chunk = 64 << 10
 const EnvelopeLimit = 32 << 20
 
 type Limits struct {
-	MemoryBytes    int64 `json:"memory_bytes"`
-	ModuleBytes    int64 `json:"module_bytes"`
-	Handles        int   `json:"handles"`
-	HostCalls      int   `json:"host_calls"`
-	JSONDepth      int64 `json:"json_depth"`
-	JSONItems      int64 `json:"json_items"`
-	FileBytes      int64 `json:"file_bytes"`
-	TotalFileBytes int64 `json:"total_file_bytes"`
-	Files          int   `json:"files"`
+	MemoryBytes                                            int64 `json:"memory_bytes"`
+	ModuleBytes                                            int64 `json:"module_bytes"`
+	Handles                                                int   `json:"handles"`
+	HostCalls                                              int   `json:"host_calls"`
+	JSONDepth                                              int64 `json:"json_depth"`
+	JSONItems                                              int64 `json:"json_items"`
+	FileBytes                                              int64 `json:"file_bytes"`
+	TotalFileBytes                                         int64 `json:"total_file_bytes"`
+	Files                                                  int   `json:"files"`
+	ReadBytes, WriteBytes, TotalReadBytes, TotalWriteBytes int64
+	FileOperations                                         int64
+	HTTPRequestBytes, HTTPResponseBytes                    int64
 }
 
 func DefaultLimits() Limits {
-	return Limits{128 << 20, 32 << 20, 64, 8, 32, 100000, 32 << 20, 64 << 20, 16}
+	return Limits{MemoryBytes: 128 << 20, ModuleBytes: 32 << 20, Handles: 64, HostCalls: 8, JSONDepth: 32, JSONItems: 100000, FileBytes: 32 << 20, TotalFileBytes: 64 << 20, Files: 16, ReadBytes: 64 << 20, WriteBytes: 64 << 20, TotalReadBytes: 256 << 20, TotalWriteBytes: 256 << 20, FileOperations: 65536, HTTPRequestBytes: 32 << 20, HTTPResponseBytes: 32 << 20}
 }
 func (l Limits) rssLimit() (uint64, error) {
-	if l.MemoryBytes < 65536 || l.MemoryBytes > 1<<32 || l.ModuleBytes < 1 || l.ModuleBytes > (math.MaxInt64-(512<<20)-2*l.MemoryBytes)/8 || l.Handles < 1 || l.HostCalls < 1 || l.JSONDepth < 1 || l.JSONDepth > math.MaxInt64-4 || l.JSONItems < 1 || l.Files > (math.MaxInt64-8)/3 || l.JSONItems > math.MaxInt64-int64(l.Files)*3-8 || l.FileBytes < 1 || l.TotalFileBytes < l.FileBytes || l.Files < 1 {
+	if l.MemoryBytes < 65536 || l.MemoryBytes > 1<<32 || l.ModuleBytes < 1 || l.ModuleBytes > (math.MaxInt64-(512<<20)-2*l.MemoryBytes)/8 || l.Handles < 1 || l.HostCalls < 1 || l.JSONDepth < 1 || l.JSONDepth > math.MaxInt64-4 || l.JSONItems < 1 || l.Files > (math.MaxInt64-8)/3 || l.JSONItems > math.MaxInt64-int64(l.Files)*3-8 || l.FileBytes < 1 || l.TotalFileBytes < l.FileBytes || l.Files < 1 || l.ReadBytes < 1 || l.WriteBytes < 1 || l.TotalReadBytes < 1 || l.TotalWriteBytes < 1 || l.FileOperations < 1 || l.HTTPRequestBytes < 1 || l.HTTPResponseBytes < 1 {
 		return 0, errors.New("invalid worker limits")
 	}
 	return uint64((512 << 20) + 2*l.MemoryBytes + 8*l.ModuleBytes), nil

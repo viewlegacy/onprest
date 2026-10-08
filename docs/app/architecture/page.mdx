@@ -25,9 +25,9 @@ The agent prepares only the providers and sources referenced by configured capab
 3. Start the agent inside the customer network.
 4. The agent connects outbound to the gateway.
 5. REST and MCP clients call only capabilities their API key can access.
-6. The agent validates input, applies policy, executes the prepared capability against its approved sources, validates selected output, and returns data or independent file snapshots.
+6. The agent validates input, applies policy, executes the prepared capability within its configured source and code permissions, validates selected output, and returns data or independent file snapshots.
 
-The gateway does not receive private schema knowledge, SQL, DSNs, DB credentials, or execution rules. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations. The gateway receives only the agent-generated public capability contract needed for OpenAPI and MCP discovery.
+The gateway does not receive private schema knowledge, SQL, DSNs, DB credentials, or execution rules. Those stay inside the on-prem agent, where `capability.yaml` defines the registered executable capabilities. Code capabilities also depend on reviewed param handling and their OS or sandbox permissions; see the [code security boundary](/security#wasm-code-boundary). The gateway receives only the agent-generated public capability contract needed for OpenAPI and MCP discovery.
 
 ## Design Principle
 
@@ -117,7 +117,7 @@ The agent is also a Go single binary. It is deployed on the on-prem side togethe
 - input schema validation
 - policy enforcement
 - optional per-capability Agent rate limiting before execution admission
-- execution of prepared capabilities against approved sources
+- execution of prepared capabilities within configured source and code permissions
 - output selection and schema enforcement
 - OpenAPI spec generation
 - runtime detail output to the local log

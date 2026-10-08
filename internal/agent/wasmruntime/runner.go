@@ -14,6 +14,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/process"
 	"github.com/viewlegacy/onprest/internal/agent/artifacts"
+	"github.com/viewlegacy/onprest/internal/agent/filesystem"
 	"github.com/viewlegacy/onprest/internal/buildinfo"
 	"github.com/viewlegacy/onprest/internal/contract"
 )
@@ -30,6 +31,7 @@ type Runner struct {
 	Diagnostic   Diagnostic
 	Observe      func(Observation)
 	AgentVersion string
+	Bridge       *Bridge
 	// Package-private probes used by real-process enforcement tests.
 	sample      func(*process.Process) (uint64, float64, error)
 	rssOverride uint64
@@ -56,6 +58,11 @@ func (r *Runner) validate(ctx context.Context, m *Module, l Limits) (Metadata, e
 // Execute waits for normal worker exit, then performs common publication checks.
 // Returned output owns independent stages and must be closed by its consumer.
 func (r *Runner) Execute(ctx context.Context, m *Module, params map[string]any, c *contract.Capability, l Limits) (out *contract.PreparedOutput, err error) {
+	return r.ExecutePublication(ctx, m, params, c, l, func(v contract.ProviderResult) (*contract.PreparedOutput, error) {
+		return contract.ProcessOutput(ctx, c, v, r.Store.Scratch())
+	})
+}
+func (r *Runner) ExecutePublication(ctx context.Context, m *Module, params map[string]any, c *contract.Capability, l Limits, publish func(contract.ProviderResult) (*contract.PreparedOutput, error)) (out *contract.PreparedOutput, err error) {
 	if m == nil || r.Store == nil || c == nil {
 		return nil, failure("EXECUTION_FAILED", "invalid execution material")
 	}
@@ -76,6 +83,8 @@ func (r *Runner) Execute(ctx context.Context, m *Module, params map[string]any, 
 		d.finish(reason)
 	}()
 	s := newSession(ctx, r.Store, l, d)
+	s.bridge = r.Bridge
+	s.roots = map[string]*filesystem.Root{}
 	defer func() {
 		cleanupErr = s.cleanup()
 		if cleanupErr != nil {
@@ -101,7 +110,7 @@ func (r *Runner) Execute(ctx context.Context, m *Module, params map[string]any, 
 	if s.terminalError != nil {
 		return nil, s.terminalError
 	}
-	return contract.ProcessOutput(ctx, c, s.value, r.Store.Scratch())
+	return publish(s.value)
 }
 func (r *Runner) process(ctx context.Context, m *Module, params []byte, l Limits, s *session, validate bool) (metadata *Metadata, resultErr error) {
 	defer func() {
@@ -201,7 +210,12 @@ func (r *Runner) process(ctx context.Context, m *Module, params []byte, l Limits
 		return nil, e
 	}
 	token := hex.EncodeToString(tokenBytes)
-	boot := bootstrap{token, l, deadline.UnixNano(), len(m.bytes), len(params), validate, r.version()}
+	boot := bootstrap{Token: token, Limits: l, Deadline: deadline.UnixNano(), ModuleSize: len(m.bytes), ParamsSize: len(params), Validate: validate, Version: r.version()}
+	if r.Bridge != nil && !validate {
+		boot.Environment = r.Bridge.Environment
+		boot.Business = true
+		boot.Base = r.Bridge.Base
+	}
 	if e = send(parentOut, boot); e != nil {
 		return nil, failure("EXECUTION_FAILED", e.Error())
 	}

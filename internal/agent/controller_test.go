@@ -401,3 +401,37 @@ func (s *controllerStage) Finish(contract.ArtifactMetadata) (io.ReadCloser, erro
 	return io.NopCloser(bytes.NewReader(s.Bytes())), nil
 }
 func (s *controllerStage) Abort() error { s.aborted.Add(1); return nil }
+
+func TestControllerTrustedPublicTerminalRevalidation(t *testing.T) {
+	for _, tc := range []struct{ name, code, message, want string }{
+		{"valid", "APP_LIMIT", "公開された原文です", "APP_LIMIT"},
+		{"max", "APP_LIMIT", strings.Repeat("a", 1024), "APP_LIMIT"},
+		{"long", "APP_LIMIT", strings.Repeat("a", 1025), "EXECUTION_FAILED"},
+		{"invalidcode", "APP_lower", "private", "EXECUTION_FAILED"},
+		{"system", "EXECUTION_FAILED", "private", "EXECUTION_FAILED"},
+		{"control", "APP_LIMIT", "private\nmessage", "EXECUTION_FAILED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &controllerFixture{fn: func(ctx context.Context, in map[string]any, e *providers.Effects) (contract.ProviderResult, error) {
+				e.NoChange()
+				return contract.ProviderResult{}, &providers.PublicTerminal{Code: tc.code, Message: tc.message}
+			}}
+			ctl, _ := controller(t, controllerConfig(t, ""), p, nil, nil)
+			out, fail := ctl.Execute(context.Background(), request())
+			if out != nil || fail == nil || fail.Code != tc.want || fail.Outcome != "no_change" {
+				t.Fatal(out, fail)
+			}
+			if tc.want == "APP_LIMIT" && fail.Message != tc.message {
+				t.Fatal(fail)
+			}
+			if tc.want == "EXECUTION_FAILED" && fail.Message == tc.message {
+				t.Fatal("invalid public message escaped")
+			}
+		})
+	}
+	for _, tc := range []struct{ code, message string }{{"EXECUTION_FAILED", "public"}, {"APP_lower", "public"}, {"APP_VALID", ""}, {"APP_VALID", "bad\n"}} {
+		if _, e := providers.NewPublicTerminal(tc.code, tc.message); e == nil {
+			t.Fatal(tc)
+		}
+	}
+}

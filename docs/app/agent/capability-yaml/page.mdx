@@ -46,7 +46,7 @@ capabilities:
       data: {}
 ```
 
-The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, CSV executors reading configured folders or uploaded files, file read/write executors with file input, and HTTP executors calling fixed API sources. Wasm executors fail preparation and are not advertised. Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads and writes select named folder sources.
+The runtime supports DB executors with PostgreSQL, MySQL, SQL Server, and Oracle, including CSV output, CSV executors reading configured folders or uploaded files, file read/write executors with file input, and HTTP executors calling fixed API sources. Wasm executors run prepared WASI command modules in isolated workers; see [Wasm executors](#wasm-executors). Each DB capability selects `executor.source` and owns its prepared database connection pool. File reads and writes select named folder sources.
 
 Capability names match `^[a-zA-Z][a-zA-Z0-9_.-]{0,127}$`; names beginning with `onprest_` are reserved.
 
@@ -322,3 +322,42 @@ File policy limits are `max_output_file_bytes` (default `32MiB`), `max_total_out
 ## Metadata
 
 `description`, explicit boolean `annotations`, and validated `examples.params` describe a capability. Field descriptions belong in `input.properties.<name>.description`, DB SELECT/CSV `output.items.properties.<column>.description`, or DML `output.properties.<name>.description`. OpenAPI 3.1 and MCP input/output schemas derive from the same compiled contract. SQL, source connection details, secrets and hidden capabilities are not advertised. Examples appear in OpenAPI; MCP uses annotation hints and advertises outputSchema only for protocol versions that support it.
+
+## Wasm executors
+
+Use `executor.type: wasm` with a `module` path relative to the configuration directory, optional SHA-256 `sha256` (when specified, a nonempty string of exactly 64 lowercase hexadecimal characters), and `effects: none` or `possible` (default). The Agent validates the module's `onprest` custom metadata, host ABI version, imports and limits during startup, `validate` and `doctor`, without running business code. Deploy the completed module with the Agent; the installation needs no Go compiler or separate Wasm runtime. See the [host ABI example](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/examples/wasm).
+
+### Permissions and paths
+
+`sandbox.enabled` defaults to false: code uses the Agent OS user's filesystem/network permissions and prepared process environment without named sources or grants. When false, omit the entire `permissions` field, including an empty map. With true, permissions default to deny-all. `permissions.filesystem` entries have `root` (config-relative or absolute) and `access: read` or `read_write`. Links, reparse points, filesystem crossings and unsafe file types are rejected. `permissions.http` grants specify exact `origin`, `methods`, segment-boundary `path_prefix`, and optional `allowed_cidrs`. HTTPS verifies the destination hostname and system trust; ambient proxies are ignored. `permissions.environment` lists allowed names. Uploaded input handles remain available only to their owning request, including in deny-all mode.
+
+The FS bridge supports regular files and directories; device, FIFO and socket files are rejected in both modes. Relative business paths resolve from the configuration directory. The module's `PWD` is fixed to that directory in both modes as runtime cwd plumbing, including when no environment names are allowed; other environment values follow the mode above. On Windows, WASI uses an absolute guest path such as `/volumes/C/service` for `C:\service`, or `/unc/server/share/service` for a native UNC base. Native host paths are normalized and authorized by the Agent; guest mapping alone grants no access. These effective values and module bytes are captured during preparation and do not change during execution.
+
+### Limits
+
+Set Wasm limits under `executor.limits`; every value must be positive.
+
+| Setting | Default |
+|---|---|
+| `memory_bytes` | `128MiB` |
+| `max_module_bytes` | `32MiB` |
+| `max_handles` | `64` |
+| `max_host_calls` | `8` |
+| `max_file_read_bytes` / `max_file_write_bytes` | `64MiB` each |
+| `max_total_file_read_bytes` / `max_total_file_write_bytes` | `256MiB` each |
+| `max_file_operations` | `65536` |
+| `max_http_request_bytes` / `max_http_response_bytes` | `32MiB` each |
+
+`memory_bytes` must be between 64KiB and 4GiB, inclusive. Each single-file read/write limit must be no greater than its corresponding total limit. Common input/output policy limits also apply. FS and input reads/writes reserve bytes before I/O, charge actual bytes and logical growth, and keep cumulative totals across reopen/seek. Known-length writes reserve before truncation; metadata and failed operations are bounded too. Close and cancellation remain available after quota exhaustion.
+
+### WASI file behavior
+
+Standard WASI file I/O uses the same authorization and budgets as the host bridge. In sandbox OFF, removal and rename operate on the final symlink itself (including dangling links), and directory creation follows ordinary directory symlinks. Special file objects are rejected before mutation or blocking I/O.
+
+File effects reflect observed creation, truncation or writing; opening an existing file with a create flag alone leaves it unchanged. Open directory descriptors retain their target through path renames and replacements, including rewind. Positioned reads and writes preserve the descriptor offset and count as one file operation. Read-only file and directory sync operations use the OS result without consuming write bytes or creating effects.
+
+Linux `fd_allocate` reserves the requested region and logical growth before native allocation; allocation is unsupported on macOS and Windows. Unmetered link, symlink, readlink, timestamp and advise operations return unsupported. Host errors use fixed categories (invalid, permission denied, not found, limit exceeded, canceled, I/O, unsupported, already exists) without OS paths or raw detail.
+
+### HTTP and results
+
+HTTP sends only after the complete request body is ready, never retries or follows redirects automatically, and exposes response status and bytes. Valid raw result ABI application terminals follow the [shared error contract](/api/errors), with explicitly public messages and observed outcomes. Review the [code security boundary](/security#wasm-code-boundary).

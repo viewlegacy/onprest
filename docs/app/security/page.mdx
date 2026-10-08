@@ -13,7 +13,7 @@ The gateway routes capability names and params and serves the Agent-generated pu
 
 ## Gateway Compromise
 
-Even if the gateway is compromised, the attacker cannot make the agent run operations that do not exist in `capability.yaml`.
+Even if the gateway is compromised, the Agent rejects capabilities outside `capability.yaml`. A registered code capability can choose operations from its params, so the code and its param handling are part of the execution boundary.
 
 For mutations, grant the agent DB user only the required table-level INSERT, UPDATE, or DELETE privileges. Do not grant schema/DDL or unrestricted database privileges. `readonly` lint is a syntactic guardrail and cannot prove that a SELECT-invoked DB function has no side effect, so least privilege remains the final boundary. DML is never retried automatically after a timeout or disconnect because the transaction outcome may be unknown.
 
@@ -139,3 +139,7 @@ Agent rate-limit rejections use a fixed public message and never include submitt
 File references require the original API credential and current permission for the original capability on every retrieval. They are bound to the current definition and authenticated Agent connection, expire, and are lost on restart or reconnect. URI knowledge alone does not authorize a download. The Gateway does not enumerate retained files or fetch external resource URIs. It derives references only from the configured [file reference origin](/gateway/configuration#file-reference-origin).
 
 The Gateway enforces caller separation; the Agent validates its retained owner and connection generation. This boundary assumes an uncompromised Gateway: the Agent does not independently authenticate an end caller's assertion made by a compromised Gateway. Folder roots and private spool permissions remain operator responsibilities. Publish completed producer files by atomic rename and avoid modifying files in place during snapshot acquisition. See [File Output](/api/files).
+
+## Wasm code boundary
+
+Deploy only reviewed code and validate every argument that selects a path or destination. Sandbox OFF code can read host credentials and use the Agent OS user's resources. Sandbox ON limits FS/network/environment access to explicit grants, but cannot prevent disclosure to an allowed destination or guarantee rollback of file changes and HTTP side effects. Output selection controls the API result; it cannot prevent code from sending data directly over HTTP. Keep OS permissions and grants narrow. See [Wasm executors](/agent/capability-yaml#wasm-executors).

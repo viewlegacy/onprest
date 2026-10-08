@@ -239,10 +239,17 @@ func TestWasmRealWorkerTerminalFailuresAndIsolation(t *testing.T) {
 	for _, test := range []struct{ scenario, code string }{{"missing", "OUTPUT_INVALID"}, {"early", "OUTPUT_INVALID"}, {"duplicate_open", "OUTPUT_INVALID"}, {"foreign", "OUTPUT_INVALID"}, {"duplicate_file", "EXECUTION_FAILED"}, {"duplicate_commit", "OUTPUT_INVALID"}, {"post_io", "OUTPUT_INVALID"}, {"post_crash", "EXECUTION_FAILED"}, {"memory", "EXECUTION_FAILED"}, {"loop", "EXECUTION_TIMEOUT"}, {"post_timeout", "EXECUTION_TIMEOUT"}} {
 		t.Run(test.scenario, func(t *testing.T) {
 			timeout := 5 * time.Second
+			runner := r
 			if test.code == "EXECUTION_TIMEOUT" {
 				timeout = 1500 * time.Millisecond
+				// Compilation may use several CPU threads before the busy loop.
+				// Exercise the wall deadline independently of the real CPU-budget
+				// test below, while retaining actual RSS/counter monitoring.
+				copy := *r
+				copy.cpuOverride = 30
+				runner = &copy
 			}
-			out, e := run(t, r, m, c, map[string]any{"scenario": test.scenario}, timeout)
+			out, e := run(t, runner, m, c, map[string]any{"scenario": test.scenario}, timeout)
 			if out != nil {
 				out.Close()
 				t.Fatal("failure published output")
@@ -565,7 +572,7 @@ func TestWasmRealWorkerShortLivedMonitoringAndMidrunFailure(t *testing.T) {
 	}
 }
 
-func TestWasmRealAgentKeepsProductionUnregistered(t *testing.T) {
+func TestWasmRealAgentProductionPreparation(t *testing.T) {
 	dir := t.TempDir()
 	config := filepath.Join(dir, "agent.yaml")
 	_, key, err := ed25519.GenerateKey(rand.Reader)
@@ -581,12 +588,11 @@ func TestWasmRealAgentKeepsProductionUnregistered(t *testing.T) {
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	output, err := command.Output()
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
-		t.Fatalf("production prepare accepted: %v %s %s", err, output, &stderr)
+	if err != nil {
+		t.Fatalf("production prepare failed: %v %s %s", err, output, &stderr)
 	}
 	var result map[string]any
-	if json.Unmarshal(output, &result) != nil || result["valid"] != false || result["stage"] != "capability_explain" || result["message"] != "executor preparation failed" {
+	if json.Unmarshal(output, &result) != nil || result["valid"] != true {
 		t.Fatalf("wrong production rejection %s %s", output, &stderr)
 	}
 	help, err := exec.Command(binaryPath, "help").Output()

@@ -139,6 +139,10 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 	if cf.Compiled != nil {
 		var providerErr error
 		var failedCapability string
+		modules, resolveOptions, moduleErr := prepareWasmModules(ctx, cf.Compiled, cfg.CapabilityFile)
+		if moduleErr != nil {
+			return fail(&preparationError{stage: validationStageCapabilityExplain, publicMessage: "Wasm module preparation failed", detailErr: moduleErr})
+		}
 		registry, _ := providers.NewRegistry(map[string]providers.Factory{"db": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
 			p.redactor.capture(snapshot)
 			p, e := prepareDBProviderObserved(ctx, snapshot, observe)
@@ -153,8 +157,12 @@ func prepareAgentWithObserverAndMessage(ctx context.Context, cfg Config, newDeta
 			return prepareCSVProvider(ctx, snapshot)
 		}, "http": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
 			return prepareHTTPProvider(ctx, snapshot)
-		}})
-		versioned, err := registry.Prepare(ctx, cf.Compiled, cfg.CapabilityFile, providers.ResolveOptions{})
+		}, "wasm": func(ctx context.Context, snapshot *providers.Snapshot) (providers.Provider, error) {
+			c := snapshot.Definition()
+			return &wasmProvider{snapshot: snapshot, module: modules[c.Name], limits: wasmLimits(c)}, nil
+		},
+		})
+		versioned, err := registry.Prepare(ctx, cf.Compiled, cfg.CapabilityFile, resolveOptions)
 		if err != nil {
 			stage := validationStageCapabilityExplain
 			detail := err

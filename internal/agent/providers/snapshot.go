@@ -17,6 +17,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/viewlegacy/onprest/internal/agent/filesystem"
 	"github.com/viewlegacy/onprest/internal/contract"
 )
 
@@ -161,6 +162,7 @@ func Resolve(ctx context.Context, cfg *contract.Config, configPath, name string,
 				s.environment[k] = v
 			}
 		}
+		s.environment["PWD"] = filesystem.WASIPath(base)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

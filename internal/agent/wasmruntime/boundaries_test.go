@@ -16,8 +16,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/viewlegacy/onprest/internal/agent"
 	"github.com/viewlegacy/onprest/internal/agent/artifacts"
+	agent "github.com/viewlegacy/onprest/internal/agent/localdiagnostics"
 )
 
 func TestWasmModuleValidationAndCacheLimits(t *testing.T) {

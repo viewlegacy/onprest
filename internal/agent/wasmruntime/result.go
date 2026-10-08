@@ -9,9 +9,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/viewlegacy/onprest/internal/agent/filesystem"
+	"github.com/viewlegacy/onprest/internal/agent/hostservices"
+	"github.com/viewlegacy/onprest/internal/agent/providers"
 	"hash"
 	"io"
+	"io/fs"
+	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/viewlegacy/onprest/internal/agent/artifacts"
 	"github.com/viewlegacy/onprest/internal/contract"
@@ -24,6 +30,8 @@ const (
 	canceled    = int32(-5)
 	ioError     = int32(-6)
 	unsupported = int32(-7)
+	notFound    = int32(-3)
+	exists      = int32(-8)
 )
 
 type Error struct{ Code, Message, Detail string }
@@ -32,6 +40,7 @@ func (e *Error) Error() string           { return "Wasm execution failed: " + e.
 func failure(code, detail string) *Error { return &Error{Code: code, Detail: detail} }
 
 type handle struct {
+	business *business
 	kind     string
 	control  *bytes.Reader
 	stage    *artifacts.Stage
@@ -44,19 +53,23 @@ type handle struct {
 	metadata contract.ArtifactMetadata
 }
 type session struct {
-	mu                sync.Mutex
-	ctx               context.Context
-	store             *artifacts.Store
-	l                 Limits
-	handles           map[int64]*handle
-	stages            []*handle
-	result            int64
-	committed, failed bool
-	files             int
-	fileBytes         int64
-	value             contract.ProviderResult
-	terminalError     error
-	logs              *diagnostics
+	mu                                sync.Mutex
+	ctx                               context.Context
+	store                             *artifacts.Store
+	l                                 Limits
+	handles                           map[int64]*handle
+	stages                            []*handle
+	result                            int64
+	committed, failed                 bool
+	files                             int
+	fileBytes                         int64
+	value                             contract.ProviderResult
+	terminalError                     error
+	logs                              *diagnostics
+	bridge                            *Bridge
+	roots                             map[string]*filesystem.Root
+	http                              *hostservices.Service
+	readBytes, writeBytes, operations int64
 }
 
 func newSession(ctx context.Context, s *artifacts.Store, l Limits, d *diagnostics) *session {
@@ -102,6 +115,34 @@ func codeFor(err error) int32 {
 			return invalid
 		}
 	}
+	var p *providers.Failure
+	if errors.As(err, &p) {
+		switch p.Code {
+		case "PERMISSION_DENIED":
+			return denied
+		case "LIMIT_EXCEEDED", "BUSY":
+			return limit
+		case "VALIDATION_FAILED":
+			return invalid
+		case "EXECUTION_TIMEOUT":
+			return canceled
+		}
+	}
+	if errors.Is(err, fs.ErrInvalid) || errors.Is(err, syscall.EINVAL) {
+		return invalid
+	}
+	if errors.Is(err, fs.ErrPermission) {
+		return denied
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return notFound
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return exists
+	}
+	if errors.Is(err, errors.ErrUnsupported) {
+		return unsupported
+	}
 	return ioError
 }
 func (s *session) reject() (int64, int32) { s.failed = true; return 0, invalid }
@@ -111,7 +152,7 @@ func (s *session) call(b []byte) (int64, int32) {
 	}
 	v, e := contract.DecodeJSON(b, contract.Limits{MaxBytes: Chunk, MaxDepth: 8, MaxItems: 1024})
 	if e != nil {
-		return s.reject()
+		return 0, invalid
 	}
 	obj, ok := v.(map[string]any)
 	if !ok || len(obj) != 2 {
@@ -198,16 +239,25 @@ func (s *session) call(b []byte) (int64, int32) {
 		if e != nil || id != s.result || h == nil || h.kind != "result" || !h.ready {
 			return s.reject()
 		}
+		ack, code := s.control(map[string]any{})
+		if code != 0 {
+			s.failed = true
+			return 0, code
+		}
 		if e = s.envelope(h); e != nil {
+			delete(s.handles, ack)
 			s.failed = true
 			s.terminalError = e
 			return 0, invalid
 		}
 		s.committed = true
-		return s.control(map[string]any{})
+		return ack, 0
 	case "input.open", "http.open", "http.do", "http.abort":
-		return 0, denied
+		return s.businessCall(method, args)
 	default:
+		if strings.HasPrefix(method, "files.") {
+			return s.businessCall(method, args)
+		}
 		return 0, unsupported
 	}
 }
@@ -230,6 +280,9 @@ func numberHandle(v any) (int64, error) {
 
 func (s *session) write(id int64, b []byte) int32 {
 	h := s.handles[id]
+	if h != nil && h.business != nil {
+		return s.businessWrite(h, b)
+	}
 	if s.failed || s.committed {
 		s.failed = true
 		return invalid
@@ -269,6 +322,12 @@ func (s *session) write(id int64, b []byte) int32 {
 }
 func (s *session) read(id int64, n int) ([]byte, int32) {
 	h := s.handles[id]
+	if n < 0 || n > Chunk {
+		return nil, invalid
+	}
+	if h != nil && h.business != nil {
+		return s.businessRead(h, n)
+	}
 	if h == nil || h.kind != "control" || n < 0 || n > Chunk {
 		return nil, invalid
 	}
@@ -283,6 +342,11 @@ func (s *session) close(id int64) int32 {
 	h := s.handles[id]
 	if h == nil {
 		return invalid
+	}
+	if h.business != nil {
+		c := s.businessClose(h)
+		delete(s.handles, id)
+		return c
 	}
 	if h.kind == "body" {
 		marker := s.handles[h.marker]
@@ -411,6 +475,26 @@ func (s *session) envelope(h *handle) error {
 func stringsHasAPP(s string) bool { return len(s) >= 4 && s[:4] == "APP_" }
 func (s *session) cleanup() error {
 	var errs []error
+	for id, h := range s.handles {
+		if h.business != nil {
+			var err error
+			if h.business.request != nil {
+				err = s.abortRequest(h.business.request)
+			} else if c := s.businessClose(h); c != 0 {
+				err = errors.New("host resource close failed")
+			}
+			if err != nil {
+				errs = append(errs, err)
+			}
+			delete(s.handles, id)
+		}
+	}
+	if s.http != nil {
+		errs = append(errs, s.http.Close())
+	}
+	for _, r := range s.roots {
+		errs = append(errs, r.Close())
+	}
 	for _, h := range s.stages {
 		if h.reader != nil {
 			errs = append(errs, h.reader.Close())
@@ -434,6 +518,8 @@ func (s *session) dispatch(p packet) packet {
 		out.Data, out.Count = s.read(p.Handle, int(p.Count))
 	case "write":
 		out.Count = s.write(p.Handle, p.Data)
+	case "pread", "pwrite":
+		out = s.positioned(p)
 	case "close":
 		out.Count = s.close(p.Handle)
 	default:
