@@ -10,9 +10,13 @@ import (
 	"syscall"
 
 	"github.com/viewlegacy/onprest/internal/agent"
+	"github.com/viewlegacy/onprest/internal/agent/wasmruntime"
 )
 
 func main() {
+	if handled, code := wasmruntime.HandleWorker(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if handled, code := agent.HandleCLI(ctx, os.Args[1:], os.Stdout, os.Stderr); handled {
