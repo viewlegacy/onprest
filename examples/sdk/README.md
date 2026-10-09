@@ -10,7 +10,7 @@ Compile the module and append metadata describing its actual imports:
 
 ```sh
 mkdir -p /tmp/onprest-sdk-example
-go run ./examples/sdk/build --output /tmp/onprest-sdk-example/customer.wasm
+onprest-agent code build --source ./examples/sdk/customer --output /tmp/onprest-sdk-example/customer.wasm
 ```
 
 Reuse the loopback connection settings and demonstration credentials from the [Wasm example](../wasm/README.md), replacing its capability with `customer_csv`:
@@ -36,6 +36,18 @@ onprest-agent validate --config /tmp/onprest-sdk-example/agent.yaml
 ```
 
 The input pattern excludes spreadsheet formula prefixes. The module creates the CSV in memory, so sandbox deny-all needs no filesystem or network grants. The Agent user needs permission to create private `identity` and `spool` directories beside the configuration.
+
+## Local test
+
+Before starting either server, run the configured capability and save its validated CSV:
+
+```sh
+mkdir -p /tmp/onprest-sdk-example/saved
+onprest-agent code test --config /tmp/onprest-sdk-example/agent.yaml --capability customer_csv \
+  --params '{"customer":"Alice"}' --output-dir /tmp/onprest-sdk-example/saved --format json
+```
+
+The result contains `data: {"customer":"Alice"}` and CSV metadata with an absolute `saved_path` under a new request directory. Open that path to read the same CSV shown below. Diagnostics go to stderr. See the [CLI reference](../../docs/app/reference/cli/page.mdx#build-and-test-wasm-code) for author command options.
 
 ## Run and call
 
@@ -84,4 +96,4 @@ Alice
 
 MCP `tools/call` uses `name: customer_csv` and `arguments: {"customer":"Alice"}`. The default delivery is a reference; see the [file API documentation](https://docs.onprest.viewlegacy.com/api/files) for retrieval and lifetime rules. Stop both binaries with Ctrl+C when finished.
 
-Deploy the completed module and configuration with the Agent binary. The Agent includes the runtime and needs no compiler. The build helper is example tooling for an author's machine and adds no deployment dependency.
+Deploy the completed module and configuration with the Agent binary. The Agent includes the runtime and needs no compiler. The adjacent build manifest is optional for deployment; the author CLI adds no deployment dependency.

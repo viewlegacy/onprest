@@ -51,4 +51,4 @@ curl --fail --show-error \
 
 The downloaded file contains the four uploaded bytes (`00 ff 01 02` in hexadecimal). MCP `tools/call` uses `name: wasm_copy` and the same arguments. See the [file API documentation](https://docs.onprest.viewlegacy.com/api/files) for delivery and lifetime rules. Stop both binaries with Ctrl+C when finished.
 
-The helper only builds this example and attaches metadata describing its actual imports. It is not the public author CLI. The Agent's `PWD` is fixed to the configuration base in both sandbox modes, so `message.txt` resolves there independently of the process working directory.
+The helper only builds this internal ABI example and attaches metadata describing its actual imports. For application packages, use the [Agent author CLI](../../docs/app/reference/cli/page.mdx#build-and-test-wasm-code). The Agent's `PWD` is fixed to the configuration base in both sandbox modes, so `message.txt` resolves there independently of the process working directory.

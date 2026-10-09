@@ -708,3 +708,22 @@ func TestOutputCSVLargeRecordUsesBoundedStageWrites(t *testing.T) {
 		t.Fatalf("unbounded stage write=%d", sink.stages[0].maxWrite)
 	}
 }
+
+func TestOutputLocalRendererIndependence(t *testing.T) {
+	c := compile(t, wasm+"\n"+`output: {files: {delivery: {rest: direct, mcp: inline}}}
+policy: {max_output_files: 1}`, "")
+	before := string(canonical(t, c.Normalized()))
+	makeResult := func() ProviderResult { return ProviderResult{Data: map[string]any{}} }
+	local, e := ProcessLocalOutput(context.Background(), c, makeResult(), &memoryStager{})
+	if e != nil || len(local.Files) != 0 {
+		t.Fatal(local, e)
+	}
+	local.Close()
+	rest, e := ProcessOutput(context.Background(), c, makeResult(), &memoryStager{})
+	if e == nil || rest != nil {
+		t.Fatal("REST direct count validation bypassed")
+	}
+	if string(canonical(t, c.Normalized())) != before {
+		t.Fatal("local renderer changed definition hash")
+	}
+}

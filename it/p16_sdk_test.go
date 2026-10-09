@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/viewlegacy/onprest/internal/contract"
 )
 
 func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
@@ -89,19 +91,82 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 		}
 		return v.StatusCode, raw
 	}
-	for index, test := range []struct{ scenario, code, message, want, outcome string }{{"public", "APP_DECLINED", "説明", "APP_DECLINED", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1024), "APP_A", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1025), "EXECUTION_FAILED", "no_change"}, {"public", "LIMIT_EXCEEDED", "private detail", "EXECUTION_FAILED", "no_change"}, {"public", "APP_A", "private\ncontrol", "EXECUTION_FAILED", "no_change"}, {"general", "", "", "EXECUTION_FAILED", "no_change"}, {"limit", "", "", "LIMIT_EXCEEDED", "no_change"}, {"joined", "", "", "LIMIT_EXCEEDED", "no_change"}, {"envelope-boundary", "", "", "LIMIT_EXCEEDED", "no_change"}, {"side-effect", "", "", "APP_AFTER_WRITE", "committed"}} {
+
+	// The author CLI reuses this exact production SDK module and YAML fixture.
+	cli := func(t *testing.T, params []byte, want int) []byte {
+		t.Helper()
+		command := exec.CommandContext(ctx, agentBin, "code", "test", "--config", path, "--capability", "sdk", "--params", string(params), "--format", "json", "--output-dir", tmp, "--log-level", "error")
+		command.Dir = repo
+		var stdout, stderr bytes.Buffer
+		command.Stdout = &stdout
+		command.Stderr = &stderr
+		err := command.Run()
+		exit := 0
+		if err != nil {
+			if e, ok := err.(*exec.ExitError); ok {
+				exit = e.ExitCode()
+			} else {
+				t.Fatal(err)
+			}
+		}
+		if exit != want {
+			t.Fatal(exit, want, stdout.String(), stderr.String())
+		}
+		if !json.Valid(stdout.Bytes()) || bytes.Contains(stdout.Bytes(), []byte("private")) {
+			t.Fatal(stdout.String())
+		}
+		return stdout.Bytes()
+	}
+	publicError := func(t *testing.T, channel string, raw []byte) contract.ErrorValue {
+		t.Helper()
+		var envelope struct {
+			Error *contract.ErrorValue `json:"error"`
+		}
+		var fields map[string]json.RawMessage
+		if e := json.Unmarshal(raw, &envelope); e != nil || envelope.Error == nil {
+			t.Fatal("missing structured public error", channel, string(raw), e)
+		}
+		if e := json.Unmarshal(raw, &fields); e != nil {
+			t.Fatal(channel, e)
+		}
+		for _, key := range []string{"result", "data", "files"} {
+			if _, exists := fields[key]; exists {
+				t.Fatal("error exposed result", channel, key, string(raw))
+			}
+		}
+		if e := envelope.Error.Validate(); e != nil || bytes.Contains(raw, []byte("private")) || bytes.Contains(raw, []byte("file_id")) || bytes.Contains(raw, []byte("__onprest")) {
+			t.Fatal("unsafe public error", channel, string(raw), e)
+		}
+		return *envelope.Error
+	}
+	for index, test := range []struct{ scenario, code, message, want, outcome string }{{"public", "APP_DECLINED", "説明", "APP_DECLINED", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1024), "APP_A", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1025), "EXECUTION_FAILED", "no_change"}, {"public", "LIMIT_EXCEEDED", "private detail", "EXECUTION_FAILED", "no_change"}, {"public", "APP_A", "private\ncontrol", "EXECUTION_FAILED", "no_change"}, {"general", "", "", "EXECUTION_FAILED", "no_change"}, {"limit", "", "", "LIMIT_EXCEEDED", "no_change"}, {"joined", "", "", "LIMIT_EXCEEDED", "no_change"}, {"envelope-boundary", "", "", "LIMIT_EXCEEDED", "no_change"}, {"side-effect", "", "", "APP_AFTER_WRITE", "committed"}, {"decode", "", "", "EXECUTION_FAILED", "no_change"}} {
 		t.Run(fmt.Sprintf("%02d_%s_%s", index, test.scenario, test.want), func(t *testing.T) {
 			args := map[string]any{"scenario": test.scenario, "code": test.code, "message": test.message, "path": "large"}
 			if test.scenario == "envelope-boundary" {
 				args["i64"] = int64(32<<20) + 1
 			}
+			if test.scenario == "decode" {
+				args["i32"] = int64(2147483648)
+			}
 			body, _ := json.Marshal(args)
+			local := cli(t, body, 1)
+			localError := publicError(t, "CLI", local)
+			if test.scenario == "decode" && bytes.Contains(local, []byte("i32")) {
+				t.Fatal("private decode detail leaked", string(local))
+			}
+			if localError.Code != test.want || localError.Outcome != test.outcome {
+				t.Fatal(localError, test.want, test.outcome)
+			}
+			if strings.HasPrefix(test.want, "APP_") && test.scenario == "public" && localError.Message != test.message {
+				t.Fatal("public CLI message changed", localError.Message, test.message)
+			}
+
 			for _, protocol := range []string{"REST", "2025-03-26", "2025-06-18", "2025-11-25"} {
 				var status int
 				var raw []byte
 				if protocol == "REST" {
 					status, raw = request("POST", base+"/api/v1/capabilities/sdk", body)
-					if status != 422 && !(test.want == "EXECUTION_FAILED" && status == 502) {
+					if (status != 422 && !(test.want == "EXECUTION_FAILED" && status == 502)) || (test.scenario == "decode" && status != 502) {
 						t.Fatal(status, string(raw))
 					}
 				} else {
@@ -111,16 +176,33 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 						t.Fatal(status, string(raw))
 					}
 				}
-				if !bytes.Contains(raw, []byte(test.want)) || !bytes.Contains(raw, []byte(test.outcome)) || bytes.Contains(raw, []byte("private")) || bytes.Contains(raw, []byte("file_id")) {
-					t.Fatal(protocol, string(raw))
+				if bytes.Contains(raw, []byte("private")) || bytes.Contains(raw, []byte("file_id")) || bytes.Contains(raw, []byte("__onprest")) || (test.scenario == "decode" && bytes.Contains(raw, []byte("i32"))) {
+					t.Fatal("private response detail leaked", protocol, string(raw))
 				}
-				if strings.HasPrefix(test.want, "APP_") && test.scenario == "public" {
-					var parsed any
-					if err := json.Unmarshal(raw, &parsed); err != nil {
-						t.Fatal(err)
+				if protocol == "REST" {
+					if got := publicError(t, protocol, raw); got != localError {
+						t.Fatal("CLI/REST public error differs", got, localError)
 					}
-					if !recursiveString(parsed, test.message) {
-						t.Fatal("public message changed", protocol, string(raw))
+				} else {
+					var rpc struct {
+						Result struct {
+							IsError           bool                          `json:"isError"`
+							Content           []struct{ Type, Text string } `json:"content"`
+							StructuredContent json.RawMessage               `json:"structuredContent"`
+						} `json:"result"`
+					}
+					if e := json.Unmarshal(raw, &rpc); e != nil || !rpc.Result.IsError || len(rpc.Result.Content) != 1 || rpc.Result.Content[0].Type != "text" {
+						t.Fatal("invalid MCP error result", protocol, string(raw), e)
+					}
+					if got := publicError(t, protocol+" content.text", []byte(rpc.Result.Content[0].Text)); got != localError {
+						t.Fatal("CLI/MCP text public error differs", protocol, got, localError)
+					}
+					if protocol == "2025-03-26" {
+						if len(rpc.Result.StructuredContent) != 0 {
+							t.Fatal("legacy MCP structuredContent must be absent", string(raw))
+						}
+					} else if got := publicError(t, protocol+" structuredContent", rpc.Result.StructuredContent); got != localError {
+						t.Fatal("CLI/MCP structured public error differs", protocol, got, localError)
 					}
 				}
 			}
@@ -136,6 +218,18 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 				args["document"] = map[string]any{"name": "input.bin", "mime_type": "application/octet-stream", "data": "AP8B"}
 			}
 			body, _ := json.Marshal(args)
+			local := cli(t, body, 0)
+			var localResult struct {
+				Data  json.RawMessage
+				Files []struct {
+					SavedPath string `json:"saved_path"`
+					Size      int64  `json:"size_bytes"`
+				}
+			}
+			if e := json.Unmarshal(local, &localResult); e != nil {
+				t.Fatal(e, string(local))
+			}
+
 			status, raw := request("POST", base+"/api/v1/capabilities/sdk", body)
 			if status != 200 {
 				t.Fatal(status, string(raw))
@@ -152,6 +246,10 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 			if e := json.Unmarshal(raw, &envelope); e != nil {
 				t.Fatal(e)
 			}
+
+			if !bytes.Equal(localResult.Data, envelope.Result.Data) || len(localResult.Files) != len(envelope.Result.Files) {
+				t.Fatal("CLI/REST common output differs", string(local), string(raw))
+			}
 			if scenario == "decode" {
 				if !bytes.Contains(envelope.Result.Data, []byte(`9007199254740993`)) {
 					t.Fatal(string(raw))
@@ -167,6 +265,11 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 						want = []byte{0, 255, 1}
 					} else if i == 0 {
 						want = []byte{0, 255, 1, 2}
+					}
+
+					saved, e := os.ReadFile(localResult.Files[i].SavedPath)
+					if e != nil || !bytes.Equal(saved, b) || localResult.Files[i].Size != f.Size {
+						t.Fatal("CLI saved bytes differ from REST", e, saved, b)
 					}
 					if status != 200 || !bytes.Equal(b, want) || f.Size != int64(len(want)) {
 						t.Fatal(status, b, f)
@@ -185,34 +288,4 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 			}
 		})
 	}
-	// YAML-valid but Go-incompatible input fails before the SDK handler.
-	status, raw := request("POST", base+"/api/v1/capabilities/sdk", []byte(`{"scenario":"decode","i32":2147483648}`))
-	if status != 502 || !bytes.Contains(raw, []byte("EXECUTION_FAILED")) || bytes.Contains(raw, []byte("i32")) {
-		t.Fatal(status, string(raw))
-	}
-}
-func recursiveString(v any, want string) bool {
-	switch x := v.(type) {
-	case string:
-		if x == want {
-			return true
-		}
-		var embedded any
-		if json.Unmarshal([]byte(x), &embedded) == nil {
-			return recursiveString(embedded, want)
-		}
-	case map[string]any:
-		for _, v := range x {
-			if recursiveString(v, want) {
-				return true
-			}
-		}
-	case []any:
-		for _, v := range x {
-			if recursiveString(v, want) {
-				return true
-			}
-		}
-	}
-	return false
 }

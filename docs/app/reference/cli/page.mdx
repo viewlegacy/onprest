@@ -49,6 +49,62 @@ The command outputs a plaintext API key and bcrypt `key_hash`. Store only the ha
 
 `--capability-file PATH` is an alias for `--config PATH`. When both are supplied, `--config` takes precedence.
 
+## Build and test Wasm code
+
+Use the Agent binary on the author machine to build a Go WASI command package, inspect a module without running it, and execute one configured Wasm capability locally:
+
+```sh
+onprest-agent code build --output ./module.wasm --source ./code
+onprest-agent code build --config ./agent.yaml --capability process_document --source ./code
+onprest-agent code validate --module ./module.wasm --format json
+onprest-agent code test --config ./agent.yaml --capability process_document --params '{"customer":"Alice"}' --format json
+onprest-agent code test --build --config ./agent.yaml --capability process_document --source ./code --force --params-file ./params.json
+```
+
+Build requires Go 1.26.9 or later and a package `main` in a Go module. `--source` defaults to the current directory; it selects that package directory, without searching for another entry point. Normal Go file selection applies, including OS/build constraints and exclusion of test functions. Build copies the environment with `GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 GOWORK=off` and runs `go build -trimpath -mod=readonly` with private copied module/checksum files; relative local replacements retain the original module base, and it does not run generate or update source, `go.mod`, or `go.sum`. `--offline` also sets `GOPROXY=off GOTOOLCHAIN=local GOSUMDB=off`, so missing dependencies or a missing suitable local compiler fail.
+
+Standalone build requires `--output`; capability build requires both `--config` and `--capability` and rejects `--output`. Capability build lints the complete YAML and selects a Wasm capability, even when its module does not exist yet. CLI paths are relative to the current directory; YAML module paths are relative to the config file. Build and local test do not connect to the Gateway, read its signing key file, open unrelated sources, or use the running Agent's spool or detail log. The YAML's deployment configuration must still pass ordinary syntax and consistency checks.
+
+Build adds the `onprest` ABI/minimum-Agent/import custom section and verifies actual imports, signatures, module size and any configured `executor.sha256` without executing business code. It writes the module and adjacent `FILE.manifest.json`, publishing the manifest last. The manifest has `sha256`, `abi`, `compiler_version`, `dependency_hash`, and sorted `required_imports`. `dependency_hash` is SHA-256 of the JSON array containing the original `go.mod` text and `go.sum` text (an absent sum is the empty string), in that order. Existing module or manifest requires `--force`; a failed replacement restores the previous pair. Expected YAML hashes are never updated automatically. `code validate` checks an adjacent manifest when present; deployment only requires the Agent, YAML and module.
+
+`test --build` uses the same build operation and executes only after it succeeds. A failed build never runs the previous module. A successful build remains when subsequent business execution fails. `--source`, `--offline`, and `--force` apply only to build or `test --build`.
+
+### Test input and results
+
+`--params JSON` and `--params-file FILE` are exclusive; omitting both supplies `{}`. Input uses the production JSON decoder, schema validator, defaults, file receiver, controller, SDK and isolated worker. Invalid input fails before business execution. Local tests perform real business effects allowed by the capability's sandbox and policies. They do not test API key authorization or REST/MCP transport.
+
+For a file property, supply its inline object with `name`, `mime_type`, and standard strict Base64 `data`, or put `null` at that exact leaf and pass repeatable `--input-file POINTER=PATH`:
+
+```sh
+onprest-agent code test --config ./agent.yaml --capability process_document \
+  --params '{"documents":[null,null]}' \
+  --input-file '/documents/0=./input = one.pdf' \
+  --input-file '/documents/1=./second.bin' \
+  --input-mime '/documents/1=application/pdf' --format json
+```
+
+`--input-file` and `--params-file` require regular files. Their final path component cannot be a symlink or reparse point; the CLI opens without following it and validates that same handle before reading. Devices, FIFOs, sockets and directories fail before business execution.
+
+Pointers use JSON Pointer escaping and existing array indices; missing leaves, duplicates, non-file targets, non-regular paths and a binding without a `null` placeholder fail. MIME overrides apply only to the same local file binding and use a concrete type without parameters. Extensions `txt`, `csv`, `json`, `pdf`, `png`, `jpg`/`jpeg`, `gif`, `mp4` and `zip` have fixed MIME mappings; other extensions use `application/octet-stream`. File name, MIME, extension, empty-file, byte and count constraints still apply. Local filesystem paths are accepted by this CLI adapter only.
+
+Every operation accepts `--format text|json` (default `text`). stdout contains only the operation result. JSON always has `operation` and `ok`; build/validate success includes `module`, `sha256`, `abi`, `imports` and, when applicable, `manifest`. Successful test includes its new ULID `request_id`, projected `data`, and ordered `files` containing `name`, `mime_type`, `size_bytes`, `sha256`, and optionally `saved_path`. Failure includes a safe `error` with `code`, `message`, optional `reason`, and observed `outcome`; it excludes data/files and private diagnostic detail. A valid SDK `PublicError` preserves its safe `APP_*` code/message. Help and success exit `0`, execution/compiler/validation/output failure exits `1`, and invalid usage exits `2`.
+
+Compiler diagnostics, SDK logs, captured Wasm stdout/stderr and internal details go to CLI stderr with control characters escaped. Redirect the two streams separately. `--log-level debug|info|warn|error` overrides YAML `logging.level` for test; omission uses YAML, then `info`. It changes recorded diagnostics only. Compiler diagnostic display is limited to 1 MiB while pipes continue draining. See [Logging](/reference/logging#agent).
+
+### Save local output files
+
+```sh
+mkdir -p ./saved
+onprest-agent code test --config ./agent.yaml --capability process_document \
+  --params-file ./params.json --output-dir ./saved --format json > result.json 2> diagnostic.log
+```
+
+Without `--output-dir`, every output reader is still fully consumed and checked, and only metadata remains. With it, the CLI requires an existing directory and opens it safely before business execution. It saves all validated bytes in a private run directory, closes and flushes everything, then publishes `DIR/<request_id>/` with an atomic rename that never replaces an existing path. Filenames are ordered `0001`, `0002`, etc., with the original name's final ASCII alphanumeric extension of 1–16 characters lowercased when present. Original names remain in metadata, and `saved_path` is an absolute local path. Zero files produces no final directory. `--force` never overwrites local test output.
+
+YAML delivery remains part of lint and definition hashing. Local test uses this local saver rather than REST/MCP rendering, so success does not establish reference retrieval, direct response count, or inline-envelope delivery limits. Common output projection, CSV generation, file count/byte/size/digest checks still apply.
+
+Invalid output directories fail before business execution. Copy/disk/competition/finalization failure reports CLI-only `CLI_OUTPUT_FAILED`, exit `1`, and an outcome reflecting that business execution may already have occurred. The CLI never retries business execution. Normal failure and cancellation release readers, run spool and unfinished output. Cleanup failures report residual paths to stderr and exit `1`; completed output survives cleanup or stdout-write failure. Forced termination can leave run-named private `.onprest-code-*` directories; these are unfinished output and can be removed manually after that run stops. Other runs' directories are never scanned or removed.
+
 ## Validate Agent startup
 
 ```bash

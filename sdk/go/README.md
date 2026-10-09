@@ -1,6 +1,15 @@
 # Onprest Go SDK
 
-Use `github.com/viewlegacy/onprest/sdk/go` (package `onprest`) in Go WASI preview1 command modules. The SDK is an independent module and requires Go 1.26.9 or later. Pin its version in your application's `go.mod`; SDK tags use `sdk/go/vX.Y.Z`. Build with `GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0`. Deploy the completed module and its `onprest` import metadata with the Agent; the installed Agent includes the runtime and needs no compiler. The [complete customer CSV example](../../examples/sdk/README.md) includes a metadata build helper.
+Use `github.com/viewlegacy/onprest/sdk/go` (package `onprest`) in Go WASI preview1 command modules. The SDK is an independent module and requires Go 1.26.9 or later. Pin its version in your application's `go.mod`; SDK tags use `sdk/go/vX.Y.Z`. Build with `GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0`. Deploy the completed module and its `onprest` import metadata with the Agent; the installed Agent includes the runtime and needs no compiler. The [complete customer CSV example](../../examples/sdk/README.md) uses the author CLI to build and locally test the module.
+
+Build your application's package directory with the Agent author CLI, which adds and verifies the required custom metadata:
+
+```sh
+onprest-agent code build --source ./code --output ./module.wasm
+onprest-agent code validate --module ./module.wasm
+```
+
+The [CLI reference](../../docs/app/reference/cli/page.mdx#build-and-test-wasm-code) covers configuration-based builds and local tests, including input files, saved output and diagnostics.
 
 ## Handler and results
 

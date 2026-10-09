@@ -271,7 +271,16 @@ func nilInterface(v any) bool {
 // stager is required only when files are actually published; omitted files are
 // closed without reading. There is no URI, expiry, persistent spool, or transport
 // implementation in this package.
-func ProcessOutput(ctx context.Context, c *Capability, source ProviderResult, stager ArtifactStager) (out *PreparedOutput, err error) {
+func ProcessOutput(ctx context.Context, c *Capability, source ProviderResult, stager ArtifactStager) (*PreparedOutput, error) {
+	return processOutput(ctx, c, source, stager, true)
+}
+
+// ProcessLocalOutput preserves all shared validation without transport delivery
+// rules. It does not mutate the compiled definition or its hash.
+func ProcessLocalOutput(ctx context.Context, c *Capability, source ProviderResult, stager ArtifactStager) (*PreparedOutput, error) {
+	return processOutput(ctx, c, source, stager, false)
+}
+func processOutput(ctx context.Context, c *Capability, source ProviderResult, stager ArtifactStager, delivery bool) (out *PreparedOutput, err error) {
 	ready := &PreparedOutput{Files: []OutputArtifact{}, ReturnedRows: source.ReturnedRows, AffectedRows: source.AffectedRows}
 	sourceClosed := make([]bool, len(source.Files))
 	closeSource := func(i int) error {
@@ -331,7 +340,7 @@ func ProcessOutput(ctx context.Context, c *Capability, source ProviderResult, st
 	if int64(count) > policyInt(c, "max_output_files") {
 		return nil, outputLimit()
 	}
-	if c.Output.Files["delivery"].(map[string]any)["rest"] == "direct" && count != 1 {
+	if delivery && c.Output.Files["delivery"].(map[string]any)["rest"] == "direct" && count != 1 {
 		return nil, invalidOutput(errors.New("direct output requires exactly one file"))
 	}
 	total := int64(0)

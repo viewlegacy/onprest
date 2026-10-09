@@ -70,5 +70,8 @@ Important fields:
 - `sources.databases.<name>.name`
 - `sources.databases.<name>.user`
 - `sources.databases.<name>.password`
+- `logging.level` (`debug`, `info`, `warn`, `error`; default `info`)
 - `logging.max_size`
 - `runtime.max_concurrent_requests`
+
+Author `code test` requires explicit `--config` and `--capability` rather than using `AGENT_CAPABILITY_FILE`. See [CLI Reference](/reference/cli#build-and-test-wasm-code) for author command options and build environment overrides.

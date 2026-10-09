@@ -29,6 +29,16 @@ go test ./...
 
 Fast, dependency-free checks. Run these first.
 
+## Author CLI contracts
+
+```sh
+go test ./internal/agent -run '^TestCode' -count=1
+go test ./internal/contract -run '^Test(InlineFileStrictSharedNormalization|OutputLocalRendererIndependence)$' -count=1
+go test -tags=integration ./it -run '^TestSDKPublicResultsRealBinariesRESTAndMCP$' -count=1
+```
+
+These targeted tests build an actual Agent, compile author packages, execute the isolated worker, exercise pair preservation and local output faults, and compare the same SDK fixture through CLI, REST and MCP. They do not establish full release readiness or native execution on another OS. See [Author CLI](/reference/cli#build-and-test-wasm-code) for application commands.
+
 ## Integration
 
 ```bash

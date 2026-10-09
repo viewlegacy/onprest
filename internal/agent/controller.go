@@ -19,6 +19,7 @@ type ExecutionRequest struct {
 	Params                         map[string]any
 	Deadline                       time.Time
 	admitted                       bool
+	localOutput                    bool
 	input                          *artifacts.Request
 	owner                          artifacts.Owner
 	stager                         contract.ArtifactStager
@@ -171,6 +172,9 @@ func (c *ExecutionController) Execute(parent context.Context, req ExecutionReque
 		stager := req.stager
 		if stager == nil {
 			stager = c.stager
+		}
+		if req.localOutput {
+			return contract.ProcessLocalOutput(ctx, cap, result, stager)
 		}
 		return contract.ProcessOutput(ctx, cap, result, stager)
 	}

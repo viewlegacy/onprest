@@ -35,14 +35,11 @@ func (r *Runner) initializeTransport() (err error) {
 		}
 		directory = filepath.Join(base, directory)
 	}
-	limits := runtime["input_limits"].(map[string]any)
-	pending := limits["max_pending_requests"].(int64)
-	recent := limits["max_recent_requests"].(int64)
-	if pending > int64(math.MaxInt)/16 || recent > int64(math.MaxInt)/16-pending {
-		return io.ErrShortBuffer
+	options, e := runtimeArtifactOptions(runtime, directory)
+	if e != nil {
+		return e
 	}
-	timeout, _ := time.ParseDuration(runtime["transfer_timeout"].(string))
-	store, e := artifacts.Open(artifacts.Options{Directory: directory, QuotaBytes: runtime["spool_total_bytes"].(int64), MaxPending: int(pending), MaxObjects: int(pending*16 + recent*16), TransferTimeout: timeout})
+	store, e := artifacts.Open(options)
 	if e != nil {
 		return e
 	}
@@ -72,4 +69,16 @@ func OpenInput(ctx context.Context, value contract.FileValue) (io.ReadCloser, er
 		return nil, io.ErrClosedPipe
 	}
 	return a.request.Open(a.owner, value)
+}
+
+// Local author tests use the same finite store capacity as normal startup.
+func runtimeArtifactOptions(runtime map[string]any, directory string) (artifacts.Options, error) {
+	limits := runtime["input_limits"].(map[string]any)
+	pending := limits["max_pending_requests"].(int64)
+	recent := limits["max_recent_requests"].(int64)
+	if pending > int64(math.MaxInt)/16 || recent > int64(math.MaxInt)/16-pending {
+		return artifacts.Options{}, io.ErrShortBuffer
+	}
+	timeout, _ := time.ParseDuration(runtime["transfer_timeout"].(string))
+	return artifacts.Options{Directory: directory, QuotaBytes: runtime["spool_total_bytes"].(int64), MaxPending: int(pending), MaxObjects: int(pending*16 + recent*16), TransferTimeout: timeout}, nil
 }

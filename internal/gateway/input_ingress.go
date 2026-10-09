@@ -2,9 +2,6 @@ package gateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"io"
 	"mime"
@@ -175,51 +172,19 @@ func (r *inlineReader) Read(p []byte) (int, error) {
 }
 func (r *inlineReader) Close() error { r.mu.Lock(); defer r.mu.Unlock(); r.decoder = nil; return nil }
 func inlineFile(schema *contract.Schema, raw any, pointer, id string) (contract.FileValue, InputStream, error) {
-	object, ok := raw.(map[string]any)
-	if !ok || len(object) != 3 {
-		return contract.FileValue{}, InputStream{}, invalidInput()
-	}
-	name, nok := object["name"].(string)
-	media, mok := object["mime_type"].(string)
-	data, dok := object["data"].(string)
-	if !nok || !mok || !dok || contract.ValidateBasename(name) != nil {
-		return contract.FileValue{}, InputStream{}, invalidInput()
-	}
-	media, e := normalizeMIME(media)
+	m, reader, e := contract.DecodeInlineFile(raw, schema.File.MaxBytes)
 	if e != nil {
-		return contract.FileValue{}, InputStream{}, e
-	}
-	// Reject whitespace and URL alphabets before the standard decoder (which
-	// otherwise ignores CR/LF). Strict checks canonical trailing bits/padding.
-	if len(data)%4 != 0 || strings.IndexFunc(data, func(r rune) bool {
-		return !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '+' || r == '/' || r == '=')
-	}) >= 0 {
-		return contract.FileValue{}, InputStream{}, invalidInput()
-	}
-	hash := sha256.New()
-	decoder := base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(data))
-	var buffer [protocol.ChunkBytes]byte
-	var size int64
-	for {
-		n, err := decoder.Read(buffer[:])
-		size += int64(n)
-		hash.Write(buffer[:n])
-		if size > schema.File.MaxBytes {
+		var limit *contract.OutputError
+		if errors.As(e, &limit) && limit.Code == "LIMIT_EXCEEDED" {
 			return contract.FileValue{}, InputStream{}, inputLimit(422)
 		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return contract.FileValue{}, InputStream{}, invalidInput()
-		}
+		return contract.FileValue{}, InputStream{}, invalidInput()
 	}
-	value := contract.FileValue{ID: "wire", RequestID: id, Pointer: pointer, Name: name, MIMEType: media, SizeBytes: size, SHA256: hex.EncodeToString(hash.Sum(nil))}
+	value := contract.FileValue{ID: "wire", RequestID: id, Pointer: pointer, Name: m.Name, MIMEType: m.MIMEType, SizeBytes: m.SizeBytes, SHA256: m.SHA256}
 	if e := schema.File.Validate(value); e != nil {
 		return value, InputStream{}, &ingressError{400, "VALIDATION_FAILED"}
 	}
-	reader := &inlineReader{decoder: base64.NewDecoder(base64.StdEncoding.Strict(), strings.NewReader(data))}
-	return value, InputStream{Pointer: pointer, Name: name, MIMEType: media, Reader: reader}, nil
+	return value, InputStream{Pointer: pointer, Name: m.Name, MIMEType: m.MIMEType, Reader: &inlineReader{decoder: reader}}, nil
 }
 func pointerKey(k string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1")
