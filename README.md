@@ -19,7 +19,7 @@ File capabilities accept files in REST JSON, streaming multipart, or MCP calls, 
 
 HTTP capabilities bind declared arguments and input files to fixed API sources, then publish validated JSON or original response files. See the [HTTP example](examples/http/) and [HTTP executor reference](https://docs.onprest.viewlegacy.com/agent/capability-yaml#http-executors).
 
-Wasm capabilities execute prepared command modules with request-owned input and result files. Choose OS-user access or explicit sandbox grants, and review the deployed code and its argument handling. See the [Wasm example](examples/wasm/), [configuration](https://docs.onprest.viewlegacy.com/agent/capability-yaml#wasm-executors), and [code security boundary](https://docs.onprest.viewlegacy.com/security#wasm-code-boundary).
+Wasm capabilities execute prepared command modules with request-owned input and result files. Choose OS-user access or explicit sandbox grants, and review the deployed code and its argument handling. Go authors can use the [independent SDK](sdk/go/) and [SDK CSV example](examples/sdk/). See the [Wasm example](examples/wasm/), [configuration](https://docs.onprest.viewlegacy.com/agent/capability-yaml#wasm-executors), and [code security boundary](https://docs.onprest.viewlegacy.com/security#wasm-code-boundary).
 
 ## Start Here
 

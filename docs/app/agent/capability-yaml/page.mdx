@@ -325,7 +325,7 @@ File policy limits are `max_output_file_bytes` (default `32MiB`), `max_total_out
 
 ## Wasm executors
 
-Use `executor.type: wasm` with a `module` path relative to the configuration directory, optional SHA-256 `sha256` (when specified, a nonempty string of exactly 64 lowercase hexadecimal characters), and `effects: none` or `possible` (default). The Agent validates the module's `onprest` custom metadata, host ABI version, imports and limits during startup, `validate` and `doctor`, without running business code. Deploy the completed module with the Agent; the installation needs no Go compiler or separate Wasm runtime. See the [host ABI example](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/examples/wasm).
+Use `executor.type: wasm` with a `module` path relative to the configuration directory, optional SHA-256 `sha256` (when specified, a nonempty string of exactly 64 lowercase hexadecimal characters), and `effects: none` or `possible` (default). The Agent validates the module's `onprest` custom metadata, host ABI version, imports and limits during startup, `validate` and `doctor`, without running business code. Deploy the completed module with the Agent; the installation needs no Go compiler or separate Wasm runtime. Use the [Go SDK](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/sdk/go) for typed inputs, request-owned files, Agent file operations and standard HTTP clients. See the [SDK CSV example](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/examples/sdk) and [host ABI example](https://github.com/viewlegacy/onprest/tree/dev-2.0.0/examples/wasm).
 
 ### Permissions and paths
 
@@ -360,4 +360,4 @@ Linux `fd_allocate` reserves the requested region and logical growth before nati
 
 ### HTTP and results
 
-HTTP sends only after the complete request body is ready, never retries or follows redirects automatically, and exposes response status and bytes. Valid raw result ABI application terminals follow the [shared error contract](/api/errors), with explicitly public messages and observed outcomes. Review the [code security boundary](/security#wasm-code-boundary).
+HTTP sends only after the complete request body is ready, never retries or follows redirects automatically, and exposes response status and bytes. SDK `PublicError` and valid raw result ABI application terminals follow the [shared error contract](/api/errors), with explicitly public messages and observed outcomes. Review the [code security boundary](/security#wasm-code-boundary).

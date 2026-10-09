@@ -1,6 +1,6 @@
 module github.com/viewlegacy/onprest
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/denisenkom/go-mssqldb v0.12.3

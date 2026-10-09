@@ -47,7 +47,7 @@ Do not infer outcome from the error code or a readonly/idempotent annotation. DM
 
 ## Application errors
 
-Application codes must match `^APP_[A-Z][A-Z0-9_]{0,59}$`: 5–64 ASCII characters, with an uppercase letter after `APP_` and only uppercase letters, digits or underscores thereafter. A Wasm raw result ABI public terminal with a valid `APP_*` code returns its explicitly public message unchanged (1–1024 UTF-8 bytes, without control characters). Invalid codes/messages and ordinary internal errors use safe system messages; the host’s observed effects determine outcome.
+Application codes must match `^APP_[A-Z][A-Z0-9_]{0,59}$`: 5–64 ASCII characters, with an uppercase letter after `APP_` and only uppercase letters, digits or underscores thereafter. A Wasm `onprest.PublicError` (or validated raw result ABI public terminal) with a valid `APP_*` code returns its explicitly public message unchanged (1–1024 UTF-8 bytes, without control characters). Invalid codes/messages and ordinary internal errors use safe system messages; the host’s observed effects determine outcome.
 
 System messages and reasons do not contain driver text, SQL, constraint names, source paths, secrets or submitted values. Branch on code and observed outcome; use [Agent local logs](/agent/local-logs) for private diagnosis. Malformed Agent error/result frames are rejected rather than forwarded.
 

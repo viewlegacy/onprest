@@ -276,6 +276,7 @@ func compileSchema(m rawMap, input, root, passthrough bool, depth int) (*Schema,
 				return nil, e
 			}
 			s.Pattern = p
+			s.patternSource = v
 			s.normalized[k] = p.AST.normalized()
 		} else {
 			if !contains([]string{"", "email", "uuid", "date", "date-time", "uri"}, v) {

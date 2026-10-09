@@ -22,7 +22,7 @@ func (r *Runner) executeVersionedPrepared(ctx context.Context, req protocol.Requ
 				effect = "none"
 			}
 			l := c.Limits()
-			meta.Capabilities[name] = protocol.CapabilityMetadata{DefinitionHash: s.DefinitionHash(), ExecutorKind: c.Executor.Type, ExecutionTimeout: c.Policy["timeout"].(string), EffectClass: effect, InputSchema: c.Input.Normalized(), InputLimits: map[string]int64{"max_input_bytes": l.MaxBytes, "max_json_depth": l.MaxDepth, "max_json_items": l.MaxItems}}
+			meta.Capabilities[name] = protocol.CapabilityMetadata{DefinitionHash: s.DefinitionHash(), ExecutorKind: c.Executor.Type, ExecutionTimeout: c.Policy["timeout"].(string), EffectClass: effect, InputSchema: c.Input.InputMetadata(), InputLimits: map[string]int64{"max_input_bytes": l.MaxBytes, "max_json_depth": l.MaxDepth, "max_json_items": l.MaxItems}}
 			if c.Executor.Type != "db" {
 				meta.ResponseKinds[name] = "generic"
 				v := meta.Capabilities[name]

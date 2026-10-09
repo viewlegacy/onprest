@@ -32,10 +32,11 @@ type Runner struct {
 	Observe      func(Observation)
 	AgentVersion string
 	Bridge       *Bridge
-	// Package-private probes used by real-process enforcement tests.
-	sample      func(*process.Process) (uint64, float64, error)
-	rssOverride uint64
-	cpuOverride float64
+	// Package-private probes used by real-process resource and result transport tests.
+	stageFactory func(context.Context, string, string, int64) (contract.ArtifactStage, error)
+	sample       func(*process.Process) (uint64, float64, error)
+	rssOverride  uint64
+	cpuOverride  float64
 }
 
 func (r *Runner) version() string {
@@ -83,6 +84,9 @@ func (r *Runner) ExecutePublication(ctx context.Context, m *Module, params map[s
 		d.finish(reason)
 	}()
 	s := newSession(ctx, r.Store, l, d)
+	if r.stageFactory != nil {
+		s.createStage = r.stageFactory
+	}
 	s.bridge = r.Bridge
 	s.roots = map[string]*filesystem.Root{}
 	defer func() {
@@ -101,7 +105,10 @@ func (r *Runner) ExecutePublication(ctx context.Context, m *Module, params map[s
 	if e != nil {
 		return nil, e
 	}
-	if s.failed {
+	if s.resultFailure != nil {
+		return nil, s.resultFailure
+	}
+	if s.failed || s.asyncFailure.Load() {
 		return nil, failure("OUTPUT_INVALID", "invalid result state")
 	}
 	if !s.committed {

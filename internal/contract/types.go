@@ -48,6 +48,7 @@ type Schema struct {
 	Constraints       map[string]any
 	File              *FileConstraints
 	Pattern           *Pattern
+	patternSource     string
 	normalized        map[string]any
 	output            bool
 }
@@ -87,6 +88,29 @@ type PatternNode struct {
 
 func (p *Pattern) MatchString(s string) bool { return p.re.MatchString(s) }
 func (s *Schema) Normalized() map[string]any { return cloneMap(s.normalized) }
+
+// InputMetadata is a fresh, recompilable schema. Normalized instead retains
+// the engine-independent pattern AST for canonical definitions and hashes.
+func (s *Schema) InputMetadata() map[string]any {
+	m := s.Normalized()
+	if s.Pattern != nil {
+		m["pattern"] = s.patternSource
+	}
+	if s.PropertiesSet {
+		properties := make(map[string]any, len(s.Properties))
+		for name, child := range s.Properties {
+			properties[name] = child.InputMetadata()
+		}
+		m["properties"] = properties
+	}
+	if s.Items != nil {
+		m["items"] = s.Items.InputMetadata()
+	}
+	if s.Additional != nil {
+		m["additionalProperties"] = s.Additional.InputMetadata()
+	}
+	return m
+}
 func (c *Capability) Limits() Limits {
 	i := func(k string) int64 {
 		if v, ok := c.Policy[k].(int64); ok {

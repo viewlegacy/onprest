@@ -29,6 +29,11 @@ func buildP15ErrorFixture(t *testing.T, repo, module string) {
 	if b, e := c.CombinedOutput(); e != nil {
 		t.Fatal(e, string(b))
 	}
+	attachWasmMetadata(t, module)
+}
+
+func attachWasmMetadata(t *testing.T, module string) {
+	t.Helper()
 	b, e := os.ReadFile(module)
 	if e != nil {
 		t.Fatal(e)

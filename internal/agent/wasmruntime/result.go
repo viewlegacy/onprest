@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/viewlegacy/onprest/internal/agent/artifacts"
@@ -43,7 +44,7 @@ type handle struct {
 	business *business
 	kind     string
 	control  *bytes.Reader
-	stage    *artifacts.Stage
+	stage    contract.ArtifactStage
 	reader   io.ReadCloser
 	marker   int64
 	ready    bool
@@ -65,15 +66,23 @@ type session struct {
 	fileBytes                         int64
 	value                             contract.ProviderResult
 	terminalError                     error
+	resultFailure                     error
+	createStage                       func(context.Context, string, string, int64) (contract.ArtifactStage, error)
 	logs                              *diagnostics
 	bridge                            *Bridge
+	async                             asyncState
+	handleSlots                       atomic.Int64
+	asyncFailure, terminal            atomic.Bool
+	lifetime                          context.Context
 	roots                             map[string]*filesystem.Root
 	http                              *hostservices.Service
 	readBytes, writeBytes, operations int64
 }
 
 func newSession(ctx context.Context, s *artifacts.Store, l Limits, d *diagnostics) *session {
-	return &session{ctx: ctx, store: s, l: l, handles: map[int64]*handle{}, logs: d}
+	return &session{ctx: ctx, lifetime: ctx, store: s, l: l, handles: map[int64]*handle{}, logs: d, createStage: func(ctx context.Context, name, media string, size int64) (contract.ArtifactStage, error) {
+		return s.NewScratch(ctx, name, media, size)
+	}}
 }
 func (s *session) id(h *handle) int64 {
 	for {
@@ -81,15 +90,18 @@ func (s *session) id(h *handle) int64 {
 		if _, e := rand.Read(b[:]); e != nil {
 			return 0
 		}
-		id := int64(binary.LittleEndian.Uint64(b[:]) & ((1 << 63) - 1))
+		id := int64(binary.LittleEndian.Uint64(b[:]) & ((1 << 62) - 1))
 		if id > 0 && s.handles[id] == nil {
+			if !s.reserveHandle() {
+				return 0
+			}
 			s.handles[id] = h
 			return id
 		}
 	}
 }
 func (s *session) control(v any) (int64, int32) {
-	if len(s.handles) >= s.l.Handles {
+	if s.handleCount() >= s.l.Handles {
 		return 0, limit
 	}
 	b, e := json.Marshal(v)
@@ -98,6 +110,9 @@ func (s *session) control(v any) (int64, int32) {
 	}
 	id := s.id(&handle{kind: "control", control: bytes.NewReader(b)})
 	if id == 0 {
+		if s.handleCount() >= s.l.Handles {
+			return 0, limit
+		}
 		return 0, ioError
 	}
 	return id, 0
@@ -145,6 +160,25 @@ func codeFor(err error) int32 {
 	}
 	return ioError
 }
+
+// Preserve final result transport failures independently of envelope validation.
+// Worker failure and execution timeout still take precedence in Execute.
+func (s *session) resultFailed(code int32, err error) {
+	if s.resultFailure != nil {
+		return
+	}
+	name := "OUTPUT_INVALID"
+	if code == limit {
+		name = "LIMIT_EXCEEDED"
+	} else if code == canceled {
+		name = "EXECUTION_TIMEOUT"
+	}
+	detail := "result transport failed"
+	if err != nil {
+		detail = err.Error()
+	}
+	s.resultFailure = failure(name, detail)
+}
 func (s *session) reject() (int64, int32) { s.failed = true; return 0, invalid }
 func (s *session) call(b []byte) (int64, int32) {
 	if len(b) > Chunk {
@@ -175,12 +209,15 @@ func (s *session) call(b []byte) (int64, int32) {
 		s.logs.log(level, message)
 		return s.control(map[string]any{})
 	}
-	if s.failed || s.committed {
+	if s.failed || s.committed || s.asyncFailure.Load() {
 		return s.reject()
 	}
 	switch method {
 	case "result.file", "result.open":
-		if len(s.handles)+3 > s.l.Handles {
+		if s.handleCount()+3 > s.l.Handles {
+			if method == "result.open" {
+				s.resultFailed(limit, nil)
+			}
 			return 0, limit
 		}
 		name, media := "result.json", "application/json"
@@ -203,21 +240,38 @@ func (s *session) call(b []byte) (int64, int32) {
 				return 0, limit
 			}
 		}
-		st, e := s.store.NewScratch(s.ctx, name, media, 0)
+		st, e := s.createStage(s.ctx, name, media, 0)
 		if e != nil {
+			if kind == "result" {
+				s.resultFailed(codeFor(e), e)
+			}
 			return 0, codeFor(e)
 		}
 		h := &handle{kind: kind, stage: st, digest: sha256.New(), metadata: contract.ArtifactMetadata{Name: name, MIMEType: media}}
 		marker := s.id(h)
 		if marker == 0 {
+			code := ioError
+			if s.handleCount() >= s.l.Handles {
+				code = limit
+			}
+			if kind == "result" {
+				s.resultFailed(code, nil)
+			}
 			_ = st.Abort()
-			return 0, ioError
+			return 0, code
 		}
 		body := s.id(&handle{kind: "body", marker: marker})
 		if body == 0 {
-			delete(s.handles, marker)
+			code := ioError
+			if s.handleCount() >= s.l.Handles {
+				code = limit
+			}
+			if kind == "result" {
+				s.resultFailed(code, nil)
+			}
+			s.deleteHandle(marker)
 			_ = st.Abort()
-			return 0, ioError
+			return 0, code
 		}
 		s.stages = append(s.stages, h)
 		if kind == "result" {
@@ -229,8 +283,15 @@ func (s *session) call(b []byte) (int64, int32) {
 		if kind == "result" {
 			key = "result_handle"
 		}
-		return s.control(map[string]any{key: marker, "body_handle": body})
+		ack, code := s.control(map[string]any{key: marker, "body_handle": body})
+		if kind == "result" && code != 0 {
+			s.resultFailed(code, nil)
+		}
+		return ack, code
 	case "result.commit":
+		if s.asyncJobs() != 0 {
+			return s.reject()
+		}
 		if len(args) != 1 {
 			return s.reject()
 		}
@@ -241,16 +302,18 @@ func (s *session) call(b []byte) (int64, int32) {
 		}
 		ack, code := s.control(map[string]any{})
 		if code != 0 {
+			s.resultFailed(code, nil)
 			s.failed = true
 			return 0, code
 		}
 		if e = s.envelope(h); e != nil {
-			delete(s.handles, ack)
+			s.deleteHandle(ack)
 			s.failed = true
 			s.terminalError = e
 			return 0, invalid
 		}
 		s.committed = true
+		s.terminal.Store(true)
 		return ack, 0
 	case "input.open", "http.open", "http.do", "http.abort":
 		return s.businessCall(method, args)
@@ -283,7 +346,7 @@ func (s *session) write(id int64, b []byte) int32 {
 	if h != nil && h.business != nil {
 		return s.businessWrite(h, b)
 	}
-	if s.failed || s.committed {
+	if s.failed || s.committed || s.asyncFailure.Load() {
 		s.failed = true
 		return invalid
 	}
@@ -302,6 +365,9 @@ func (s *session) write(id int64, b []byte) int32 {
 		}
 	}
 	if int64(len(b)) > max-marker.size {
+		if marker.kind == "result" {
+			s.resultFailed(limit, nil)
+		}
 		return limit
 	}
 	n, e := marker.stage.Write(b)
@@ -312,6 +378,9 @@ func (s *session) write(id int64, b []byte) int32 {
 	}
 	if e != nil {
 		code := codeFor(e)
+		if marker.kind == "result" || code != limit {
+			s.resultFailed(code, e)
+		}
 		if code != limit {
 			s.failed = true
 			s.terminalError = failure("EXECUTION_FAILED", e.Error())
@@ -345,7 +414,7 @@ func (s *session) close(id int64) int32 {
 	}
 	if h.business != nil {
 		c := s.businessClose(h)
-		delete(s.handles, id)
+		s.deleteHandle(id)
 		return c
 	}
 	if h.kind == "body" {
@@ -354,6 +423,7 @@ func (s *session) close(id int64) int32 {
 			return invalid
 		}
 		if e := marker.stage.Close(); e != nil {
+			s.resultFailed(codeFor(e), e)
 			s.failed = true
 			s.terminalError = failure("EXECUTION_FAILED", e.Error())
 			return codeFor(e)
@@ -362,6 +432,7 @@ func (s *session) close(id int64) int32 {
 		marker.metadata.SHA256 = hex.EncodeToString(marker.digest.Sum(nil))
 		r, e := marker.stage.Finish(marker.metadata)
 		if e != nil {
+			s.resultFailed(codeFor(e), e)
 			s.failed = true
 			return codeFor(e)
 		}
@@ -375,7 +446,7 @@ func (s *session) close(id int64) int32 {
 		// Marker close is cleanup: invalidate the reference and release its private
 		// spool, including after a caught quota error. Limits themselves never reset.
 		if s.committed && h.retained {
-			delete(s.handles, id)
+			s.deleteHandle(id)
 			return 0
 		}
 		var err error
@@ -383,14 +454,14 @@ func (s *session) close(id int64) int32 {
 			err = h.reader.Close()
 		}
 		err = errors.Join(err, h.stage.Abort())
-		delete(s.handles, id)
+		s.deleteHandle(id)
 		if err != nil {
 			s.failed = true
 			return codeFor(err)
 		}
 		return 0
 	}
-	delete(s.handles, id)
+	s.deleteHandle(id)
 	return 0
 }
 func (s *session) envelope(h *handle) error {
@@ -474,6 +545,7 @@ func (s *session) envelope(h *handle) error {
 }
 func stringsHasAPP(s string) bool { return len(s) >= 4 && s[:4] == "APP_" }
 func (s *session) cleanup() error {
+	s.stopAsync()
 	var errs []error
 	for id, h := range s.handles {
 		if h.business != nil {
@@ -486,7 +558,7 @@ func (s *session) cleanup() error {
 			if err != nil {
 				errs = append(errs, err)
 			}
-			delete(s.handles, id)
+			s.deleteHandle(id)
 		}
 	}
 	if s.http != nil {
@@ -504,8 +576,17 @@ func (s *session) cleanup() error {
 	return errors.Join(errs...)
 }
 func (s *session) dispatch(p packet) packet {
+	if out, ok := s.asyncDispatch(p); ok {
+		return out
+	}
+	return s.dispatchCore(s.lifetime, p)
+}
+func (s *session) dispatchCore(ctx context.Context, p packet) packet {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	previous := s.ctx
+	s.ctx = ctx
+	defer func() { s.ctx = previous }()
 	out := packet{Op: "response"}
 	if s.ctx.Err() != nil {
 		out.Count = canceled

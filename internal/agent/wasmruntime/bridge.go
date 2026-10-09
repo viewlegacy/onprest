@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -30,6 +31,11 @@ type Bridge struct {
 	Effects     *providers.Effects
 }
 type business struct {
+	closeMu                               sync.Mutex
+	closed                                bool
+	interrupted                           bool
+	closeErr                              error
+	contextCancel                         context.CancelFunc
 	file                                  *os.File
 	reader                                io.ReadCloser
 	size, position, read, write, reserved int64
@@ -55,7 +61,7 @@ func (s *session) operation() int32 {
 	if s.ctx.Err() != nil {
 		return canceled
 	}
-	if s.failed || s.committed {
+	if s.failed || s.committed || s.asyncFailure.Load() {
 		return invalid
 	}
 	if s.operations >= s.l.FileOperations {
@@ -201,11 +207,14 @@ func metadataMap(m metadata) map[string]any {
 	return map[string]any{"name": m.Name, "size": m.Size, "mode": int64(m.Mode), "mod_time": m.ModTime, "is_dir": m.IsDir}
 }
 func (s *session) bodyHandle(b *business, kind string) (int64, int32) {
-	if len(s.handles)+2 > s.l.Handles {
+	if s.handleCount()+2 > s.l.Handles {
 		return 0, limit
 	}
 	id := s.id(&handle{kind: kind, business: b})
 	if id == 0 {
+		if s.handleCount() >= s.l.Handles {
+			return 0, limit
+		}
 		return 0, ioError
 	}
 	return id, 0
@@ -236,7 +245,7 @@ func (s *session) businessCall(method string, a map[string]any) (int64, int32) {
 		if !ok || !exists || s.bridge.OpenInput == nil {
 			return 0, denied
 		}
-		if len(s.handles)+2 > s.l.Handles {
+		if s.handleCount()+2 > s.l.Handles {
 			return 0, limit
 		}
 		r, e := s.bridge.OpenInput(s.ctx, v)
@@ -260,7 +269,7 @@ func (s *session) businessCall(method string, a map[string]any) (int64, int32) {
 		if !ok || !ok2 || !ok3 || !ok4 {
 			return 0, invalid
 		}
-		if len(s.handles)+3 > s.l.Handles {
+		if s.handleCount()+3 > s.l.Handles {
 			return 0, limit
 		}
 		header := http.Header{}
@@ -278,7 +287,7 @@ func (s *session) businessCall(method string, a map[string]any) (int64, int32) {
 			}
 		}
 		if s.http == nil {
-			options := hostservices.Options{Context: s.ctx, Store: s.store, MaxRequestBytes: s.l.HTTPRequestBytes, MaxResponseBytes: s.l.HTTPResponseBytes, MaxRequests: s.l.Handles}
+			options := hostservices.Options{Context: s.lifetime, Store: s.store, MaxRequestBytes: s.l.HTTPRequestBytes, MaxResponseBytes: s.l.HTTPResponseBytes, MaxRequests: s.l.Handles}
 			var e error
 			if s.bridge.Sandbox["enabled"] == true {
 				s.http, e = hostservices.WasmON(s.bridge.Sandbox["permissions"].(map[string]any)["http"].([]any), options)
@@ -296,6 +305,10 @@ func (s *session) businessCall(method string, a map[string]any) (int64, int32) {
 		b := &business{request: r}
 		id := s.id(&handle{kind: "http_request", business: b})
 		body := s.id(&handle{kind: "http_write", business: b})
+		if id == 0 || body == 0 {
+			_ = s.abortRequest(r)
+			return 0, limit
+		}
 		return s.control(map[string]any{"request_handle": id, "body_handle": body})
 	case "http.do", "http.abort":
 		if len(a) != 1 {
@@ -313,7 +326,7 @@ func (s *session) businessCall(method string, a map[string]any) (int64, int32) {
 			}
 			return s.control(map[string]any{})
 		}
-		if len(s.handles)+2 > s.l.Handles {
+		if s.handleCount()+2 > s.l.Handles {
 			return 0, limit
 		}
 		v, e := h.business.request.Do()
@@ -321,6 +334,10 @@ func (s *session) businessCall(method string, a map[string]any) (int64, int32) {
 			return 0, codeFor(e)
 		}
 		body := s.id(&handle{kind: "http_read", business: &business{request: h.business.request, body: v.Body}})
+		if body == 0 {
+			_ = s.abortRequest(h.business.request)
+			return 0, limit
+		}
 		return s.control(map[string]any{"status": v.Status, "headers": v.Headers, "content_length": v.ContentLength, "body_handle": body})
 	}
 	return 0, unsupported
@@ -350,7 +367,7 @@ func (s *session) filesCall(method string, a map[string]any) (int64, int32) {
 		if !hasPath {
 			return 0, invalid
 		}
-		if len(s.handles)+2 > s.l.Handles {
+		if s.handleCount()+2 > s.l.Handles {
 			return 0, limit
 		}
 		flags := os.O_RDONLY
@@ -966,6 +983,9 @@ func (s *session) writeFS(h *handle, raw []byte, at *int64) int32 {
 	return int32(n)
 }
 func (s *session) businessClose(h *handle) int32 {
+	if h.business.contextCancel != nil && h.kind != "http_write" {
+		defer h.business.contextCancel()
+	}
 	b := h.business
 	var e error
 	switch h.kind {
@@ -974,17 +994,17 @@ func (s *session) businessClose(h *handle) int32 {
 	case "http_request":
 		e = s.abortRequest(b.request)
 	case "http_read":
-		e = b.body.Close()
+		e = b.closeOwned()
 	case "fs":
-		e = b.file.Close()
+		e = b.closeOwned()
 		s.refund(b, b.reserved, true)
 		b.reserved = 0
-		if e == nil && b.effect != nil && b.effectObserved {
+		if e == nil && b.effect != nil && b.effectObserved && !b.wasInterrupted() {
 			b.effect.Committed()
 		}
 	default:
 		if b.reader != nil {
-			e = b.reader.Close()
+			e = b.closeOwned()
 		}
 	}
 	if e != nil {
@@ -999,7 +1019,10 @@ func (s *session) abortRequest(request *hostservices.Request) error {
 	e := request.Close()
 	for id, h := range s.handles {
 		if h.business != nil && h.business.request == request {
-			delete(s.handles, id)
+			if h.business.contextCancel != nil {
+				h.business.contextCancel()
+			}
+			s.deleteHandle(id)
 		}
 	}
 	return e
@@ -1073,4 +1096,39 @@ func (s *session) mutationInspectionFailure(e error) int32 {
 		s.bridge.Effects.Begin()
 	}
 	return codeFor(e)
+}
+
+func (b *business) wasInterrupted() bool {
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+	return b.interrupted
+}
+func (b *business) closeOwned() error {
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+	return b.closeLocked()
+}
+func (b *business) closeLocked() error {
+	if b.closed {
+		return b.closeErr
+	}
+	b.closed = true
+	if b.file != nil {
+		b.closeErr = b.file.Close()
+	} else if b.reader != nil {
+		b.closeErr = b.reader.Close()
+	} else if b.body != nil {
+		b.closeErr = b.body.Close()
+	}
+	return b.closeErr
+}
+func (b *business) interrupt() {
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+	b.interrupted = true
+	if b.request != nil {
+		_ = b.request.Close()
+	} else {
+		_ = b.closeLocked()
+	}
 }
