@@ -21,7 +21,7 @@ REST and HTTP-level failures return a shared error envelope with a Gateway-assig
 | 404 | `NOT_FOUND` | Capability or live file reference is unavailable |
 | 409 | `SOURCE_CHANGED`, `CONFLICT` | Definition/source mismatch or typed DB integrity constraint |
 | 422 | `LIMIT_EXCEEDED`, `APP_*` | Capability limit or valid application failure |
-| 429 | `RATE_LIMITED` | Gateway or capability rate admission rejected |
+| 429 | `RATE_LIMITED` | Gateway, capability or Agent management rate admission rejected |
 | 503 | `BUSY`, `AGENT_OFFLINE`, `DEPENDENCY_UNAVAILABLE` | Capacity, Agent, database, upstream API or required reference origin unavailable |
 | 504 | `EXECUTION_TIMEOUT` | Execution deadline exceeded |
 | 502 | `EXECUTION_FAILED`, `OUTPUT_INVALID`, `OUTCOME_UNKNOWN` | Execution/output failure or uncertain effects |

@@ -14,13 +14,20 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
   "api_key_name": "partner-a",
   "http_status": 200,
   "count": 1,
+  "executor_kind": "db",
+  "returned_rows": 1,
+  "affected_rows": null,
+  "file_count": 0,
+  "response_bytes": 128,
+  "input_file_count": 0,
+  "input_file_bytes": 0,
   "error_code": null,
   "error_message": null,
   "duration_ms": 123
 }
 ```
 
-Every request event has `count`. Successful DB SELECT/CSV and mutation calls use a non-negative JSON integer; HTTP/file success, every failure and pre-agent branch use `null`. This preserves the difference between a successful zero-row mutation and a failure. Rows, SQL, and params are never logged.
+Every request event has `count`. Successful DB SELECT/CSV and mutation calls use a non-negative JSON integer; HTTP/file/Wasm success, every failure and pre-agent branch use `null`. This preserves the difference between a successful zero-row mutation and a failure. Rows, SQL, and params are never logged.
 
 Agent-confirmed input metrics are separate from output counters:
 

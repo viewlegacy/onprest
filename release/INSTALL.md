@@ -30,9 +30,13 @@ After extracting the archive for production:
    in `GATEWAY_API_KEYS_JSON`. Deliver the plaintext `api_key` to its caller; do
    not put it in `gateway.env`.
 3. Replace every example URL, database address, and credential in
-   `capability.yaml`, then add at least one reviewed SQL capability. Update the
-   API key capability allow-list to match the capabilities you added.
-4. Validate the completed file against its database before starting the Agent:
+   `capability.yaml`, then add at least one reviewed capability. DB capabilities
+   use the configured database; CSV, HTTP, file and Wasm capabilities do not
+   require a database. Update the API key capability allow-list to match the
+   capabilities you added.
+4. Provide private writable spool and persistent identity directories relative
+   to the configuration, or set their runtime paths explicitly. Validate the
+   completed configuration and referenced resources before starting the Agent:
 
    ```sh
    ./onprest-agent validate --config /absolute/path/capability.yaml
@@ -73,3 +77,15 @@ After extracting the archive for production:
 The Gateway and Agent must come from the same release. Release acceptance and
 provenance are documented at
 <https://docs.onprest.viewlegacy.com/operations/release-gate>.
+
+For Wasm, build and test code on the author’s computer, then deploy the completed
+module with its YAML. The Agent embeds the worker runtime; the installation
+does not require Go or the SDK source. SDK versions use independent
+`sdk/go/vX.Y.Z` tags; see <https://docs.onprest.viewlegacy.com/reference/cli#build-and-test-wasm-code>.
+
+Keep cleanup records across restart, and use completed business files outside
+the spool. Configure finite client/proxy timeouts for input, execution and
+output. Recovery is documented at
+<https://docs.onprest.viewlegacy.com/operations/troubleshooting>.
+For Agent management limits and their defaults, see
+<https://docs.onprest.viewlegacy.com/agent/capability-yaml#top-level-sections>.
