@@ -37,7 +37,7 @@ go test ./internal/contract -run '^Test(InlineFileStrictSharedNormalization|Outp
 go test -tags=integration ./it -run '^TestSDKPublicResultsRealBinariesRESTAndMCP$' -count=1
 ```
 
-These targeted tests build an actual Agent, compile author packages, execute the isolated worker, exercise pair preservation and local output faults, and compare the same SDK fixture through CLI, REST and MCP. They do not establish full release readiness or native execution on another OS. See [Author CLI](/reference/cli#build-and-test-wasm-code) for application commands.
+These targeted tests build an actual Agent, compile author packages, execute the isolated worker, exercise pair preservation and local output faults, and compare the same SDK fixture through CLI, REST and MCP. They do not establish full release readiness or native execution on another OS. See [Author commands](/reference/cli#author-commands) for application commands.
 
 ## Integration
 

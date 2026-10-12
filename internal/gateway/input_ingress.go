@@ -24,7 +24,17 @@ type ingressError struct {
 func (e *ingressError) Error() string { return e.code }
 func invalidInput() error             { return &ingressError{400, "INVALID_REQUEST"} }
 func inputLimit(status int) error     { return &ingressError{status, "LIMIT_EXCEEDED"} }
+
+// notReadyError carries the safe result for a call made before Agent metadata is ready.
+type notReadyError struct{ result agentCallResult }
+
+func (e notReadyError) Error() string { return e.result.Code }
+
 func inputResult(e error) agentCallResult {
+	var notReady notReadyError
+	if errors.As(e, &notReady) {
+		return notReady.result
+	}
 	var execution inputExecutionError
 	if errors.As(e, &execution) {
 		if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
@@ -141,7 +151,7 @@ func (s *Server) ingressMetadata(name string) (protocol.CapabilityMetadata, erro
 	s.agentMu.RLock()
 	defer s.agentMu.RUnlock()
 	if s.agent == nil || s.openapi == nil || s.capabilities == nil {
-		return protocol.CapabilityMetadata{}, errors.New("AGENT_OFFLINE")
+		return protocol.CapabilityMetadata{}, notReadyError{s.notReadyResultLocked()}
 	}
 	m, ok := s.capabilities[name]
 	if !ok {

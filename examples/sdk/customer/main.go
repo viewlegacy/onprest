@@ -26,6 +26,7 @@ func main() {
 		if err := writer.Error(); err != nil {
 			return onprest.Result{}, err
 		}
+		onprest.Log("info", "generated customer.csv")
 		return onprest.Result{
 			Data: map[string]any{"customer": in.Customer},
 			Files: []onprest.File{

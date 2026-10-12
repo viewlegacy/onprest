@@ -1,0 +1,30 @@
+# Oracle
+
+Set `driver: oracle`. The agent uses a pure-Go driver, so the host needs no Oracle Instant Client or other Oracle libraries, including for TLS (TCPS). `name` is the service name.
+
+```yaml
+sources:
+  databases:
+    primary:
+      driver: oracle
+      host: oracle.internal.example.com
+      port: 1521
+      name: LEGACY
+      user: onprest_reader
+      password_file: ./secrets/oracle-password
+      tls:
+        mode: verify-full
+        ca_file: /etc/onprest/db-ca.pem
+```
+
+## Statements
+
+Startup and `validate` check each statement with `EXPLAIN PLAN FOR`, inside a transaction that is always rolled back, so no rows remain in `PLAN_TABLE`. `RETURNING INTO` is not supported.
+
+## NUMBER columns
+
+`NUMBER` columns with scale zero are returned as JSON integers when the value fits in 64 bits; larger values fail with `OUTPUT_INVALID`. Other `NUMBER` columns are returned as decimal strings, like every exact decimal.
+
+## TLS
+
+`tls.mode` accepts `disable` (default), `require`, and `verify-full`. Client certificates and `verify-ca` are not available for Oracle.

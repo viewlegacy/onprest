@@ -1,15 +1,17 @@
 # Onprest Go SDK
 
-Use `github.com/viewlegacy/onprest/sdk/go` (package `onprest`) in Go WASI preview1 command modules. The SDK is an independent module and requires Go 1.26.9 or later. Pin its version in your application's `go.mod`; SDK tags use `sdk/go/vX.Y.Z`. Build with `GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0`. Deploy the completed module and its `onprest` import metadata with the Agent; the installed Agent includes the runtime and needs no compiler. The [complete customer CSV example](../../examples/sdk/README.md) uses the author CLI to build and locally test the module.
+Package `onprest` (`github.com/viewlegacy/onprest/sdk/go`) lets you write Onprest code capabilities in Go. Your module runs inside the agent as a WebAssembly (WASI preview 1) command; the agent includes the runtime, so the agent host needs no compiler.
 
-Build your application's package directory with the Agent author CLI, which adds and verifies the required custom metadata:
+The SDK is an independent module and requires Go 1.26.9 or later. Pin a release in your `go.mod`; SDK tags are `sdk/go/vX.Y.Z`. [Writing code in Go](https://docs.onprest.viewlegacy.com/capabilities/code/go) walks through building, testing, and deploying a module, and the [customer CSV example](https://github.com/viewlegacy/onprest/tree/main/examples/sdk) is a complete one.
+
+Build with the agent's author CLI, which adds the metadata the agent checks:
 
 ```sh
 onprest-agent code build --source ./code --output ./module.wasm
 onprest-agent code validate --module ./module.wasm
 ```
 
-The [CLI reference](../../docs/app/reference/cli/page.mdx#build-and-test-wasm-code) covers configuration-based builds and local tests, including input files, saved output and diagnostics.
+The [CLI reference](https://docs.onprest.viewlegacy.com/reference/cli#author-commands) lists every build and test option.
 
 ## Handler and results
 
@@ -33,13 +35,11 @@ func main() {
 }
 ```
 
-`Run[P any]` reads one normalized JSON input, decodes a new zero value of `P`, calls the handler, and sends a terminal result through the dedicated host ABI. The Agent applies input validation and defaults before the module runs. Defaults fill missing fields; explicit null is preserved.
+`Run` decodes the input into a new `P` and calls your handler once. The agent has already validated the input and applied defaults, so the handler only sees values the capability's schema allows.
 
-`P` must be a struct or a map with string keys. JSON field names match exactly, including `json` tags; unknown fields, ambiguous embedded fields and `json:",string"` are rejected before the handler. Missing fields retain their Go zero values. Null requires a pointer, map, slice, interface or RawMessage.
-
-Integers retain precision and must fit their Go bit width; fractional values cannot become integers. `int` and `uint` use the Wasm target's width. `any` keeps numbers as `json.Number`. `json.RawMessage` distinguishes missing (nil) from explicit null (`null`).
-
-Custom JSON/text decoders receive checked ordinary JSON, with the same null and numeric checks. File descriptors cannot be exposed through `any`, RawMessage or custom decoding. Decode diagnostics contain the JSON Pointer, expected type and reason, without recording input values automatically.
+- `P` must be a struct or a map with string keys. Field names match the JSON exactly, including `json` tags. Unknown fields, ambiguous embedded fields, and `json:",string"` fail before the handler runs.
+- A missing field keeps its Go zero value. To receive `null`, use a pointer, map, slice, interface, or `json.RawMessage`; `RawMessage` is nil when the field was missing and `null` when it was sent as null.
+- Integers keep full precision and must fit the Go type. A fractional number cannot decode into an integer. In `any`, numbers arrive as `json.Number`.
 
 ```go
 type Result struct {
@@ -53,13 +53,13 @@ type File struct {
 }
 ```
 
-Data may be any JSON-serializable value, including null; omitted Data is null. Files retain their order. Supply a valid basename, lowercase parameter-free MIME type, and non-nil reader for every file. Arbitrary file bytes are streamed without encoding them into control JSON. YAML output settings determine what is published.
+`Data` can be any JSON-serializable value; leaving it out returns `null`. Each file needs a plain file name, a lowercase MIME type without parameters, and a non-nil reader. Files keep their order. The capability's `output` setting still decides what reaches the caller.
 
-Returning a File transfers reader ownership to Run even if the handler also returns an error. Run reads successful files and closes every returned closer. SDK readers/writers have close-once ownership; explicit Close is supported and unreturned resources are reclaimed after success, error or handler panic. Do not defer-close a reader returned in Result.Files. External resources remain the author's responsibility until returned. Forced worker termination does not guarantee arbitrary Go Close code; the Agent stops and waits for the worker and recovers its host resources. Close does not roll back business writes.
+When you return a file, `Run` takes over its reader: it reads it to the end and closes it, even if the handler also returns an error. Do not `defer` closing a reader you return in `Result.Files`. Resources you open but do not return are yours to close. Closing never undoes a write that already happened.
 
 ## Input files
 
-Use `InputFile`, `[]InputFile`, or nested typed fields for YAML file inputs. Access metadata through `Name()`, `MIMEType()`, `Size()` and `SHA256()`. `Open(ctx)` returns an `io.ReadCloser` and may reopen the request-owned input. It works with sandbox deny-all because the input belongs to that request. Zero values, foreign execution contexts and expired executions fail. InputFile cannot be serialized in Result.Data.
+Use `InputFile`, `[]InputFile`, or nested fields of those types for file inputs. `Name()`, `MIMEType()`, `Size()`, and `SHA256()` describe the file, and `Open(ctx)` returns an `io.ReadCloser`; you can open it more than once. Uploaded files are readable even in a sandbox with no permissions, but only during the call that received them. An `InputFile` cannot be returned in `Result.Data`.
 
 ```go
 reader, err := in.Document.Open(ctx)
@@ -85,15 +85,19 @@ return onprest.Result{Files: []onprest.File{{
 | `Remove(ctx, path)` | `error` |
 | `Rename(ctx, oldPath, newPath)` | `error` |
 
-Relative paths use the Agent configuration directory. All paths require valid UTF-8 and no NUL. The host applies OS permissions and configured sandbox grants. Create truncates existing files and creates new files with mode 0666 subject to OS umask/ACL. WriteFile and MkdirAll accept only the low nine permission bits; they do not change existing permissions. Create and WriteFile do not create parents. Remove deletes a file or empty directory. Rename uses host OS move/replace semantics without copy/delete fallback.
+Relative paths start at the agent's configuration directory. The agent's OS permissions and, with the sandbox on, its grants decide what each call may touch. Things to keep in mind:
 
-ReadDir returns name-sorted entries and can return partial entries with an error. Entry.Info uses the same execution context and authorization; FileInfo.Sys is nil. For larger files use Open/Create with `io.Copy`. Body chunks are at most 64 KiB. Reads, writes, metadata, failed attempts and entry.Info consume the shared host file budgets; reopening does not reset the execution total. WriteFile reserves the known size before create/truncate, so a size-limit rejection leaves the target unchanged. A streaming Create can leave partial changes on failure. Explicitly Close a writer and check the error to confirm completion.
+- `Create` and `WriteFile` do not create parent directories; call `MkdirAll` first. `Create` truncates an existing file.
+- `Rename` is a plain OS rename or replace, with no copy fallback across filesystems.
+- `ReadDir` returns entries sorted by name and can return some entries together with an error.
+- Every read, write, and metadata call counts toward the capability's file budgets for the whole call; reopening a file does not reset them. Use `Open` or `Create` with `io.Copy` for large files.
+- `WriteFile` checks the size limit before touching the target. A streamed `Create` can leave a partial file if it fails, so close the writer and check its error.
 
-I/O errors wrap `fs.PathError`, or `os.LinkError` for Rename. Use `errors.Is` with `fs.ErrNotExist`, `fs.ErrPermission`, `fs.ErrExist`, `fs.ErrInvalid`, `fs.ErrClosed`, `errors.ErrUnsupported`, `context.Canceled`, `context.DeadlineExceeded` or `onprest.ErrLimitExceeded`. Run contexts and their derivatives are required for host operations.
+Errors wrap `fs.PathError` (`os.LinkError` for `Rename`). Test them with `errors.Is` against `fs.ErrNotExist`, `fs.ErrPermission`, `fs.ErrExist`, `fs.ErrInvalid`, `fs.ErrClosed`, `errors.ErrUnsupported`, `context.Canceled`, `context.DeadlineExceeded`, or `onprest.ErrLimitExceeded`. Pass the handler's `ctx` (or a context derived from it) to every call.
 
 ## HTTP clients
 
-`onprest.NewHTTPClient()` returns a separate `*http.Client` using `*onprest.Transport`; the zero-value Transport also implements `http.RoundTripper`. Inject that client/transport into compatible external libraries. No global default client is changed.
+`onprest.NewHTTPClient()` returns an `*http.Client` whose requests go through the agent; `*onprest.Transport` (for example `&onprest.Transport{}`) is the matching `http.RoundTripper` for libraries that take one. `http.DefaultClient` is not changed.
 
 ```go
 client := onprest.NewHTTPClient()
@@ -104,14 +108,14 @@ if err != nil { return onprest.Result{}, err }
 defer resp.Body.Close() // when consuming the body inside the handler
 ```
 
-Each RoundTrip authorizes and sends one hop after the complete request body is ready. It never retries, and NewHTTPClient disables redirects with `http.ErrUseLastResponse`. If you explicitly enable the standard client's redirect handling, every hop is authorized separately by the Agent. Request Body is closed on success and failure; close response Body after consuming it, or return it as a File reader. Request deadlines and cancellation apply during upload, waiting for headers and reading the response. HTTP status, headers and body remain available for application handling, including non-2xx responses. TLS verification and sandbox destination rules remain enforced.
+Each request is sent once and never retried. Redirects are not followed unless you enable the client's redirect handling, in which case the agent checks every hop. You get the status, headers, and body of every response, including non-2xx ones; close the response body when you are done, or return it as a file reader. Deadlines and cancellation from `ctx` apply throughout, and TLS verification and the sandbox's HTTP grants always apply.
 
 ## Errors and diagnostics
 
-`PublicError(code, message)` marks an intentionally public business error. Code must match `^APP_[A-Z][A-Z0-9_]{0,59}$`; message must contain 1–1024 UTF-8 bytes without control characters. Wrapped valid public errors preserve their message through REST 422 and MCP `isError:true`; invalid values and ordinary errors become safe `EXECUTION_FAILED` responses. The Agent rechecks public values and derives outcome from observed effects.
+`PublicError(code, message)` returns an error the caller is allowed to see. The code must match `^APP_[A-Z][A-Z0-9_]{0,59}$`, and the message must be 1 to 1024 bytes of UTF-8 without control characters. It reaches the caller unchanged, with HTTP 422 over REST and `isError: true` over MCP, also when wrapped. Any other error, or an invalid code or message, becomes `EXECUTION_FAILED` with a generic message.
 
-`ErrLimitExceeded` identifies all host limits, also through wrapped PathError/LinkError. Unhandled limits become the system `LIMIT_EXCEEDED` response. A chain containing both a limit and PublicError uses the limit. An existing handler error takes priority over cleanup failures. Catching a limit and succeeding is allowed, but does not restore the budget. The final result JSON envelope has a 32 MiB limit; oversized envelopes and host handle/spool exhaustion remain `LIMIT_EXCEEDED`. Result encoding, write, close and file failures become `OUTPUT_INVALID`, with limits retaining their category. Host timeout, cancellation and worker failure take precedence.
+`errors.Is(err, onprest.ErrLimitExceeded)` detects any host limit, including through a wrapped `PathError` or `LinkError`. If the handler returns a limit error, the caller gets `LIMIT_EXCEEDED`, even when a `PublicError` is in the same chain. You may catch a limit and still succeed, but the used budget is not restored. The encoded result (data plus file metadata) may be up to 32 MiB. Failures while writing the result or reading returned files become `OUTPUT_INVALID`. A timeout or cancellation from the host takes precedence over all of these.
 
-`Log(level, message)` writes local Agent diagnostics; levels are `debug`, `info`, `warn`, `error`. Invalid levels are discarded and cause one warning. Logging at error level does not fail the handler. stdout/stderr are diagnostics and never the result channel. See the [Agent logging reference](../../docs/app/reference/logging/page.mdx#agent) to enable debug messages and locate the bounded local log. Avoid logging secrets; internal details stay local.
+`Log(level, message)` writes to the agent's local log, at level `debug`, `info`, `warn`, or `error`. An invalid level is dropped with one warning, and logging an error does not fail the handler. Anything the module writes to stdout or stderr also goes to the local log, never to the caller. See [Agent Local Logs](https://docs.onprest.viewlegacy.com/agent/local-logs#level-and-rotation) to enable debug messages, and keep secrets out of log messages.
 
-Native builds provide stubs without an Agent host connection. The SDK runs in the Agent as a Go WASI command module and supports packages compatible with that profile. It does not provide CGO, general sockets/HTTP servers, child processes, or universal compatibility with existing Go packages.
+Modules run as Go WASI programs, so cgo, listening sockets, and child processes are not available, and not every existing Go package works. A native build of your code compiles against the SDK but has no agent to talk to.

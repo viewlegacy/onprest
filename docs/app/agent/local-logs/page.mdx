@@ -1,6 +1,10 @@
 # Agent Local Logs
 
-Agent detail logs live next to the `onprest-agent` binary.
+The agent keeps the detail of every failure on the on-prem side. Callers and gateway logs only see a safe error code and message; the database error, the upstream HTTP status, or a module's own error is in the agent's local log.
+
+## Where to look
+
+The runtime log is written next to the `onprest-agent` binary and rotated by size:
 
 ```text
 onprest-agent.log
@@ -9,49 +13,43 @@ onprest-agent.log.2
 onprest-agent.log.3
 ```
 
-The local log is the place for private preparation and capability execution detail, including DB-specific errors, SQL execution and HTTP failures. Gateway stdout and HTTP responses intentionally omit those details.
+It records:
 
-Captured passwords, connection strings, signing keys, TLS certificate/key material, and configured SQL statements are redacted from preparation and runtime diagnostic records. Redaction uses the same private source snapshot as the connector and never reopens secret files; nonsecret diagnostic context remains available.
+- startup failures, such as a database that cannot be reached or a statement that fails `EXPLAIN`
+- execution failures from every executor: database errors, upstream HTTP errors, CSV parse errors, file errors, and module errors
+- messages from Wasm modules: SDK `Log` calls and anything the module writes to stdout (`info`) or stderr (`warn`)
+- `RATE_LIMITED` rejections, sampled at most once a minute per capability, without params
 
-Standalone diagnostics use separate files in the same directory:
+Passwords, connection strings, keys, certificates, and the configured SQL text are removed from log records. Treat the log as sensitive anyway: keep it on the on-prem side and do not forward it to the gateway or an external log service.
 
-| Command | Latest failure | Managed temporary and lock files |
-|---|---|---|
-| `validate` | `onprest-agent.validate.log` | `.onprest-agent.validate.<run-id>.tmp`, `.onprest-agent.validate.lock` |
-| `doctor` | `onprest-agent.doctor.log` | `.onprest-agent.doctor.<run-id>.tmp`, `.onprest-agent.doctor.lock` |
+The agent's stdout carries process events such as `agent_ready`, and stderr carries a short reason when startup fails. When the agent runs as an OS service, the service manager may redirect those to its own files; they do not replace `onprest-agent.log`.
 
-Each command keeps only its latest completed, recordable failure. A later recordable failure replaces it atomically, and a fully completed success deletes it. Configuration and busy failures do not replace an older fixed log. Temporary and lock files are managed by the command and must not be edited, renamed, or removed.
-
-When the agent runs in a terminal, process-level events such as `agent_ready` are written to stdout and fatal startup messages are written to stderr. When installed as an OS service, the service manager may redirect those streams to separate stdout/stderr files. These service stdout/stderr files are process logs, not replacements for `onprest-agent.log`.
-
-## When Detail Is Logged
-
-The runtime Agent writes `onprest-agent.log` detail when:
-
-- DB ping fails at startup.
-- SQL EXPLAIN fails at startup.
-- Runtime capability execution fails, including HTTP status, response parsing, transport or output validation failures.
-- DB permissions, syntax, timeout, or connectivity errors occur.
-- `RATE_LIMITED` rejections are sampled at most once per minute per capability. A sample records the fixed code, message, detail, and request ID when present; it never includes params or values.
-
-`validate` records local preparation failures after configuration load. It returns a log path only after the current failure record has been committed. `doctor` records the same preparation failures plus Gateway diagnostic failures in its own fixed log and never changes the runtime or validation logs.
-
-Read a diagnostic log only when the same invocation reports a recordable local failure. An older fixed log can remain after a configuration, busy, or log-finalization failure and must not be treated as the current result.
-
-## Rotation
-
-`capability.yaml` controls log rotation.
+## Level and rotation
 
 ```yaml
 logging:
+  level: info
   max_size: 10MB
   max_files: 3
 ```
 
-When `onprest-agent.log` exceeds `logging.max_size`, agent rotates the file by size. `logging.max_files` controls how many rotated files are retained; the default is `3`.
+| Key | Default | Meaning |
+|---|---|---|
+| `level` | `info` | Lowest level recorded: `debug`, `info`, `warn`, or `error`. Set `debug` to see SDK `Log("debug", ...)` messages |
+| `max_size` | `10MB` | Size at which `onprest-agent.log` is rotated |
+| `max_files` | `3` | Rotated files to keep |
 
-## Operational Guidance
+Changing the level does not change results. Output from a single module call has a size budget; anything beyond it is cut off with a warning in the log.
 
-Treat agent local logs as sensitive operational artifacts. They may contain private source and execution detail required for debugging. Keep them on the on-prem side and do not forward them to the gateway or remote aggregation pipelines.
+## validate and doctor
 
-Runtime rotation settings do not apply to validation or doctor files. Each completed diagnostic is limited to 1 MiB. Unix creates these files with mode `0600`; Windows restricts them to the invoking user, SYSTEM, and Administrators. See [Troubleshooting](/operations/troubleshooting) for failure-specific actions.
+`validate` and `doctor` do not write to the runtime log. When one of them fails for a reason worth recording, such as a database that cannot be reached, it writes a separate file next to the binary and prints its path:
+
+| Command | Log file |
+|---|---|
+| `validate` | `onprest-agent.validate.log` |
+| `doctor` | `onprest-agent.doctor.log` |
+
+Each file holds only the latest such failure and is deleted after a successful run. Configuration errors are printed in full and leave no file. Read the file only when the command you just ran printed its path; an older file may describe an earlier run. The command also manages temporary and lock files with the same prefix; leave them alone.
+
+Author commands (`code build`, `code test`) print their diagnostics on stderr and do not write log files; see [Writing code in Go](/capabilities/code/go#5-read-the-logs).

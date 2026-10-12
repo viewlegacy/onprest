@@ -1,12 +1,8 @@
 # Gateway
 
-`onprest-gateway` is the public-facing OSS binary. It authenticates callers, authorizes capabilities, exposes REST / MCP / OpenAPI / healthz, and accepts the agent WebSocket connection.
+`onprest-gateway` is the public side of Onprest. It authenticates API keys, checks which capabilities each key may call, serves REST, MCP, OpenAPI, and `/healthz`, and accepts the agent's outbound connection. It is configured entirely through environment variables and keeps no state on disk, so restarting it is safe.
 
-The gateway does not hold SQL text or database credentials. It routes capability names and params to the connected agent.
-
-## Topics
-
-- [Configuration](/gateway/configuration)
-- [API Keys](/gateway/api-keys)
-- [Reverse Proxy](/gateway/reverse-proxy)
-- [Logs](/gateway/logs)
+- [Configuration](/gateway/configuration): required settings, public URLs, request limits, CORS
+- [API Keys](/gateway/api-keys): creating keys and limiting them to capabilities
+- [Reverse Proxy](/gateway/reverse-proxy): routes and client IP detection behind a proxy or load balancer
+- [Logs](/gateway/logs): the request and control events written to stdout

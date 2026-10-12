@@ -69,13 +69,27 @@ func validateOutputMetadata(o *protocol.OutputMetadata) error {
 	}
 	return nil
 }
+
+// missingFileOriginMessage is the metadata rejection recorded when reference
+// delivery is declared without ONPREST_PUBLIC_BASE_URL.
+const missingFileOriginMessage = "ONPREST_PUBLIC_BASE_URL is required for file reference delivery"
+
 func (s *Server) validateFileOrigin(m protocol.Metadata) error {
 	for _, v := range m.Capabilities {
 		if o := v.Output; o != nil && (o.REST == "reference" || o.MCP == "reference") && s.cfg.PublicBaseURL == "" {
-			return errors.New("ONPREST_PUBLIC_BASE_URL is required for file reference delivery")
+			return errors.New(missingFileOriginMessage)
 		}
 	}
 	return nil
+}
+
+// notReadyResultLocked is the safe result for a business call while the
+// connected Agent's metadata is not ready. The caller holds agentMu.
+func (s *Server) notReadyResultLocked() agentCallResult {
+	if s.agent != nil && s.metadataError == missingFileOriginMessage {
+		return deliveryFailure("DEPENDENCY_UNAVAILABLE", missingFileOriginMessage, "not_started")
+	}
+	return agentOfflineResult()
 }
 func validateFileDescriptors(files []contract.PublicFileDescriptor, o *protocol.OutputMetadata) error {
 	if o == nil {

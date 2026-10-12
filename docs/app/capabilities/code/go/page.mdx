@@ -1,0 +1,137 @@
+# Writing Code in Go
+
+This guide takes a Go function from source to a capability the gateway can call. You write and test on your own machine with Go installed; the agent host only receives the finished `.wasm` file and the YAML.
+
+You need Go 1.26.9 or later and the `onprest-agent` binary on the author machine. The [SDK example](https://github.com/viewlegacy/onprest/tree/main/examples/sdk) walks through the same steps with a ready-made module.
+
+## 1. Write the handler
+
+Create a Go module and add the SDK. SDK releases are tagged `sdk/go/vX.Y.Z`; pin one in your `go.mod`:
+
+```sh
+mkdir customer && cd customer
+go mod init example.com/customer
+go get github.com/viewlegacy/onprest/sdk/go@vX.Y.Z
+```
+
+A handler receives the validated input as a Go struct and returns data and files:
+
+```go
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/csv"
+
+	onprest "github.com/viewlegacy/onprest/sdk/go"
+)
+
+type Input struct {
+	Customer string `json:"customer"`
+}
+
+func main() {
+	onprest.Run(func(ctx context.Context, in Input) (onprest.Result, error) {
+		var buf bytes.Buffer
+		w := csv.NewWriter(&buf)
+		w.Write([]string{"customer"})
+		w.Write([]string{in.Customer})
+		w.Flush()
+		if err := w.Error(); err != nil {
+			return onprest.Result{}, err
+		}
+		onprest.Log("info", "generated customer.csv")
+		return onprest.Result{
+			Data:  map[string]any{"customer": in.Customer},
+			Files: []onprest.File{{Name: "customer.csv", MIMEType: "text/csv", Reader: &buf}},
+		}, nil
+	})
+}
+```
+
+The SDK also gives you uploaded files (`onprest.InputFile`), file access on the agent host (`onprest.Files`), an HTTP client that goes through the agent (`onprest.NewHTTPClient`), and public business errors (`onprest.PublicError`). The [SDK reference](https://github.com/viewlegacy/onprest/blob/main/sdk/go/README.md) documents each of them.
+
+## 2. Add the capability
+
+Point a `wasm` capability at the module path the build will write:
+
+```yaml
+capabilities:
+  customer_csv:
+    executor:
+      type: wasm
+      module: ./customer.wasm
+      effects: none
+      sandbox: {enabled: true}
+    input:
+      properties:
+        customer: {type: string, pattern: '^[A-Za-z0-9 ]{1,64}$'}
+      required: [customer]
+    output: {data: {}, files: {}}
+```
+
+This module builds its CSV in memory, so it runs in the sandbox with no permissions. The input pattern also keeps spreadsheet formulas out of the generated file. See [Code (Wasm)](/capabilities/code) for sandbox grants and limits.
+
+## 3. Build
+
+```sh
+onprest-agent code build --config ./agent.yaml --capability customer_csv --source ./customer
+```
+
+`code build` compiles the package in `--source` for WebAssembly, adds the metadata the agent checks, and writes the module to the `module` path of the capability (`./customer.wasm`, relative to the YAML) with a `customer.wasm.manifest.json` next to it. It never changes your source, `go.mod`, or `go.sum`. Use `--force` to replace an existing module, and `--offline` to build only with modules already in your Go cache.
+
+To build without a configuration, give an output path instead: `onprest-agent code build --source ./customer --output ./customer.wasm`.
+
+## 4. Test locally
+
+`code test` runs one capability through the same input validation, worker, and output selection as the running agent, without starting the gateway:
+
+```sh
+mkdir -p saved
+onprest-agent code test --config ./agent.yaml --capability customer_csv \
+  --params '{"customer":"Alice"}' --output-dir ./saved --format json
+```
+
+```json
+{"operation":"test","ok":true,"request_id":"01M4Q032B6SM9Y3XHHXXJ95735","data":{"customer":"Alice"},"files":[{"name":"customer.csv","mime_type":"text/csv","size_bytes":15,"sha256":"fc3462e2...","saved_path":"/home/you/saved/01M4Q032B6SM9Y3XHHXXJ95735/0001.csv"}]}
+```
+
+With `--output-dir`, returned files are saved under a new directory named after the request ID. Without it, files are checked but only their metadata is printed.
+
+While you iterate, `--build` rebuilds before testing and only runs the test if the build succeeds:
+
+```sh
+onprest-agent code test --build --config ./agent.yaml --capability customer_csv \
+  --source ./customer --force --params-file ./params.json
+```
+
+For file inputs, put `null` where the file goes and attach a local file to that position:
+
+```sh
+onprest-agent code test --config ./agent.yaml --capability process_document \
+  --params '{"document":null}' --input-file '/document=./invoice.pdf'
+```
+
+A local test performs whatever the capability really does, including file writes and HTTP requests its sandbox allows. It does not check API keys or REST/MCP delivery. The exit code is `0` on success, `1` when the build, input, or execution fails, and `2` for a usage error.
+
+## 5. Read the logs
+
+`code test` prints the result on stdout and everything else on stderr: compiler output, `onprest.Log` messages, and anything the module writes to stdout or stderr. Redirect them separately to keep the result clean:
+
+```sh
+onprest-agent code test --config ./agent.yaml --capability customer_csv \
+  --params '{"customer":"Alice"}' > result.json 2> diagnostic.log
+```
+
+```text
+2026-10-12T02:47:04.851968Z info source=wasm event=wasm_log capability="customer_csv" request_id="01M4Q032B6SM9Y3XHHXXJ95735" message="generated customer.csv"
+```
+
+`--log-level debug` shows `debug` messages for this run; otherwise the YAML's `logging.level` applies (default `info`). In the running agent the same messages go to its [local log](/agent/local-logs).
+
+## 6. Deploy
+
+Copy the `.wasm` file and the YAML to the agent host, then validate and restart as for any [capability change](/operations/capability-changes). The manifest file is optional on the agent host. To make sure the agent runs exactly the module you tested, copy the `sha256` from the build output into `executor.sha256`.
+
+See the [CLI reference](/reference/cli#author-commands) for every `code` option.

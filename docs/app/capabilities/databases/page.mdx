@@ -1,0 +1,135 @@
+# Databases
+
+A `db` capability runs one reviewed SQL statement against PostgreSQL, MySQL, SQL Server, or Oracle. Callers supply only the declared parameters; the SQL and the credentials stay in the agent's configuration.
+
+```yaml
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: db.internal.example
+      port: 5432
+      name: crm
+      user: onprest_app
+      password_file: ./secrets/db-password
+
+capabilities:
+  get_customer:
+    executor:
+      type: db
+      source: primary
+      sql: select id, name, email from customers where id = :customer_id
+    input:
+      properties:
+        customer_id: {type: integer, minimum: 1}
+      required: [customer_id]
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: integer}
+          name: {type: string}
+          email: {type: string}
+
+  update_customer_name:
+    executor:
+      type: db
+      source: primary
+      sql: update customers set name = :name where id = :customer_id
+    input:
+      properties:
+        customer_id: {type: integer}
+        name: {type: string, minLength: 1, maxLength: 200}
+      required: [customer_id, name]
+    policy:
+      readonly: false
+      max_affected_rows: 1
+    output:
+      data: {}
+```
+
+The [Quick Start](/quick-start) runs a capability file like this against a disposable PostgreSQL database.
+
+## Database sources
+
+Each entry under `sources.databases` is a named connection. Several capabilities can share one.
+
+| Key | Meaning |
+|---|---|
+| `driver` | `postgres`, `mysql`, `sqlserver`, or `oracle` |
+| `host`, `port`, `name` | Server address and database (Oracle: service name) |
+| `user` | Database user |
+| `password` or `password_file` | The password, inline or in a protected file. Use one, not both |
+| `tls` | Connection encryption; see [TLS](#tls) |
+
+Relative file paths are resolved from the configuration directory. Password files must be regular files readable only by the agent's user, and their bytes are used exactly as written, including any trailing newline. The agent reads secrets and certificates once at startup; restart it after changing them.
+
+## Writing the SQL
+
+- One statement: `SELECT`, `INSERT`, `UPDATE`, or `DELETE`. `WITH`, `MERGE`, DDL, stored procedure calls, transaction control, and statements that return rows from a mutation (`RETURNING`, `OUTPUT`) are not accepted.
+- Use named parameters such as `:customer_id`. Each must be a scalar property declared in `input`. The agent sends them as bound parameters, not as text spliced into the SQL.
+- `policy.readonly` defaults to `true`, which allows only `SELECT`. A mutation needs `readonly: false`.
+
+At startup and in `validate`, the agent connects to each database and runs the driver's `EXPLAIN` for every statement. This catches syntax errors, missing objects, wrong parameters, and many permission problems without executing anything. It cannot catch constraint violations or trigger behavior that depends on data.
+
+## Results
+
+A `SELECT` returns the selected rows and their count:
+
+```json
+{ "rows": [{ "id": 1, "name": "Ada Lovelace", "email": "ada@example.com" }], "count": 1 }
+```
+
+Rows beyond `policy.max_rows` (default 100) are cut off. Declare the columns you publish under `output.items.properties`; the agent checks them against the query's columns even when no rows match. DB `SELECT` capabilities can also return the rows as a [generated CSV file](/capabilities/inputs-and-outputs#file-outputs).
+
+Database values become JSON as follows:
+
+| Database value | JSON |
+|---|---|
+| Integers | Numbers, with full 64-bit precision |
+| Exact decimals (`DECIMAL`, `NUMERIC`, `NUMBER`) | Strings, so no precision is lost |
+| Floating point, booleans | Numbers and booleans |
+| Binary columns | Base64 strings |
+| Timestamps | Strings in the driver's representation and the session time zone |
+| `NULL` | `null` |
+
+If a driver returns a decimal as a floating-point value, the call fails with `OUTPUT_INVALID` rather than returning an imprecise number. Declare decimal columns as `type: string`.
+
+## Mutations
+
+`INSERT`, `UPDATE`, and `DELETE` run in one transaction and return `{"count": n}`, the driver's native affected-row count. Zero rows is a successful call; decide in the caller whether that is a business error. Upserts such as PostgreSQL `ON CONFLICT` or MySQL `ON DUPLICATE KEY UPDATE` return whatever the driver reports.
+
+Before committing, the agent checks `max_affected_rows` and the output. If either fails, the transaction is rolled back and the error says `outcome: rolled_back`. An integrity constraint violation, such as a duplicate unique key, returns `CONFLICT`.
+
+A mutation is never retried automatically. If the response is lost or the call times out after the statement started, the error reports `outcome: unknown`: the commit may or may not have happened. Check the data with a separate read capability before trying again; [Uncertain outcomes](/operations/uncertain-outcomes) shows how.
+
+## Least privilege
+
+Give the agent a database user with only the permissions its capabilities need: read-only for read capabilities, and for mutations only the required operations on the required tables (column-level grants where the database supports them). `policy.readonly` checks the statement type; it cannot tell whether a function called from a `SELECT` writes data. The database's own permissions are the real boundary.
+
+## TLS
+
+| Driver | `tls.mode` values | Client certificate |
+|---|---|---|
+| `postgres` | `disable`, `require`, `verify-ca`, `verify-full` | Yes |
+| `mysql` | `disable`, `require`, `verify-full` | Yes |
+| `sqlserver` | `disable`, `require`, `verify-full` | No |
+| `oracle` | `disable`, `require`, `verify-full` | No |
+
+The default is `disable`. `require` encrypts the connection without checking the server's identity. `verify-full` checks the certificate chain and the host name, using `ca_file` for a private CA or the OS trust store otherwise, and `server_name` when the certificate name differs from `host`. Client certificates use `cert_file` and `key_file` together. A failed check stops the connection; the agent never falls back to an unencrypted one.
+
+```yaml
+tls:
+  mode: verify-full
+  ca_file: /etc/onprest/db-ca.pem
+  server_name: db.internal.example
+```
+
+To replace a CA or client certificate without downtime, see [Database TLS certificate rotation](/operations/deployment#database-tls-certificate-rotation).
+
+## Driver notes
+
+- [PostgreSQL](/capabilities/databases/postgres)
+- [MySQL](/capabilities/databases/mysql)
+- [SQL Server](/capabilities/databases/sqlserver)
+- [Oracle](/capabilities/databases/oracle)

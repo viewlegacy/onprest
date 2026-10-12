@@ -1,6 +1,6 @@
 # Release Gate
 
-Maintainers use the release gate before treating an OSS core change as operationally ready. Users install published releases without Go or the source repository; see [Binary Release Installation](/operations/deployment#binary-release-installation).
+Maintainers use the release gate before treating an OSS core change as operationally ready. Users install published releases without Go or the source repository; see [Install from a release](/operations/deployment#install-from-a-release).
 
 The individual unit, integration, DB-selection, and make targets are documented once in [Test Commands](/reference/test-commands). This page covers only the release gate itself and its acceptance criteria.
 
@@ -44,7 +44,7 @@ Pull requests targeting `main` and pushes to `main` also run these checks:
 
 The three service checks use binaries extracted from the release archives, the native OS managers, a real Gateway, and a real PostgreSQL instance. Each host first runs the validation-log crash recovery and adversarial-path safety tests, including native symlink/reparse-point handling, then verifies service registration, actual runtime detail writes and rotation markers while production validation overlaps, latest-failure cleanup, and native file permissions. The reusable workflow fails if any OS job fails or is canceled; `release-ready` also fails unless it, `package-candidate`, and `integration-linux` succeed. General all-database and Docker coverage remains in `integration-linux`.
 
-Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-operating-system-baseline); results from a newer OS do not establish minimum-version support.
+Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-platforms); results from a newer OS do not establish minimum-version support.
 
 The release-gate caller owns concurrency cancellation. The called service lifecycle workflow deliberately has no competing concurrency group, so invoking it cannot cancel its own caller run.
 

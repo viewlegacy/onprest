@@ -1,84 +1,92 @@
-# File Input and Output
+# Files
 
-DB SELECT and [CSV capabilities](/agent/capability-yaml#csv-executors) can generate CSV files. File capabilities save accepted input to configured writable folders and return independent snapshots from configured folders or their completed writes. [HTTP responses](/agent/capability-yaml#responses-and-redirects) use the same delivery modes for original response files or CSV generated from selected JSON arrays. Declare [file writes](/agent/capability-yaml#file-writes) and [outputs](/agent/capability-yaml#file-reads-and-csv-output) in YAML.
+Capabilities can take files as input and return files as output. Uploads travel through the gateway to the agent inside the same call, and downloads are streamed from the agent on request; the gateway never stores file contents. How a capability declares its files is described in [Inputs and outputs](/capabilities/inputs-and-outputs#file-inputs).
 
-## File input
+## Sending files
 
-One capability call accepts files with ordinary arguments.
+You can send files in three ways. All of them reach the capability the same way.
 
-### JSON and MCP
+**Inline in JSON (REST or MCP).** Put an object with the file name, MIME type, and standard padded Base64 content wherever the input schema declares a file:
 
-REST JSON and MCP `tools/call.arguments` encode each declared file leaf as exactly `{"name":"report.pdf","mime_type":"application/pdf","data":"AQ=="}`. The `data` string uses canonical RFC 4648 padded Base64; whitespace, URL alphabet, missing padding and noncanonical trailing bits are rejected. Empty bytes use an empty string. `name` is a UTF-8 basename of 1–255 bytes with no path separators or control characters. MIME types are normalized to lowercase without parameters. Declared extensions, MIME types, `max_bytes` and `allow_empty` all apply. File leaves may appear in nested objects and arrays; their array order is preserved. Inputs cannot contain a host path, arbitrary URL, upload handle or internal file ID.
+```json
+{
+  "month": "2026-10",
+  "document": { "name": "report.pdf", "mime_type": "application/pdf", "data": "JVBERi0xLjcK..." }
+}
+```
 
-### Multipart
+This works for files nested in objects and arrays and for MCP `tools/call` arguments. Base64 makes the request about a third larger, and the whole JSON body must fit in the gateway's JSON limit (1 MiB by default), so use it for small files.
 
-For larger files, use REST `multipart/form-data`. Each top-level file uses a binary part with the exact property name and a filename. A direct file array uses repeated binary parts with that same name. Other properties use JSON parts with `Content-Type: application/json`; nested files within those JSON parts use the inline representation. A filename-bearing binary file whose MIME type is `application/json` remains raw bytes. For example:
+**Multipart (REST only).** For larger files, send `multipart/form-data`. Each file goes in a part named after the input property, with a file name. A file array repeats the same part name. Every other property goes in its own part as JSON, with `type=application/json`:
 
 ```bash
 curl --fail --show-error \
   -H "Authorization: Bearer $ONPREST_API_KEY" \
   --form 'document=@./report.pdf;type=application/pdf' \
   --form 'month="\"2026-10\"";type=application/json' \
-  'https://gateway.example.com/api/v1/capabilities/save_report'
+  https://gateway.example.com/api/v1/capabilities/save_report
 ```
 
-The server accepts parts in any order and starts business work only after complete HTTP EOF and schema validation. It rejects duplicate scalar/object/single-file parts, unknown names, duplicate headers, transfer encodings, missing filenames, incomplete endings and nonempty epilogues. The normal ending CRLF is accepted. Omission differs from a zero-byte file. An explicitly empty direct file array must use JSON or MCP; multipart represents an optional array by omission. Required direct file arrays with `maxItems: 0` have no multipart media and return 415; optional zero-length arrays do not accept a binary part.
+Note the quoting in the `month` part: its content is the JSON string `"2026-10"`, quotes included. Parts may come in any order. Uploads are streamed to the agent as they arrive, and the capability runs only after the whole request has been received and validated.
 
-### Input lifetime
+File names must be plain names without directories. A file input cannot be a server path, a URL, or a reference to an earlier upload; uploads belong to the call that sent them and are discarded afterwards.
 
-Gateway streams multipart to the Agent private spool over the existing outbound WebSocket. ACK backpressure stops HTTP reading. A late invalid argument cancels received input without running the capability. Input is request-owned and expires on cancellation, timeout or disconnect; it is not a resumable upload and has no public retrieval API. Successful writes remain business files, while returned output snapshots have independent lifetimes.
+### Upload limits
 
-### Limits and deadlines
+| Limit | Default | Set by |
+|---|---|---|
+| Whole JSON body, or all JSON parts of a multipart request | 1 MiB | `GATEWAY_MAX_REQUEST_BODY_BYTES` |
+| Whole multipart request | 100 MiB | `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` |
+| Requests receiving input at the same time | 16 | `GATEWAY_MAX_CONCURRENT_BODY_READERS` |
+| Time to receive all uploads | 60s | agent `runtime.transfer_timeout` |
+| File count and sizes per call | 16 files, 32 MiB each, 64 MiB total | capability [file limits](/capabilities/policy-and-limits#file-limits) |
 
-`GATEWAY_MAX_REQUEST_BODY_BYTES` defaults to 1 MiB for the entire encoded JSON/MCP request and for the sum of encoded multipart JSON parts. `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` defaults to 100 MiB for the entire multipart wire body. `GATEWAY_MAX_CONCURRENT_BODY_READERS` defaults to 16 and holds a shared input slot until sending finishes and all input buffers/queued payloads are released; a full capacity returns HTTP 503 `BUSY` before body reading. Multipart headers are limited to 8 KiB per part and aggregate framing to 1 MiB. Agent `runtime.input_limits.max_multipart_parts` defaults to 128.
+A request over a gateway size limit gets HTTP 413. When all input slots are busy, the gateway answers HTTP 503 `BUSY` before reading the body; retry later.
 
-Input time starts at body admission and uses one fixed `runtime.transfer_timeout` budget, followed by a separate execution `policy.timeout`. JSON body reading also has a fixed 15-second Gateway upper bound. REST uses the shorter budget for the named capability; before a complete MCP request identifies the tool, its read budget uses the largest authorized input budget in the current metadata generation, bounded by 15 seconds. A fileless capability contributes the ordinary JSON budget. Selecting the tool does not restart its input clock. A disconnect during an ACK stall is bounded by that fixed input deadline. Encoded Base64 may hit the JSON wire limit before the decoded file limit; the client is never silently switched to another API.
+## Receiving files
 
-### Input errors
+Returned files are listed in `result.files`, in a form chosen by the capability's [delivery setting](/capabilities/inputs-and-outputs#file-outputs).
 
-REST returns 413 `LIMIT_EXCEEDED` for wire/JSON-part limits, 415 `INVALID_REQUEST` for unsupported media, 400 `INVALID_REQUEST` for malformed framing/JSON/Base64, 400 `VALIDATION_FAILED` for schema mismatch, and 422 `LIMIT_EXCEEDED` for capability input policy limits. MCP keeps HTTP authentication/capacity errors at the HTTP layer; errors before method parsing use the JSON-RPC parse error path, and recognized tool input failures return HTTP 200 with `isError: true` and the common error envelope.
+**Download links (default).** Each entry describes one file:
 
-Confirmed pre-execution rejection has `outcome: not_started`. A REST timeout or cancellation after input commit returns HTTP 504 `EXECUTION_TIMEOUT` with `outcome: unknown`; a MCP tool carries the same common error in HTTP 200. A completed business effect cannot be inferred from a missing response. A REST body deadline returns HTTP 504; a MCP body failure before method parsing remains a JSON-RPC parse error.
+```json
+{
+  "id": "307347a88341df0e043a3489dbe85105",
+  "name": "report.csv",
+  "mime_type": "text/csv",
+  "size_bytes": 2048,
+  "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "uri": "https://gateway.example.com/api/v1/files/307347a88341df0e043a3489dbe85105",
+  "expires_at": "2026-10-12T09:15:00Z"
+}
+```
 
-## OpenAPI clients
-
-Verified clients are Swagger UI 5.27.1 and OpenAPI Generator 7.25.0 `typescript-fetch` with TypeScript 5.9.3. Generate from the Gateway's OAS 3.1 document with `withoutRuntimeChecks=true`, `--type-mappings=null=null,Null=null` and `--global-property=skipFormModel=false`. Server input constraints remain authoritative. Media-specific schema titles prevent generated request model name collisions.
-
-The generated client selects JSON from this document. Its verified file input uses inline Base64, including file arrays, nested files and empty bytes; generated multipart is outside that client's verified support. Swagger UI supports repeated binary file parts and binary files with `application/json` MIME. JSON encoding limits still apply to the generated client. JavaScript numbers preserve only safe-range integers; use an HTTP client that preserves integer text for full int64 values. Swagger UI 5.27.1 emits ordinary string values as unquoted JSON-part bytes, which the server rejects. To send the JSON string `"x"` with that UI, its input must contain `"\"x\""`; omission and an empty JSON part also differ. These client limitations do not alter the input contract.
-
-## References
-
-REST and MCP default to `reference` delivery. A successful capability response includes `result.files` descriptors with `id`, safe basename `name`, `mime_type`, `size_bytes`, lowercase `sha256`, `uri`, and `expires_at`. `result.data` may accompany files or be null. All files must pass validation and snapshot retention before the result is published; a failed later reader does not publish a partial file list.
-
-Set [ONPREST_PUBLIC_BASE_URL](/gateway/configuration#file-reference-origin) to the explicit public origin. For example, retrieve a returned URI with the same caller credential:
+Download it with the same API key that made the call:
 
 ```bash
 curl --fail --show-error \
   -H "Authorization: Bearer $ONPREST_API_KEY" \
-  'https://gateway.example.com/api/v1/files/RETURNED_FILE_ID' \
-  --output report.csv
+  "$FILE_URI" --output report.csv
 ```
 
-`GET /api/v1/files/{id}` requires Bearer or `X-API-Key` authentication and current permission for the original capability. A reference is bound to the original credential, definition and authenticated Agent connection; knowing a URI grants no access. Another credential with the same capability permission cannot use it. Rotating credentials, changing the definition, restarting either binary or reconnecting the Agent invalidates the old reference. References and snapshots expire at `file_ttl` (default `15m`). Downloads never rerun the capability. An expired or invalidated handle returns `NOT_FOUND`; obtaining a new result requires an explicit new business call.
+Downloading never runs the capability again. If the transfer breaks after it started, the response is cut off rather than completed with an error, so treat a short or interrupted download as a failure and compare `size_bytes` or `sha256` when it matters. Range requests are not supported, and only one download from the same call runs at a time; a second one gets `BUSY`.
 
-Successful downloads carry `Content-Type`, `Content-Length`, attachment `Content-Disposition`, and the original `X-Request-ID`; responses use `Cache-Control: no-store`. Range requests return `416` and are not resumable. The same output request permits one active transfer at a time; another simultaneous retrieval can return `BUSY` immediately without queueing. Management rate, concurrency, byte and transfer deadline limits apply independently of business execution limits.
+**Direct body (REST).** A capability with `delivery.rest: direct` returns its single file as the response body of the `POST`, with `Content-Type` and `Content-Disposition` set, instead of the JSON envelope.
 
-Errors before response bytes begin use the [common error envelope](/api/errors). If a transfer fails after bytes begin, Gateway aborts the HTTP response; clients must treat a truncated body or transport error as failure. Gateway withholds the final byte until size and SHA-256 match the transfer end, and waits for verified completion before returning an empty file. Client disconnect cancels the transfer and releases its reader and slot; a retained snapshot remains available until expiry.
+**MCP.** By default, the tool result contains the envelope with the download link, plus a `resource_link` for clients on protocol `2025-06-18` or later. Clients can fetch it with `resources/read`, which applies the same key and lifetime checks; whether a client does so automatically depends on the client. With `delivery.mcp: inline`, the file content is embedded in the tool result instead, as text for UTF-8 text files and Base64 otherwise, up to the capability's `mcp_inline_total_bytes`.
 
-## Direct REST
+## Who can download, and for how long
 
-`output.files.delivery.rest: direct` requires files-only output with exactly one file. The capability POST returns that file body instead of a JSON success envelope, using the same download headers, completion checks and failure behavior as a reference GET.
+A download link works only:
 
-## MCP
+- with the API key that made the original call, while that key may still call the capability;
+- until `expires_at` (by default 15 minutes, set by the capability's `file_ttl`);
+- while the same agent connection is up. Restarting the gateway or the agent, or the agent reconnecting, ends all links.
 
-Reference tool results include the common envelope as text for every supported protocol version. `2025-06-18` and `2025-11-25` also include matching `structuredContent` and `resource_link` items. `2025-03-26` clients use the URI in the text envelope. Links do not guarantee that an MCP client automatically downloads a file.
+Knowing the URL is not enough to download, and another API key gets HTTP 403 even if it may call the same capability. An expired or ended link returns `NOT_FOUND`; make a new call to get the file again, keeping in mind whatever else that call does.
 
-`resources/read` accepts only a canonical URI returned by this Gateway, with the configured origin and exact file path. It uses the same caller and lifetime checks, never fetches arbitrary URLs, and returns `contents` with `text` for valid UTF-8 `text/*` files and Base64 `blob` otherwise. `resources/list` returns an empty list; subscriptions and list-change notifications are not supported. A reference is not added to a discoverable resource catalogue.
+Links use the gateway's configured `ONPREST_PUBLIC_BASE_URL`. If any capability uses download links and it is not set, all of the agent's capabilities stay unavailable with `DEPENDENCY_UNAVAILABLE`; see [File reference origin](/gateway/configuration#file-reference-origin).
 
-`output.files.delivery.mcp: inline` embeds verified bytes directly as text or Base64 resources. Descriptor `uri` and `expires_at` are omitted, and the text envelope and newer-version `structuredContent` describe the same result. The `mcp_inline_total_bytes` limit counts the entire encoded JSON-RPC response, including Base64, all content, structured content and request ID. Exceeding it returns `LIMIT_EXCEEDED`; delivery never silently changes to references. REST and MCP delivery are selected independently in YAML.
+## Generated clients
 
-MCP file tool responses and resource reads share four Gateway response slots, held through collection, encoding and the final HTTP write. A full response capacity returns HTTP 503 `BUSY` before a new business call or collection. The fixed transfer deadline also bounds HTTP delivery to a slow receiver, and client disconnect releases the response slot.
-
-## Storage and security
-
-Agent retains independent snapshots in its private spool after execution and before publication. Gateway keeps a bounded, volatile reference table and streams transfers; it does not persist file bodies. Cancelling one download does not remove a valid retained snapshot or invoke business work. File contents, names and credentials are not automatically enumerated in request logs. Operators control the folder roots, producer completion protocol, spool permissions and TLS/proxy environment; see [Security](/security).
+The OpenAPI document describes both the JSON and the multipart form of each upload. Clients generated with OpenAPI Generator's `typescript-fetch` send files inline as Base64. Swagger UI can send multipart uploads; type JSON string values with their quotes (`"2026-10"`) because it sends the part content as typed.

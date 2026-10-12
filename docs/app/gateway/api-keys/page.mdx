@@ -1,66 +1,52 @@
 # API Keys
 
-API keys authenticate REST, MCP, and OpenAPI requests. They also define which capabilities the caller can use.
+API keys authenticate every REST, MCP, OpenAPI, and file download request, and each key lists the capabilities it may call.
 
-## Create a Key
+## Create a key
 
 ```bash
 ./onprest-gateway create-key --name partner-a --capabilities "get_customer,get_orders"
 ```
 
-For an internal key that can call every capability:
+The command prints the plaintext key once, together with a bcrypt `key_hash`. Give the plaintext key to the caller and add only the hash to `GATEWAY_API_KEYS_JSON`:
 
-```bash
-./onprest-gateway create-key --name internal --capabilities "*"
+```json
+[
+  {
+    "name": "partner-a",
+    "key_hash": "$2a$10$...",
+    "capabilities": ["get_customer", "get_orders"]
+  }
+]
 ```
 
-## Authorization Model
+Restart the gateway to apply changes. A gateway accepts up to 100 keys.
 
-API key authorization is explicit.
+## What a key may call
 
-| `capabilities` | Meaning |
+| `capabilities` | The key may call |
 |---|---|
-| `["get_customer"]` | Can call only `get_customer` |
-| `["get_customer", "get_orders"]` | Can call only the listed capabilities |
-| `["*"]` | Can call all capabilities |
-| `[]` or omitted | Can call no capabilities |
+| `["get_customer", "get_orders"]` | Only the listed capabilities |
+| `["*"]` | Every capability |
+| `[]` or omitted | Nothing |
 
-This same authorization is applied to:
+The same list decides which capabilities appear in `/openapi.json` and MCP `tools/list` for that key, and which returned files it may download. Prefer explicit lists; use `"*"` only for internal keys.
 
-- `POST /api/v1/capabilities/{name}`
-- `POST /mcp` `tools/call`
-- `POST /mcp` `tools/list`
-- `GET /openapi.json`
+## Sending the key
 
-For `tools/list` and `/openapi.json`, gateway filters the visible tools or paths by API key.
-
-## Authentication Headers
-
-Use either bearer auth or `X-API-Key`.
+Use either header:
 
 ```http
 Authorization: Bearer {api_key}
-```
-
-```http
 X-API-Key: {api_key}
 ```
 
-Bearer auth is recommended for general clients. `X-API-Key` is available for environments where bearer headers are inconvenient.
+`Authorization: Bearer` works with most clients. `X-API-Key` is there for clients that cannot set it.
 
-## Log Identity
+## Names in logs
 
-The gateway logs the key `name`, not the plaintext API key.
+Gateway logs record the key's `name`, never the key itself, so choose names that identify the integration or team, such as `partner-a` or `crm-sync`.
 
-```json
-{
-  "event": "request",
-  "api_key_name": "partner-a",
-  "capability": "get_customer",
-  "http_status": 200
-}
-```
+## Rotating a key
 
-Choose stable names that identify the integration, team, or tenant using the key.
-
-Gateway accepts at most 100 configured API keys. Successful authentication is cached for up to five minutes in a bounded 1,024-entry in-memory cache keyed by a SHA-256 digest; plaintext API keys are never stored in that cache or written to logs. Cache-miss bcrypt verification is limited to four concurrent requests across the gateway. When all four slots are occupied, another uncached authentication attempt receives HTTP 429 `RATE_LIMITED` immediately instead of adding more bcrypt CPU work. The source-IP rate limit still applies before authentication. Rotation or configuration changes require a gateway restart, which also clears the cache.
+To rotate a key, add a new entry under a new name, give the new key to the caller, restart, and remove the old entry once the caller has switched.

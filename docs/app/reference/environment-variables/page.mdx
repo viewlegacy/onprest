@@ -2,76 +2,37 @@
 
 ## Gateway
 
-### Required
+The gateway is configured only through these variables. An empty value is the same as leaving the variable out, and an invalid value stops the gateway at startup. [Gateway configuration](/gateway/configuration) explains when to set each one.
 
 | Variable | Default | Description |
 |---|---|---|
-| `GATEWAY_AGENT_PUBLIC_KEY` | none | Ed25519 public key used to verify agent WebSocket handshake signatures and diagnostic `POST /ws/agent/verify` signatures |
-| `GATEWAY_API_KEYS_JSON` | none | JSON array of API key names, bcrypt hashes, and allowed capabilities |
-
-### Optional
-
-Empty values are treated the same as omitted values. `ONPREST_PUBLIC_BASE_URL` may be omitted only when no Agent capability needs file reference delivery; the other optional variables may be omitted.
-
-| Variable | Default | Description |
-|---|---|---|
-| `GATEWAY_ADDR` | `:8080` | Gateway listen address |
-| `GATEWAY_PUBLIC_URL` | derived from `GATEWAY_ADDR` | External HTTP(S) base URL used in OpenAPI `servers` |
-| `ONPREST_PUBLIC_BASE_URL` | empty | Explicit HTTPS origin required by file reference metadata; HTTP is allowed only on loopback for local testing. See [File Reference Origin](/gateway/configuration#file-reference-origin) |
-| `GATEWAY_CORS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to call the gateway with CORS; empty disables CORS headers |
-| `GATEWAY_IP_ALLOW_LIST` | empty | Comma-separated CIDRs or single IPs allowed to call gateway routes, including API-key-free `/healthz` and Agent diagnostics; empty means no IP allow restriction |
-| `GATEWAY_TRUSTED_PROXY_CIDRS` | empty | CIDRs whose forwarded headers are trusted for source IP detection; empty means forwarded headers are ignored |
-| `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` | `10` | Per-source request rate |
-| `GATEWAY_RATE_LIMIT_BURST` | `20` | Per-source burst size |
-| `GATEWAY_EMIT_OPENAPI_SNAPSHOT` | `false` | When `true`, the gateway emits full cached OpenAPI metadata as an `openapi_snapshot` stdout event |
-| `GATEWAY_MAX_REQUEST_BODY_BYTES` | `1048576` | Maximum encoded JSON/MCP body and cumulative multipart JSON-part bytes; positive integer |
-| `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` | `104857600` | Maximum entire multipart wire body; positive integer |
-| `GATEWAY_MAX_CONCURRENT_BODY_READERS` | `16` | Shared REST/MCP input slots held through complete sending and buffer release; positive integer |
-
-## Example
+| `GATEWAY_AGENT_PUBLIC_KEY` | required | Agent public key from `onprest-gateway create-agent-secret` |
+| `GATEWAY_API_KEYS_JSON` | required | JSON array of API keys: `name`, bcrypt `key_hash`, `capabilities` |
+| `GATEWAY_ADDR` | `:8080` | Listen address |
+| `GATEWAY_PUBLIC_URL` | derived from `GATEWAY_ADDR` | External base URL written into OpenAPI `servers` |
+| `ONPREST_PUBLIC_BASE_URL` | none | Origin for file download links. If any capability uses `reference` delivery and this is unset, no capability is published |
+| `GATEWAY_CORS_ALLOWED_ORIGINS` | none | Comma-separated browser origins allowed to call the gateway |
+| `GATEWAY_IP_ALLOW_LIST` | none | Comma-separated CIDRs or IPs allowed to reach any route |
+| `GATEWAY_TRUSTED_PROXY_CIDRS` | none | Proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted |
+| `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` | `10` | Requests per second per source IP |
+| `GATEWAY_RATE_LIMIT_BURST` | `20` | Burst size per source IP |
+| `GATEWAY_EMIT_OPENAPI_SNAPSHOT` | `false` | Write the full OpenAPI document to stdout when it is loaded |
+| `GATEWAY_MAX_REQUEST_BODY_BYTES` | `1048576` | Largest JSON body, and largest total of JSON parts in a multipart upload |
+| `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` | `104857600` | Largest multipart upload |
+| `GATEWAY_MAX_CONCURRENT_BODY_READERS` | `16` | Requests whose input the gateway holds at the same time |
 
 ```env
-# Required.
 GATEWAY_AGENT_PUBLIC_KEY=TrMm87V3aET3MmGUzHf3_XKZRPEHe1bDM-POH1mrjr8
 GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$INgs32pPDl8EQAOTcQ1NN.eZUpNkDtyTKXh2luqxE32vNBmaLpy7m","capabilities":["get_customer","update_customer"]}]'
-
-# Optional. Omit these to use defaults or disabled behavior.
-# GATEWAY_ADDR=:8080
-# GATEWAY_PUBLIC_URL=https://gateway.example.com
-# ONPREST_PUBLIC_BASE_URL=https://gateway.example.com
-# GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
-# GATEWAY_IP_ALLOW_LIST=203.0.113.0/24
-# GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12
-# GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
-# GATEWAY_RATE_LIMIT_BURST=20
-# GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
-# GATEWAY_MAX_REQUEST_BODY_BYTES=1048576
-# GATEWAY_MAX_FILE_REQUEST_BODY_BYTES=104857600
-# GATEWAY_MAX_CONCURRENT_BODY_READERS=16
+GATEWAY_ADDR=127.0.0.1:8080
 ```
 
 ## Agent
 
-Most agent runtime settings are in `capability.yaml`. Prefer `onprest-agent --config /path/to/capability.yaml` when launching the binary directly. The file path can also be selected with an environment variable.
+The agent is configured by `capability.yaml`; see [Agent configuration](/agent/configuration). One environment variable selects the file:
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENT_CAPABILITY_FILE` | binary-adjacent `capability.yaml` | Path to the agent capability YAML file |
+| `AGENT_CAPABILITY_FILE` | `capability.yaml` next to the binary | Path to the configuration. `--config` takes precedence |
 
-`--config` takes precedence over `AGENT_CAPABILITY_FILE`.
-
-Important fields:
-
-- `gateway.url`
-- `gateway.agent_private_key`
-- `sources.databases.<name>.driver`
-- `sources.databases.<name>.host`
-- `sources.databases.<name>.port`
-- `sources.databases.<name>.name`
-- `sources.databases.<name>.user`
-- `sources.databases.<name>.password`
-- `logging.level` (`debug`, `info`, `warn`, `error`; default `info`)
-- `logging.max_size`
-- `runtime.max_concurrent_requests`
-
-Author `code test` requires explicit `--config` and `--capability` rather than using `AGENT_CAPABILITY_FILE`. See [CLI Reference](/reference/cli#build-and-test-wasm-code) for author command options and build environment overrides.
+The author command `code test` always needs explicit `--config` and `--capability` and ignores this variable. PostgreSQL capabilities refuse to start when certain `PG*` variables are set; see [PostgreSQL](/capabilities/databases/postgres#environment-variables).

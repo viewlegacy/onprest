@@ -1,18 +1,13 @@
 # API
 
-Onprest exposes capabilities through REST and MCP. It also exposes OpenAPI metadata generated from the agent-side `capability.yaml`.
+Every capability the API key may call is available in three ways, all served by the gateway:
 
-All public API surfaces use API key authentication except `/healthz`. REST, MCP, and OpenAPI are filtered by capability authorization.
+| Endpoint | Use it for |
+|---|---|
+| `POST /api/v1/capabilities/{name}` | Calling a capability from an application. See [REST](/api/rest) |
+| `POST /mcp` | Calling capabilities as tools from an AI agent. See [MCP](/api/mcp) |
+| `GET /openapi.json` | Generating clients or reviewing the contract. See [OpenAPI](/api/openapi) |
 
-REST JSON, streaming multipart and MCP calls accept declared file inputs. File capabilities save to configured writable folders and return independent snapshots; file outputs and generated CSV support authenticated references, direct REST bodies, or inline MCP resources.
+Capabilities that take or return files use the same endpoints plus `GET /api/v1/files/{id}`; see [Files](/api/files). `GET /healthz` reports whether the agent is connected and is the only endpoint that needs no API key; see [Healthz](/api/healthz).
 
-Success data follows each capability's output schema inside the [common REST/MCP envelope](/api/rest#success-response). Generic JSON retains its selected shape; see [HTTP executors](/agent/capability-yaml#http-executors) for fixed API bindings and response files.
-
-## Topics
-
-- [REST](/api/rest)
-- [File Input and Output](/api/files)
-- [MCP](/api/mcp)
-- [OpenAPI](/api/openapi)
-- [Healthz](/api/healthz)
-- [Errors](/api/errors)
+REST and MCP return the same result envelope and the same [error codes](/api/errors).

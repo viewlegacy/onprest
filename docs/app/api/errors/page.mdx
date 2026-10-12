@@ -1,6 +1,6 @@
 # Errors
 
-REST and HTTP-level failures return a shared error envelope with a Gateway-assigned `request_id` and `error.code`, `message`, `outcome`, and optional fixed safe `reason`. Success has `result` instead of `error`.
+Failed calls return an error envelope instead of `result`:
 
 ```json
 {
@@ -13,46 +13,52 @@ REST and HTTP-level failures return a shared error envelope with a Gateway-assig
 }
 ```
 
+Branch on `code` and `outcome`. `message` is a fixed, safe text for people; it never contains SQL, driver errors, paths, credentials, or the values you sent. Some errors add a fixed `reason`, such as `UPSTREAM_HTTP_STATUS`. The detail behind an error is in the agent's [local log](/agent/local-logs).
+
+## Codes
+
 | HTTP | Code | Meaning |
 |---:|---|---|
-| 400 | `INVALID_REQUEST`, `VALIDATION_FAILED` | Invalid request or capability input |
-| 401 | `AUTH_FAILED` | Missing or invalid authentication |
-| 403 | `CAPABILITY_DENIED`, `PERMISSION_DENIED` | Capability, origin or IP permission denied |
-| 404 | `NOT_FOUND` | Capability or live file reference is unavailable |
-| 409 | `SOURCE_CHANGED`, `CONFLICT` | Definition/source mismatch or typed DB integrity constraint |
-| 422 | `LIMIT_EXCEEDED`, `APP_*` | Capability limit or valid application failure |
-| 429 | `RATE_LIMITED` | Gateway, capability or Agent management rate admission rejected |
-| 503 | `BUSY`, `AGENT_OFFLINE`, `DEPENDENCY_UNAVAILABLE` | Capacity, Agent, database, upstream API or required reference origin unavailable |
-| 504 | `EXECUTION_TIMEOUT` | Execution deadline exceeded |
-| 502 | `EXECUTION_FAILED`, `OUTPUT_INVALID`, `OUTCOME_UNKNOWN` | Execution/output failure or uncertain effects |
-| 500 | `INTERNAL_ERROR` | Unexpected internal failure |
+| 400 | `INVALID_REQUEST` | The request is malformed: bad JSON, bad Base64, broken multipart |
+| 400 | `VALIDATION_FAILED` | The input does not match the capability's schema |
+| 401 | `AUTH_FAILED` | Missing or invalid API key |
+| 403 | `CAPABILITY_DENIED` | The API key may not call this capability |
+| 403 | `PERMISSION_DENIED` | The source IP or browser origin is not allowed, or the agent may not access a file it needs |
+| 404 | `NOT_FOUND` | Unknown capability, no matching file, or an expired download link |
+| 409 | `CONFLICT` | A database constraint was violated, a file to save already exists, or the agent was restarted with a different configuration while the call was in flight |
+| 409 | `SOURCE_CHANGED` | A file or folder changed while it was being read |
+| 413 | `LIMIT_EXCEEDED` | The request body is larger than the gateway allows |
+| 415 | `INVALID_REQUEST` | Unsupported `Content-Type` |
+| 422 | `LIMIT_EXCEEDED` | A capability limit was exceeded: input size, rows, output size, files |
+| 422 | `APP_*` | A business error returned by a code capability |
+| 429 | `RATE_LIMITED` | A gateway, authentication, or capability rate limit was reached |
+| 500 | `INTERNAL_ERROR` | An unexpected failure |
+| 502 | `EXECUTION_FAILED` | The database, upstream API, file operation, or code failed |
+| 502 | `OUTPUT_INVALID` | The result did not match the declared output |
+| 502 | `OUTCOME_UNKNOWN` | The agent could not confirm whether a commit or rollback happened |
+| 503 | `BUSY` | The gateway or agent is at capacity; nothing was run |
+| 503 | `AGENT_OFFLINE` | No agent is connected |
+| 503 | `DEPENDENCY_UNAVAILABLE` | A database, upstream API, or required gateway setting is unavailable |
+| 504 | `EXECUTION_TIMEOUT` | The capability's timeout or the caller's deadline was reached |
 
-REST wire-body overflow uses HTTP 413 `LIMIT_EXCEEDED`; unsupported content type uses HTTP 415 `INVALID_REQUEST`; disallowed methods use HTTP 405. MCP HTTP negotiation can use 400/403/405/406. A duplicate Agent connection uses 409.
+Download failures follow the same table, except that a range request gets HTTP 416. MCP tool errors carry the same codes inside a successful HTTP response; see [MCP](/api/mcp#errors).
 
-File Range requests return HTTP 416 `INVALID_REQUEST`. A download that fails after response bytes begin is aborted; it cannot append a JSON error to the file. Treat an incomplete body as failure. See [File Output](/api/files).
+For `RATE_LIMITED`, the message tells you which limit was hit; see [Troubleshooting](/operations/troubleshooting#rate-limited).
 
-For an HTTP capability, an upstream status outside `response.success_statuses` returns `EXECUTION_FAILED` with fixed reason `UPSTREAM_HTTP_STATUS`. Upstream error bodies and headers remain private. After sending, a lost or invalid response can report `outcome: unknown`; check the upstream system before deciding to retry. See [HTTP responses and redirects](/agent/capability-yaml#responses-and-redirects).
+## Outcome
 
-## Observed outcome
+`outcome` says what happened on the on-prem side, independent of the code:
 
 | Outcome | Meaning |
 |---|---|
-| `not_started` | Business execution did not begin |
-| `no_change` | No business change was observed |
-| `rolled_back` | All business effects were confirmed rolled back |
-| `committed` | All business effects were confirmed complete |
-| `unknown` | Completion or rollback could not be confirmed |
+| `not_started` | Nothing ran |
+| `no_change` | It ran and changed nothing, for example a failed read |
+| `rolled_back` | It made changes, and they were all rolled back |
+| `committed` | All changes were completed |
+| `unknown` | Changes may or may not have happened |
 
-Do not infer outcome from the error code or a readonly/idempotent annotation. DML output and capacity errors occur before commit and report confirmed rollback when available. Commit/rollback uncertainty takes priority over timeout and returns `OUTCOME_UNKNOWN`. Gateway timeout or an in-flight disconnect may be `unknown`. Verify database state independently before retrying an uncertain mutation. A completed commit is not automatically re-executed.
+Trust `outcome`, not the code or the capability's annotations. `EXECUTION_TIMEOUT`, for example, can come with `not_started` or `unknown`. Never retry an operation with `unknown` automatically: check the real state first, as described in [Uncertain outcomes](/operations/uncertain-outcomes).
 
 ## Application errors
 
-Application codes must match `^APP_[A-Z][A-Z0-9_]{0,59}$`: 5–64 ASCII characters, with an uppercase letter after `APP_` and only uppercase letters, digits or underscores thereafter. A Wasm `onprest.PublicError` (or validated raw result ABI public terminal) with a valid `APP_*` code returns its explicitly public message unchanged (1–1024 UTF-8 bytes, without control characters). Invalid codes/messages and ordinary internal errors use safe system messages; the host’s observed effects determine outcome.
-
-System messages and reasons do not contain driver text, SQL, constraint names, source paths, secrets or submitted values. Branch on code and observed outcome; use [Agent local logs](/agent/local-logs) for private diagnosis. Malformed Agent error/result frames are rejected rather than forwarded.
-
-## MCP
-
-A tools/call business failure, including an undefined tool name, is a result with `isError: true`, and one text item containing the same JSON error envelope. Versions `2025-06-18` and `2025-11-25` also put that envelope in `structuredContent`; `2025-03-26` omits structured content. HTTP status is normally 200 for these tool results.
-
-JSON-RPC parse/shape/method-parameter failures keep their own layer: -32700 PARSE_ERROR, -32600 INVALID_REQUEST, -32601 METHOD_NOT_FOUND, and -32602 INVALID_PARAMS. JSON-RPC ID is independent of the Gateway request ID. Valid recognized notifications return HTTP 202; invalid recognized idless notification parameters return HTTP 400 with -32602 and id null. See [MCP](/api/mcp).
+A code capability can return its own business error with `onprest.PublicError(code, message)` in the [Go SDK](/capabilities/code/go). The code must look like `APP_CUSTOMER_NOT_FOUND`: `APP_`, an uppercase letter, then up to 59 uppercase letters, digits, or underscores. The message is 1 to 1024 bytes of UTF-8 without control characters and is returned exactly as written, so write it for the caller. Anything else, including an invalid code, becomes `EXECUTION_FAILED` with a generic message.

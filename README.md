@@ -1,93 +1,76 @@
 # Onprest
 
-Onprest is an **agent-defined capability tunnel** for legacy databases, files in configured folders, fixed on-prem HTTP APIs, and reviewed Wasm modules.
-
-It exposes selected on-prem-defined business capabilities through REST and MCP, without exposing SQL, database credentials, raw schema access, cloud data replicas, or inbound firewall ports.
+Onprest lets SaaS products, partner systems, internal tools, and AI agents call selected operations inside your on-premises environment through REST and MCP, without opening inbound firewall ports, copying data to the cloud, or letting credentials leave the network.
 
 > Keep the legacy system. Modernize the access layer.
-> Expose capabilities, not your database.
+> Expose capabilities, not your on-premises.
 
-Most AI/database integrations start from the wrong primitive: database access.
+Most integrations with on-prem systems start from the wrong primitive: access to the system itself.
 
-Onprest starts from a smaller primitive: a named business capability. AI agents, SaaS products, internal tools, and partner systems call explicit operations such as `get_customer`, `search_orders`, or `check_inventory`. They never receive a DSN, raw SQL access, or a schema-wide CRUD surface.
+Onprest starts from a smaller primitive: a named business operation. Callers invoke `get_customer`, `download_invoice`, or `check_inventory`. They never receive a DSN, a file share, an internal URL, or a schema-wide CRUD surface. What each operation actually does (the SQL, the folder, the upstream API, the code) is defined on-prem in `capability.yaml` and stays there.
 
-The public gateway handles routing, identity, edge rate limits, and observability. The on-prem agent owns SQL, credentials, validation, per-capability execution policy, SELECT output filtering, the DML count-only contract, and business meaning. `capability.yaml` defines the registered executable capabilities.
+MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL or internal endpoints.
 
-MCP is a first-class surface, not an afterthought: AI agents call named business operations, never raw SQL.
+## Why Onprest exists
 
-File capabilities accept files in REST JSON, streaming multipart, or MCP calls, save them to configured writable folders, and return independent folder snapshots. CSV capabilities parse configured folder files or uploaded files, filter rows, and publish selected JSON and generated CSV. File outputs and generated CSV can be delivered as authenticated references, direct REST bodies, or inline MCP resources. See [File Input and Output](https://docs.onprest.viewlegacy.com/api/files).
-
-HTTP capabilities bind declared arguments and input files to fixed API sources, then publish validated JSON or original response files. See the [HTTP example](examples/http/) and [HTTP executor reference](https://docs.onprest.viewlegacy.com/agent/capability-yaml#http-executors).
-
-Wasm capabilities execute prepared command modules with request-owned input and result files. Choose OS-user access or explicit sandbox grants, and review the deployed code and its argument handling. Go authors can use the [independent SDK](sdk/go/) and [SDK CSV example](examples/sdk/). See the [Wasm example](examples/wasm/), [configuration](https://docs.onprest.viewlegacy.com/agent/capability-yaml#wasm-executors), and [code security boundary](https://docs.onprest.viewlegacy.com/security#wasm-code-boundary).
-
-## Start Here
-
-- **Try it locally:** [Quick Start](#quick-start)
-- **Call an API without a database:** [HTTP example](examples/http/)
-- **Use files without a database:** [CSV filtering example](examples/csv/), [file input example](examples/file-input/), and [file download example](examples/file-output/)
-- **Understand the architecture:** [Architecture](#architecture), [Responsibility Split](#responsibility-split), [Trust Boundary](#trust-boundary)
-- **Define capabilities:** [Capability Boundary](#capability-boundary)
-- **Use with AI agents:** [AI Agents and MCP](#ai-agents-and-mcp)
-- **Review security:** [Security Model at a Glance](#security-model-at-a-glance)
-- **Read the docs:** [Documentation](#documentation)
-
-## Why Onprest Exists
-
-Legacy databases often need to be reachable from modern systems, partners, internal tools, or AI/MCP clients. The usual options often create too much exposure for conservative on-prem environments:
+On-prem systems often need to be reachable from modern SaaS, partners, internal tools, and AI clients. The usual options create more exposure than conservative environments can accept:
 
 - opening inbound firewall paths into the customer network
 - exposing SQL-like interfaces through a proxy
 - copying business data into a cloud database
-- generating schema-wide CRUD APIs over legacy tables
+- tunnelling file shares or internal APIs out of the network
 - building and maintaining one-off APIs beside each legacy system
-- giving a cloud iPaaS or integration platform broad database access
+- giving a cloud iPaaS or integration platform broad access to databases and file servers
 
 Onprest takes a narrower position:
 
 > Keep the legacy system in place. Expose only approved business operations.
 
-It is built for teams that cannot rewrite, migrate, or move legacy systems, but still need selected parts of those systems to become safely available to modern SaaS, internal tools, partners, and AI agents.
+It is built for teams that cannot rewrite, migrate, or move their legacy systems, but still need selected parts of them to become safely available to modern software and AI agents.
 
-## What Onprest Is
+## What a capability can run
 
-Onprest is:
+| Executor | What it does | Try it |
+|---|---|---|
+| `db` | Runs one reviewed SQL statement on PostgreSQL, MySQL, SQL Server, or Oracle | [Quick Start](#quick-start) |
+| `csv` | Reads CSV files from a folder or an upload, filters rows, and returns JSON or a generated CSV | [CSV example](examples/csv/) |
+| `file` | Returns completed files from a folder, or saves uploaded files into one | [Download](examples/file-output/), [upload](examples/file-input/) |
+| `http` | Calls a fixed internal HTTP API with validated arguments | [HTTP example](examples/http/) |
+| `wasm` | Runs a WebAssembly module you wrote, for example in Go with the [SDK](sdk/go/) | [SDK example](examples/sdk/) |
+
+All of them share the same input validation, execution policy, and output selection, and callers use them the same way through REST and MCP.
+
+## What Onprest is
 
 - a narrow capability tunnel
 - for approved business operations
 - defined on-prem
 - callable through REST and MCP
 - with no inbound firewall dependency
-- with no SQL or DB credentials stored in the gateway
+- with no SQL, credentials, or internal endpoints stored in the gateway
 - with no cloud replica of your business data
 
-If your goal is to expose a small number of safe, reviewed, business-level operations from a legacy database to SaaS or AI clients, Onprest is designed for that.
-
-## What Onprest Is Not
-
-Onprest is not:
+## What Onprest is not
 
 - a SQL-over-HTTP proxy
-- a database browser
+- a database or file-share browser
 - a schema-wide CRUD generator
-- an ETL pipeline
-- a cloud replica of your on-prem database
+- a generic reverse proxy for internal APIs
+- an ETL pipeline or a cloud replica of your data
 - a general-purpose iPaaS replacement
-- a way to give AI agents broad database access
+- a way to give AI agents broad access to your systems
 
 If your goal is instant CRUD over an entire database, a database API generator may be enough.
 
-## Architecture
+## How it works
 
-The OSS core is intentionally small: two binaries and one agent-side capability file.
+The OSS core is two binaries and one agent-side file:
 
-- `onprest-gateway`: public REST/MCP/WebSocket edge
-- `onprest-agent`: on-prem outbound connector that owns `capability.yaml`
-
-Managed dashboards and operations are available separately; this repository contains the OSS gateway and agent.
+- `onprest-gateway`: the public REST, MCP, and OpenAPI edge
+- `onprest-agent`: runs on-prem, connects out to the gateway, and owns `capability.yaml`
 
 ```text
-API user / MCP client
+API client / AI agent
         |
         | REST / MCP / OpenAPI
         v
@@ -98,92 +81,37 @@ onprest-gateway
 onprest-agent + capability.yaml
         |
         v
-configured on-prem source
+database / folder / internal API / Wasm module
 ```
 
-The gateway knows routing, identity, edge rate limits, and which API keys may call which capability names.
-
-The agent knows what each capability means, how parameters are validated, which prepared operation is executed, and which configured data/files may leave the customer environment. DB SELECT filters declared fields; DB mutations return affected count only.
-
-## Responsibility Split
-
-The gateway can be useful without being trusted with meaning.
+The gateway knows who may call which capability. The agent knows what each capability means, validates the input, runs it, and decides which fields and files may leave the network.
 
 | Concern | Gateway | Agent |
-|---|---:|---:|
-| Public REST/MCP endpoint | Yes | No |
-| WebSocket edge | Yes | Outbound client |
+|---|:---:|:---:|
+| Public REST / MCP / OpenAPI endpoint | Yes | No |
 | API key authentication | Yes | No |
 | Capability authorization | Yes | Yes |
-| Rate limiting | Yes (per source IP) | Yes (per capability) |
-| Request observability | Yes | No |
-| OpenAPI/MCP filtering by API key | Yes | No |
-| SQL text | No | Yes |
-| Source credentials | No | Yes |
-| Raw database schema knowledge | No | Yes |
-| Business logic and execution meaning | No | Yes |
-| Parameter validation | Metadata-based ingress validation | Revalidation before execution |
-| Execution policy | No | Yes |
-| Prepared capability execution | No | Yes |
-| Output selection and validation | No | Yes |
-| Detailed execution errors | No | Local only |
+| Rate limiting | Per source IP | Per capability |
+| SQL, folder paths, upstream URLs, code | No | Yes |
+| Database and API credentials | No | Yes |
+| Input validation and execution policy | Ingress check | Yes, before execution |
+| Output selection | No | Yes |
+| Detailed errors | No | Local log only |
 | Agent private key | No | Yes |
-| Agent public key | Yes | No |
 
-This split is the core of Onprest. The gateway is public and operationally useful, but intentionally does not hold the most sensitive parts of the integration.
+This split is the core of Onprest. The gateway is public and operationally useful, but it does not hold the sensitive parts of the integration. Onprest assumes the gateway may be observed or compromised:
 
-## Trust Boundary
-
-Onprest assumes the public gateway may be observed or compromised.
-
-That is why the gateway never stores SQL, DSNs, database credentials, agent private keys, raw schema knowledge, or capability execution rules. It can authenticate callers, apply edge rate limits, check whether an API key may call a capability name, serve the agent-defined public contract, and forward the request to the connected agent.
-
-The on-prem agent is the trust boundary. It validates inputs, applies execution policy, executes approved capabilities, selects and validates published data/files, and keeps detailed execution errors local. DB SELECT filters declared fields and DML returns affected count only.
-
-In short:
-
-- compromise the gateway: you do not get SQL or database credentials
+- compromise the gateway: you get no SQL, credentials, or internal endpoints, and you cannot add operations
 - compromise an API key: you only get the capabilities assigned to that key
 - ask for an unknown operation: the agent rejects it
-- declare SELECT output fields: normal output selects those fields; schema-free `output.data: {}` or passthrough may publish every returned field, as chosen by the configuration author. See [Output](https://docs.onprest.viewlegacy.com/agent/capability-yaml#output). DML validates configured output before commit
-- trigger a DB error: detailed DB error information stays in the agent-local log
+- return more data than intended: only the declared output leaves the agent
+- trigger an error: the detail stays in the agent's local log
 
-## AI Agents and MCP
+Both binaries are static Go builds. The agent host needs no Docker, Go toolchain, or database client libraries (Oracle included).
 
-AI agents should not need raw database access to answer business questions.
+## Define a capability
 
-With Onprest, an AI agent receives a list of tools generated from approved capabilities. Each tool has a parameter contract, execution policy, and output contract defined on-prem.
-
-Instead of giving an AI agent a DSN, schema, or SQL executor, you give it narrow tools such as:
-
-- `get_customer`
-- `search_orders`
-- `check_inventory`
-- `get_invoice_status`
-- `list_recent_shipments`
-
-Each tool is backed by a registered executor, validated inputs, and execution limits. Configured `output` selects and validates published data and files; DB data uses SELECT rows or the native mutation affected count. Omitting output still executes and publishes null data.
-
-This makes MCP useful without turning the legacy database into an unrestricted AI-accessible surface.
-
-## Capability Boundary
-
-`capability.yaml` is the agent-side security boundary and the agent's single source of executable operations.
-
-It defines:
-
-- service metadata
-- agent runtime limits, including concurrent request execution
-- gateway connection settings
-- private source connection settings
-- agent private key
-- default execution policies
-- capability definitions
-- parameter contracts
-- data/file output contracts, including SELECT rows and the DML count-only contract
-- local agent detail logging
-
-A capability is a named business operation:
+A capability is a named operation in `capability.yaml`:
 
 ```yaml
 capabilities:
@@ -195,60 +123,59 @@ capabilities:
       sql: select id, name, email from customers where id = :customer_id
     input:
       properties:
-        customer_id:
-          type: integer
-          minimum: 1
+        customer_id: {type: integer, minimum: 1}
       required: [customer_id]
     policy:
-      readonly: true
       timeout: 3s
       max_rows: 1
-      max_output_bytes: 256KB
-      expose_in_openapi: true
     output:
       data: {}
       items:
         properties:
-          id:
-            type: integer
-          name:
-            type: string
-          email:
-            type: string
+          id: {type: integer}
+          name: {type: string}
+          email: {type: string}
 ```
 
-The agent loads and validates this file at startup, including preparation of referenced providers and sources and checks for DB SQL statements, before connecting to the gateway. Changes require an agent restart.
+`input` is what callers may send, `policy` bounds the execution, and `output` decides what leaves the agent. The same shape fronts an internal API:
 
-For the full schema, policy options, logging settings, and examples, see [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml).
+```yaml
+  check_inventory:
+    executor:
+      type: http
+      source: inventory
+      method: POST
+      path: /stock
+      body: {kind: json, fields: {item: {input: /item}}}
+      response: {kind: json}
+    input: {properties: {item: {type: string}}, required: [item]}
+    output: {data: {}, properties: {item: {type: string}, available: {type: integer}}}
+```
 
-## Security Model at a Glance
+The agent validates the whole file at startup and prepares every source it references before it connects. See [Capabilities](https://docs.onprest.viewlegacy.com/capabilities) for every executor.
 
-Onprest is designed as if components may be compromised.
+## AI agents and MCP
 
-- No SQL, DB credentials, DSNs, raw schema knowledge, capability execution rules, or agent private key are stored in the gateway.
-- The gateway does not persist application data. It is configured with the agent public key and bcrypt-hashed API keys, and caches only agent-defined public capability metadata.
-- Agent authentication uses Ed25519 signatures during the WebSocket handshake.
-- The agent connects outbound to the gateway; no inbound firewall path into the customer network is required.
-- API keys are capability-scoped.
-- Unknown capability names are rejected by the agent.
-- Parameters are validated before capability execution.
-- SQL parameters are bound through `database/sql`.
-- Agent-owned policies restrict allowed operations, bound execution time, response size, and row counts, and control OpenAPI/MCP exposure.
-- Declared SELECT fields are selected in normal output mode. Schema-free data output or passthrough can publish all fields; review the [output configuration](https://docs.onprest.viewlegacy.com/agent/capability-yaml#output). DML data output publishes a validated native count object inside the common response envelope.
-- Only one agent connection is accepted at a time.
-- Gateway stdout logs do not include request params or agent error details.
-- Detailed runtime error information is kept in the agent-local log.
+AI agents should not need raw database access to answer business questions. With Onprest, an AI agent receives a tool list generated from the capabilities its API key may call. Each tool has an input schema, execution limits, and an output contract defined on-prem.
 
-For production deployments, use a read-only database user whenever the intended capabilities are read-only. Onprest's policy and validation layer is not a substitute for database-level least privilege; it is an additional control.
+Instead of a DSN, a file share, or a SQL executor, you give the agent narrow tools such as `get_customer`, `search_orders`, `check_inventory`, or `download_invoice`. The same capabilities are available through REST and OpenAPI for ordinary applications.
+
+## Security at a glance
+
+- The agent connects outbound; no inbound path into the on-prem network is required.
+- The gateway stores no SQL, source credentials, or agent private key. It holds the agent public key and bcrypt-hashed API keys.
+- Agents authenticate with Ed25519 signatures, and only one agent connection is accepted at a time.
+- API keys are scoped to named capabilities; OpenAPI and MCP tool lists are filtered per key.
+- The agent validates every input before running anything and publishes only declared output.
+- Gateway logs contain no request params or error detail; that detail stays in the agent's local log.
+
+Onprest's policies are an additional control, not a replacement for least privilege. Give the agent a read-only database user when its capabilities only read. Code capabilities run with the agent's OS permissions unless you turn the sandbox on; turn it on and grant only what each module needs. See the [security model](https://docs.onprest.viewlegacy.com/security).
 
 ## Quick Start
 
-### Prerequisites
+You need Linux or macOS and Docker with Compose. Docker only runs the disposable example PostgreSQL database; Onprest itself needs no Docker, Go toolchain, or source checkout. Windows steps are in the [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start).
 
-- A Linux or macOS host. Windows PowerShell steps are in the [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start).
-- Docker with Compose, used only to start the disposable example PostgreSQL database in this guide. Onprest itself needs no Docker, Go toolchain, or source checkout.
-
-Download the binary archive for your host and the Quick Start files. These links follow the latest GitHub Release:
+Download the binary archive for your host and the Quick Start files from the latest release:
 
 | Host | Download |
 |---|---|
@@ -259,7 +186,7 @@ Download the binary archive for your host and the Quick Start files. These links
 | Windows x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-windows-amd64.zip) |
 | All hosts | [⬇ Quick Start files](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-quickstart.tar.gz) |
 
-Save both files in one directory and extract them into a working directory. Replace `linux-amd64` with your host:
+Extract both into a working directory (replace `linux-amd64` with your host) and run the remaining commands from there:
 
 ```sh
 mkdir -p onprest/examples
@@ -268,71 +195,28 @@ tar -xzf ../onprest-linux-amd64.tar.gz --strip-components=1
 tar -xzf ../onprest-quickstart.tar.gz --strip-components=1 -C examples
 ```
 
-The working directory now contains `onprest-gateway`, `onprest-agent`, and the example files under `examples/`. The example files contain a matching agent key pair and API key hash, so you do not have to generate keys yet. Run the remaining commands from this directory.
-
-Start the example PostgreSQL database with Docker Compose:
+Start the example database and check the agent configuration:
 
 ```sh
 docker compose -f examples/postgres.compose.yml up -d --wait
-```
-
-This starts a local PostgreSQL container on `127.0.0.1:5432`, creates the
-`legacy` database, creates the least-privilege `capability_user` account used by
-`examples/capability.postgres.yaml`, and seeds the `customers` table. If
-`127.0.0.1:5432` is already in use, stop that PostgreSQL instance or edit
-both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml`
-to use the same alternate port.
-
-Validate the Agent configuration and database preflight before starting either
-process:
-
-```sh
 ./onprest-agent validate --config examples/capability.postgres.yaml
 ```
 
-Success confirms full YAML lint, database Ping, and every capability's
-driver-specific EXPLAIN. It does not connect to the Gateway or execute a
-business capability.
-
-Start the gateway:
+Start the gateway, then the agent in a second shell:
 
 ```sh
-set -a
-. examples/gateway.env
-set +a
+set -a; . examples/gateway.env; set +a
 ./onprest-gateway
 ```
-
-Start the agent in another shell from the same directory. The Agent user needs permission to create the private `identity` and `spool` subdirectories beside its configuration; see [runtime settings](https://docs.onprest.viewlegacy.com/agent/capability-yaml#top-level-sections):
 
 ```sh
 ./onprest-agent --config examples/capability.postgres.yaml
 ```
 
-Set the example API key in the shell that will call the gateway. This is the plaintext key that matches the bcrypt hash already present in `examples/gateway.env`. For your own deployment, generate keys with `onprest-gateway create-key` (see [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)).
+In a third shell, wait until `curl -sS http://localhost:8080/healthz` reports `"agent_connected": true`, then call the capability with the example API key:
 
 ```sh
 export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
-```
-
-Confirm the gateway is up and the agent is connected before calling a capability:
-
-```sh
-curl -sS http://localhost:8080/healthz
-```
-
-```json
-{
-  "ok": true,
-  "agent_connected": true
-}
-```
-
-`/healthz` needs no API key, but it still uses the configured IP allow list and per-source rate limit. If `agent_connected` is `false`, wait for the agent to finish its startup checks and connect, then retry.
-
-Call a capability:
-
-```sh
 curl -sS \
   -H "Authorization: Bearer $ONPREST_API_KEY" \
   -H "Content-Type: application/json" \
@@ -340,20 +224,12 @@ curl -sS \
   http://localhost:8080/api/v1/capabilities/get_customer
 ```
 
-A successful call returns the rows the capability is allowed to expose:
-
 ```json
 {
   "request_id": "01J5ABCDEF1234567890ABCDEF01",
   "result": {
     "data": {
-      "rows": [
-        {
-          "id": 1,
-          "name": "Ada Lovelace",
-          "email": "ada@example.com"
-        }
-      ],
+      "rows": [{ "id": 1, "name": "Ada Lovelace", "email": "ada@example.com" }],
       "count": 1
     },
     "files": []
@@ -361,19 +237,7 @@ A successful call returns the rows the capability is allowed to expose:
 }
 ```
 
-Only the fields listed in the capability `output.items` schema are returned. The example database is initialized from [`examples/postgres-init.sql`](examples/postgres-init.sql).
-
-Run the shipped mutation over REST:
-
-```sh
-curl -sS \
-  -H "Authorization: Bearer $ONPREST_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":1,"name":"Ada REST"}' \
-  http://localhost:8080/api/v1/capabilities/update_customer
-```
-
-Then run the same capability through MCP:
+The same capability is an MCP tool:
 
 ```sh
 curl -sS \
@@ -381,104 +245,34 @@ curl -sS \
   -H "Content-Type: application/json" \
   -H "MCP-Protocol-Version: 2025-11-25" \
   -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"update_customer","arguments":{"customer_id":1,"name":"Ada MCP"}}}' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"customer_id":1}}}' \
   http://localhost:8080/mcp
 ```
 
-Both calls return the driver's native affected count. Verify the committed state through the read capability:
+Stop both binaries with Ctrl+C and remove the database with `docker compose -f examples/postgres.compose.yml down -v`. The example keys and password are public; never reuse them. The [full Quick Start](https://docs.onprest.viewlegacy.com/quick-start) continues with a mutation and OpenAPI, and the examples above run the other executors without a database.
+
+## Build from source
+
+Building from source is optional. With the Go version declared in `go.mod`:
 
 ```sh
-curl -sS \
-  -H "Authorization: Bearer $ONPREST_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":1}' \
-  http://localhost:8080/api/v1/capabilities/get_customer
+make build        # dist/onprest-gateway and dist/onprest-agent
+make build-cross  # every supported OS/CPU target
 ```
-
-The returned name is `Ada MCP`. The shipped API key allow-list contains only `get_customer` and `update_customer`; the DB role has only `SELECT` and column-level `UPDATE (name)` on `customers`.
-
-For a direct check of the disposable database:
-
-```sh
-docker compose -f examples/postgres.compose.yml exec -T postgres \
-  psql -U onprest_admin -d legacy -Atc "SELECT name FROM customers WHERE id = 1"
-```
-
-This also prints `Ada MCP`.
-
-Stop both binaries with Ctrl+C, then stop and remove the example database:
-
-```sh
-docker compose -f examples/postgres.compose.yml down -v
-```
-
-The example keys and database password are public; never reuse them. For real deployments, start from the production templates and `INSTALL.md` in the binary archive.
-
-## Build from Source
-
-Building from source is optional. Use a Go toolchain compatible with the version declared in `go.mod`. CI reads `go.mod` as the Go version source of truth.
-
-Build the two binaries:
-
-```sh
-make build
-```
-
-Cross-build gateway and agent binaries for common OS/CPU targets:
-
-```sh
-make build-cross
-```
-
-The binaries are built with `CGO_ENABLED=0` so they are suitable for copying to legacy environments without installing Docker or native database client libraries.
-
-Docker is optional. The primary deployment unit is the binary.
-
-## API Surface
-
-Onprest exposes the same approved capabilities through REST and MCP.
-
-- `POST /api/v1/capabilities/{name}` calls a capability with JSON params or declared multipart file inputs
-- `GET /api/v1/files/{id}` downloads a returned file reference with the original caller credential
-- `POST /mcp` supports MCP `initialize`, `ping`, `tools/list`, `tools/call`, `resources/list`, and `resources/read`
-- `GET /openapi.json` returns API-key-filtered OpenAPI
-- `GET /healthz` returns gateway health and agent connection state
-
-`/openapi.json` and MCP `tools/list` are generated from agent-owned capability metadata and filtered per API key.
-
-## Supported Databases
-
-Initial driver targets:
-
-- PostgreSQL
-- MySQL
-- SQL Server
-- Oracle
-
-Oracle uses the pure-Go `go-ora` driver and does not require Oracle Instant Client.
 
 ## Documentation
 
-Detailed docs are intentionally kept outside this README and published at
-[docs.onprest.viewlegacy.com](https://docs.onprest.viewlegacy.com). The
-source lives under [`docs/`](docs/).
+The full documentation is at [docs.onprest.viewlegacy.com](https://docs.onprest.viewlegacy.com), with its source under [`docs/`](docs/). Good next reads:
 
-Recommended next reads:
-
-- [Architecture](https://docs.onprest.viewlegacy.com/architecture)
-- [Capability YAML](https://docs.onprest.viewlegacy.com/agent/capability-yaml)
-- [Gateway configuration](https://docs.onprest.viewlegacy.com/gateway/configuration)
-- [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli)
-- [REST API](https://docs.onprest.viewlegacy.com/api/rest)
-- [File Input and Output](https://docs.onprest.viewlegacy.com/api/files)
-- [MCP](https://docs.onprest.viewlegacy.com/api/mcp)
-- [Security model](https://docs.onprest.viewlegacy.com/security)
+- [How it works](https://docs.onprest.viewlegacy.com/architecture)
+- [Capabilities](https://docs.onprest.viewlegacy.com/capabilities)
+- [REST API](https://docs.onprest.viewlegacy.com/api/rest) and [MCP](https://docs.onprest.viewlegacy.com/api/mcp)
+- [Security](https://docs.onprest.viewlegacy.com/security)
 - [Deployment](https://docs.onprest.viewlegacy.com/operations/deployment)
-- [Operations](https://docs.onprest.viewlegacy.com/operations)
 
-## Repository Boundary
+## Repository boundary
 
-This repository contains only the Apache-2.0 OSS core: `onprest-gateway` and `onprest-agent`. Managed products, dashboards, and their operating policies are outside this repository and are not OSS core dependencies.
+This repository contains only the Apache-2.0 OSS core: `onprest-gateway`, `onprest-agent`, and the Go SDK for code capabilities. Managed products, dashboards, and their operating policies are outside this repository and are not OSS core dependencies.
 
 ## License
 

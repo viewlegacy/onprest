@@ -5,7 +5,7 @@ target named in `RELEASE-MANIFEST.txt`. It does not require a source checkout,
 Go, Docker, or a native database client runtime.
 
 Checksums and GitHub artifact attestations are available for optional download
-verification; see <https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation>.
+verification; see <https://docs.onprest.viewlegacy.com/operations/deployment#install-from-a-release>.
 
 The templates in this archive are intentionally incomplete. Add at least one
 reviewed capability to `capabilities: {}` and replace every placeholder before
@@ -78,14 +78,13 @@ The Gateway and Agent must come from the same release. Release acceptance and
 provenance are documented at
 <https://docs.onprest.viewlegacy.com/operations/release-gate>.
 
-For Wasm, build and test code on the author’s computer, then deploy the completed
-module with its YAML. The Agent embeds the worker runtime; the installation
-does not require Go or the SDK source. SDK versions use independent
-`sdk/go/vX.Y.Z` tags; see <https://docs.onprest.viewlegacy.com/reference/cli#build-and-test-wasm-code>.
+For code capabilities, build and test the Wasm module on the author's
+computer, then deploy the finished module with its YAML. The Agent includes the
+runtime, so this installation needs no Go or SDK source; see
+<https://docs.onprest.viewlegacy.com/capabilities/code/go>.
 
-Keep cleanup records across restart, and use completed business files outside
-the spool. Configure finite client/proxy timeouts for input, execution and
-output. Recovery is documented at
-<https://docs.onprest.viewlegacy.com/operations/troubleshooting>.
-For Agent management limits and their defaults, see
-<https://docs.onprest.viewlegacy.com/agent/capability-yaml#top-level-sections>.
+Keep the Agent's `spool` and `identity` directories across restarts, and keep
+business files outside the spool. Spool, transfer, and other runtime settings
+are described at <https://docs.onprest.viewlegacy.com/agent/configuration>, and
+client and proxy timeouts at
+<https://docs.onprest.viewlegacy.com/operations/deployment#timeouts-and-uploads>.

@@ -1,57 +1,51 @@
-# Go SDK customer CSV example
+# Go SDK example: customer CSV
 
-The [customer module](customer/main.go) uses `onprest.Run` to return customer JSON and a CSV file in one call. This example builds it, runs it through the two normal binaries, and downloads the CSV. See the [SDK reference](../../sdk/go/README.md) for the public API and reader ownership rules.
+The [customer module](customer/main.go) is a small capability written in Go with the [Onprest SDK](../../sdk/go/). It takes a customer name and returns it as JSON together with a one-row CSV file. This example builds the module, tests it locally, and then calls it through the gateway.
 
-Make matching `onprest-agent` and `onprest-gateway` binaries available on `PATH`. The build steps require Go 1.26.9 or later on the author machine. Run them from the OSS repository root. The example's local module replacement builds this checkout; application modules can pin `github.com/viewlegacy/onprest/sdk/go` independently.
+You need Go 1.26.9 or later and the `onprest-agent` and `onprest-gateway` binaries on your `PATH`. Run the commands from the root of a clone of this repository: the module builds against the SDK in this checkout. Your own modules require a released `github.com/viewlegacy/onprest/sdk/go` version instead.
 
-## Build and configure
+## Build
 
-Compile the module and append metadata describing its actual imports:
-
-```sh
-mkdir -p /tmp/onprest-sdk-example
-onprest-agent code build --source ./examples/sdk/customer --output /tmp/onprest-sdk-example/customer.wasm
-```
-
-Reuse the loopback connection settings and demonstration credentials from the [Wasm example](../wasm/README.md), replacing its capability with `customer_csv`:
+Copy the configuration and build the module to the path its capability expects:
 
 ```sh
-sed '/^capabilities:/,$d' examples/wasm/agent.yaml > /tmp/onprest-sdk-example/agent.yaml
-sed 's/wasm_copy/customer_csv/g' examples/wasm/gateway.env > /tmp/onprest-sdk-example/gateway.env
-cat >> /tmp/onprest-sdk-example/agent.yaml <<'YAML'
-capabilities:
-  customer_csv:
-    executor:
-      type: wasm
-      module: ./customer.wasm
-      effects: none
-      sandbox: {enabled: true}
-    input:
-      properties:
-        customer: {type: string, pattern: '^[A-Za-z0-9 ]{1,64}$'}
-      required: [customer]
-    output: {data: {}, files: {}}
-YAML
-onprest-agent validate --config /tmp/onprest-sdk-example/agent.yaml
+EXAMPLE=/tmp/onprest-sdk-example
+mkdir -p "$EXAMPLE"
+cp examples/sdk/agent.yaml examples/sdk/gateway.env examples/sdk/params.json "$EXAMPLE/"
+onprest-agent code build --config "$EXAMPLE/agent.yaml" --capability customer_csv \
+  --source ./examples/sdk/customer
+onprest-agent validate --config "$EXAMPLE/agent.yaml"
 ```
 
-The input pattern excludes spreadsheet formula prefixes. The module creates the CSV in memory, so sandbox deny-all needs no filesystem or network grants. The Agent user needs permission to create private `identity` and `spool` directories beside the configuration.
+[agent.yaml](agent.yaml) defines `customer_csv`. Its input pattern allows only letters, digits, and spaces, which keeps spreadsheet formulas out of the CSV. The module builds the CSV in memory, so it runs in the sandbox with no permissions.
 
-## Local test
+## Test locally
 
-Before starting either server, run the configured capability and save its validated CSV:
+Run the capability without the gateway and save the returned file:
 
 ```sh
-mkdir -p /tmp/onprest-sdk-example/saved
-onprest-agent code test --config /tmp/onprest-sdk-example/agent.yaml --capability customer_csv \
-  --params '{"customer":"Alice"}' --output-dir /tmp/onprest-sdk-example/saved --format json
+mkdir -p "$EXAMPLE/saved"
+onprest-agent code test --config "$EXAMPLE/agent.yaml" --capability customer_csv \
+  --params-file "$EXAMPLE/params.json" --output-dir "$EXAMPLE/saved" \
+  --format json 2> "$EXAMPLE/diagnostic.log"
 ```
 
-The result contains `data: {"customer":"Alice"}` and CSV metadata with an absolute `saved_path` under a new request directory. Open that path to read the same CSV shown below. Diagnostics go to stderr. See the [CLI reference](../../docs/app/reference/cli/page.mdx#build-and-test-wasm-code) for author command options.
+stdout shows `"data":{"customer":"Alice"}` and the CSV's metadata, including a `saved_path` under `saved/`. The module's log message is in `diagnostic.log`:
+
+```text
+... info source=wasm event=wasm_log capability="customer_csv" request_id="..." message="generated customer.csv"
+```
+
+After you edit the module, rebuild and test in one step. The test runs only if the build succeeds:
+
+```sh
+onprest-agent code test --build --config "$EXAMPLE/agent.yaml" --capability customer_csv \
+  --source ./examples/sdk/customer --force --params-file "$EXAMPLE/params.json"
+```
 
 ## Run and call
 
-Use the public demonstration credentials only on loopback; replace them for deployment. Start the Gateway in one terminal:
+The credentials in this example are public; use them only on loopback. Start the gateway:
 
 ```sh
 set -a
@@ -60,13 +54,13 @@ set +a
 onprest-gateway
 ```
 
-Start the Agent in another terminal:
+Start the agent in another terminal:
 
 ```sh
 onprest-agent --config /tmp/onprest-sdk-example/agent.yaml
 ```
 
-Wait until `http://127.0.0.1:8080/healthz` reports `"agent_connected": true`, then call:
+When `http://127.0.0.1:8080/healthz` reports `"agent_connected": true`, call the capability:
 
 ```sh
 export ONPREST_API_KEY=orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM
@@ -77,23 +71,18 @@ curl --fail --show-error \
   http://127.0.0.1:8080/api/v1/capabilities/customer_csv
 ```
 
-The response contains `result.data: {"customer":"Alice"}` and a file descriptor named `customer.csv`. Copy `result.files[0].uri` into `FILE_URI` and download it with the same credential:
+The response has `result.data: {"customer":"Alice"}` and one file, `customer.csv`. Download it with the same key, using the `uri` from the response:
 
 ```sh
-FILE_URI='paste the returned URI here'
-curl --fail --show-error \
-  -H "Authorization: Bearer $ONPREST_API_KEY" \
-  "$FILE_URI" --output /tmp/onprest-sdk-example/customer.csv
-cat /tmp/onprest-sdk-example/customer.csv
+FILE_URI='paste result.files[0].uri here'
+curl --fail --show-error -H "Authorization: Bearer $ONPREST_API_KEY" "$FILE_URI"
 ```
-
-The file contains:
 
 ```csv
 customer
 Alice
 ```
 
-MCP `tools/call` uses `name: customer_csv` and `arguments: {"customer":"Alice"}`. The default delivery is a reference; see the [file API documentation](https://docs.onprest.viewlegacy.com/api/files) for retrieval and lifetime rules. Stop both binaries with Ctrl+C when finished.
+Over MCP, call the tool `customer_csv` with `arguments: {"customer":"Alice"}`. Stop both binaries with Ctrl+C when you are done.
 
-Deploy the completed module and configuration with the Agent binary. The Agent includes the runtime and needs no compiler. The adjacent build manifest is optional for deployment; the author CLI adds no deployment dependency.
+To deploy, copy `customer.wasm` and the YAML to the agent host; it needs no Go or extra runtime. [Writing code in Go](https://docs.onprest.viewlegacy.com/capabilities/code/go) explains each step in more detail.

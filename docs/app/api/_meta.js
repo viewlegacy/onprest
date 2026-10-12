@@ -1,7 +1,7 @@
 export default {
   index: 'Overview',
   rest: 'REST',
-  files: 'File Input and Output',
+  files: 'Files',
   mcp: 'MCP',
   openapi: 'OpenAPI',
   healthz: 'Healthz',

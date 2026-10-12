@@ -1,0 +1,125 @@
+# Files
+
+A `file` capability returns completed files from a folder on the agent host, saves uploaded files into a folder, or does both in one call. Callers never see paths or browse folders; they get exactly the files the capability selects.
+
+```yaml
+sources:
+  folders:
+    reports: {root: ./reports, access: read}
+
+capabilities:
+  download_report:
+    executor:
+      type: file
+      read:
+        source: reports
+        selector: {name: report.pdf}
+    output:
+      files:
+        mime_type: application/pdf
+```
+
+The caller receives a download link for `report.pdf` (or the file itself, depending on [delivery](/capabilities/inputs-and-outputs#file-outputs)). Runnable versions: [file download example](https://github.com/viewlegacy/onprest/tree/main/examples/file-output) and [file upload example](https://github.com/viewlegacy/onprest/tree/main/examples/file-input).
+
+## Folder sources
+
+`sources.folders` names the directories that file and CSV capabilities may use:
+
+```yaml
+sources:
+  folders:
+    reports: {root: ./reports, access: read}
+    exchange: {root: /srv/exchange, access: read_write}
+```
+
+| Key | Meaning |
+|---|---|
+| `root` | Directory path, absolute or relative to the configuration directory. It must exist |
+| `access` | `read`, or `read_write` to allow saving files |
+
+The agent's operating-system user also needs the matching permissions on the directory. Symbolic links, hard links, special files, and paths that cross into another filesystem are not followed. Names starting with `.onprest-` are reserved for the agent's temporary files.
+
+Producers that write into a folder should create each file under a temporary name and rename it into place when it is complete. A rename is atomic, so the agent sees either the old file or the finished new one.
+
+## Selecting files
+
+`read.selector` chooses which files a call returns:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | — | An exact file name, or `{input: /filename}` to take it from a required string input |
+| `name_regex` | — | A Go regular expression that must match the whole file name |
+| `path` | `.` | Subdirectory under the folder root to look in |
+| `recursive` | `false` | Also look in subdirectories |
+| `sort` | `{by: name, order: asc}` | `by: name`, `modified_at`, or `size`; `order: asc` or `desc` |
+| `take` | `1` | How many of the sorted files to return |
+| `scan_limit` | `10000` | Maximum directory entries inspected per call |
+
+Set exactly one of `name` and `name_regex`. Names are case-sensitive. For example, to return the newest daily export:
+
+```yaml
+selector:
+  name_regex: '^export-\d{8}\.csv$'
+  sort: {by: modified_at, order: desc}
+  take: 1
+```
+
+No match returns `NOT_FOUND`. Exceeding `scan_limit` returns `LIMIT_EXCEEDED`; narrow `path` or turn off `recursive` instead of raising it far.
+
+The agent returns a snapshot of each file taken during the call, so a later change to the file does not affect a download already issued.
+
+## Saving uploaded files
+
+`executor.write` saves file inputs into a folder with `access: read_write`:
+
+```yaml
+sources:
+  folders:
+    exchange: {root: ./exchange, access: read_write}
+
+capabilities:
+  save_report:
+    executor:
+      type: file
+      write:
+        - {input: /document, source: exchange, path: incoming, name_from: input}
+      read: {written: true}
+    input:
+      properties:
+        document: {type: file, extensions: [pdf], mime_types: [application/pdf], max_bytes: 8MiB}
+      required: [document]
+    output:
+      files: {}
+```
+
+Each entry in `write` takes:
+
+| Key | Meaning |
+|---|---|
+| `input` | JSON Pointer to a required file input, such as `/document`. An array input (with `minItems: 1`) saves every file |
+| `source` | Folder source to save into |
+| `path` | Existing subdirectory under the root. Defaults to the root |
+| `name` | Fixed file name to save a single file under |
+| `name_from: input` | Use the file name the caller sent instead |
+
+Set exactly one of `name` and `name_from`. With `name_from: input`, callers choose the file name, so the capability saves whatever name they send (path separators and reserved names are refused).
+
+All files in a call are checked first (names, sizes, free quota) and then saved. A file that already exists fails with `CONFLICT` unless the entry sets `overwrite: true`. Overwriting is supported on Linux and macOS; on Windows, or on a filesystem that cannot replace files atomically, the call fails instead.
+
+Choose what the call returns:
+
+- `read: {written: true}` returns the files just saved, in the order they were written.
+- `read: {source: ..., selector: ...}` reads from a folder after saving, as in the previous section.
+- No `read` and no `output.files`: the call only saves and returns `data: null` with no files.
+
+If saving fails after some files were already written, the error reports `outcome: unknown` and the completed files stay in place. See [Uncertain outcomes](/operations/uncertain-outcomes).
+
+## Settings
+
+| Key | Meaning |
+|---|---|
+| `executor.read` | `{source, selector}` or `{written: true}`. Requires `output.files` |
+| `executor.write` | List of save entries |
+| `executor.effects` | Set automatically: `possible` when the capability writes, `none` when it only reads. If you set it, it must match |
+
+A file capability returns only files, so its `output` has `files` but no `data` or schema. Use `output.files.mime_type` to override the reported MIME type. To parse or filter CSV contents, use a [CSV capability](/capabilities/csv).

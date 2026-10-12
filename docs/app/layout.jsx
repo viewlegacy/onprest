@@ -14,7 +14,7 @@ export const metadata = {
     template: '%s | Onprest Docs'
   },
   description:
-    'Documentation for Onprest, an open source gateway and agent for exposing on-premises databases through REST API and MCP.',
+    'Documentation for Onprest, an open source gateway and agent that exposes named on-premises operations (database queries, files, internal HTTP APIs, and custom code) through REST and MCP.',
   applicationName: 'Onprest Docs',
   authors: [{ name: 'ViewLegacy LLC', url: 'https://viewlegacy.com' }],
   creator: 'ViewLegacy LLC',
@@ -25,13 +25,13 @@ export const metadata = {
     siteName: 'Onprest Docs',
     title: 'Onprest Docs',
     description:
-      'Documentation for Onprest, an open source gateway and agent for exposing on-premises databases through REST API and MCP.'
+      'Documentation for Onprest, an open source gateway and agent that exposes named on-premises operations (database queries, files, internal HTTP APIs, and custom code) through REST and MCP.'
   },
   twitter: {
     card: 'summary',
     title: 'Onprest Docs',
     description:
-      'Documentation for Onprest, an open source gateway and agent for exposing on-premises databases through REST API and MCP.'
+      'Documentation for Onprest, an open source gateway and agent that exposes named on-premises operations (database queries, files, internal HTTP APIs, and custom code) through REST and MCP.'
   }
 }
 

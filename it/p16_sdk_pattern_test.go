@@ -40,25 +40,17 @@ func TestSDKCustomerPatternPublishedExampleRealBinaries(t *testing.T) {
 		}
 		return string(b)
 	}
-	// Use the published YAML verbatim, rather than a less constrained fixture.
-	_, rest, ok := strings.Cut(read("examples/sdk/README.md"), "cat >> /tmp/onprest-sdk-example/agent.yaml <<'YAML'\n")
-	if !ok {
-		t.Fatal("published YAML start missing")
-	}
-	yaml, _, ok := strings.Cut(rest, "\nYAML")
-	if !ok {
-		t.Fatal("published YAML end missing")
-	}
-	if !strings.Contains(yaml, "pattern: '^[A-Za-z0-9 ]{1,64}$'") {
+	// Use the published configuration verbatim, rather than a less constrained fixture.
+	config := read("examples/sdk/agent.yaml")
+	if !strings.Contains(config, "pattern: '^[A-Za-z0-9 ]{1,64}$'") {
 		t.Fatal("published pattern changed")
 	}
 	address := freeAddr(t)
 	base := "http://" + address
-	config := strings.Split(read("examples/wasm/agent.yaml"), "capabilities:")[0] + yaml + "\n"
 	path := filepath.Join(tmp, "agent.yaml")
 	writeFile(t, path, strings.ReplaceAll(config, "127.0.0.1:8080", address))
 	env := filepath.Join(tmp, "gateway.env")
-	writeFile(t, env, strings.ReplaceAll(strings.ReplaceAll(read("examples/wasm/gateway.env"), "wasm_copy", "customer_csv"), "127.0.0.1:8080", address))
+	writeFile(t, env, strings.ReplaceAll(read("examples/sdk/gateway.env"), "127.0.0.1:8080", address))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	validate := exec.CommandContext(ctx, agentBin, "validate", "--config", path)

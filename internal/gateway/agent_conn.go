@@ -119,12 +119,8 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 	if capability != "meta" {
 		if !ready {
 			s.agentMu.RLock()
-			problem := s.metadataError
-			s.agentMu.RUnlock()
-			if problem == "ONPREST_PUBLIC_BASE_URL is required for file reference delivery" {
-				return deliveryFailure("DEPENDENCY_UNAVAILABLE", problem, "not_started")
-			}
-			return agentOfflineResult()
+			defer s.agentMu.RUnlock()
+			return s.notReadyResultLocked()
 		}
 		if !known {
 			failure := &contract.ErrorValue{Code: "NOT_FOUND", Message: "capability is not defined", Outcome: "not_started"}

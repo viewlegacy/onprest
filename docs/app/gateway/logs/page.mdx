@@ -1,20 +1,22 @@
 # Gateway Logs
 
-The gateway writes JSON Lines to stdout. Logs are designed for collection by a process manager, container runtime, or log drain. Concurrent request and control events are serialized one complete JSON record at a time, so a collector never receives interleaved fragments from two events.
+The gateway writes JSON Lines to stdout, one complete record per line, for your process manager, container runtime, or log collector. Records describe what happened without carrying request data: no params, results, file contents, SQL, credentials, or API keys. For the detail behind a failure, see the agent's [local log](/agent/local-logs).
 
-## Request Event
+## Request events
+
+Each REST capability call and each MCP `tools/call` writes one `request` event:
 
 ```json
 {
-  "protocol": "rest",
-  "request_id": "01J5ABCDEF1234567890ABCDEF01",
-  "timestamp": "2026-04-11T10:30:00.000Z",
   "event": "request",
+  "timestamp": "2026-04-11T10:30:00.000Z",
+  "request_id": "01J5ABCDEF1234567890ABCDEF01",
+  "protocol": "rest",
   "capability": "get_customer",
   "api_key_name": "partner-a",
   "http_status": 200,
-  "count": 1,
   "executor_kind": "db",
+  "count": 1,
   "returned_rows": 1,
   "affected_rows": null,
   "file_count": 0,
@@ -27,54 +29,33 @@ The gateway writes JSON Lines to stdout. Logs are designed for collection by a p
 }
 ```
 
-Every request event has `count`. Successful DB SELECT/CSV and mutation calls use a non-negative JSON integer; HTTP/file/Wasm success, every failure and pre-agent branch use `null`. This preserves the difference between a successful zero-row mutation and a failure. Rows, SQL, and params are never logged.
-
-Agent-confirmed input metrics are separate from output counters:
-
 | Field | Meaning |
 |---|---|
-| `input_file_count` | Measured input file count |
-| `input_file_bytes` | Measured decoded input file bytes; excludes encoded Base64 and multipart framing |
+| `request_id` | Same ID as in the response, for correlating with client logs |
+| `protocol` | `rest` or `mcp` |
+| `capability` | Capability name (empty if an MCP call named no valid tool) |
+| `api_key_name` | The key's configured `name` |
+| `http_status` | HTTP status returned. MCP tool errors return 200 |
+| `executor_kind` | `db`, `csv`, `file`, `http`, or `wasm`, on success |
+| `count` | Rows returned (DB `SELECT`, CSV) or affected (DB mutation) on success; otherwise `null` |
+| `returned_rows`, `affected_rows` | The same number split by kind; the other one is `null` |
+| `file_count` | Files returned |
+| `response_bytes` | Size of the published `data` |
+| `input_file_count`, `input_file_bytes` | Files received and their decoded size |
+| `outcome`, `reason` | On failure, the [outcome](/api/errors#outcome) and fixed reason, when known |
+| `error_code`, `error_message` | The public error returned to the caller, or `null` |
+| `duration_ms` | Time to handle the request |
 
-Successful calls include these counters. Rejections and cancellations include only measurements confirmed by the Agent; unconfirmed measurements are omitted. The Gateway does not delay a timeout or cancellation response for late measurements. They describe received input, while `file_count` counts published output files and `response_bytes` measures published data. Logs do not enumerate file contents, names, Base64, or local paths.
+A successful mutation that changed nothing logs `count: 0`; a failure logs `count: null`, so the two can be told apart.
 
-The request log is intentionally small. It is useful for observability without turning gateway into a sensitive data sink.
+MCP requests other than `tools/call` (`initialize`, `tools/list`, notifications) and requests rejected before the tool is known, for example by authentication, do not write request events.
 
-`protocol` is `rest` for REST capability calls and `mcp` for MCP `tools/call` calls. Each REST capability call emits one request event; its status and public error code/message match the HTTP response.
+## Control events
 
-After the gateway identifies an ID-bearing request as MCP `tools/call`, each handled outcome emits exactly one request event. Its `capability` is the tool name, or an empty string when invalid params do not contain a usable name.
+| Event | Written when |
+|---|---|
+| `openapi_cached` | The gateway loaded the agent's contract. Contains only the number of paths |
+| `openapi_snapshot` | Same moment, with the full OpenAPI document. Only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true` |
+| `mcp_http_rejected` | An MCP request was rejected at the HTTP level, for example by the IP allow list or rate limit. Contains the status and public error |
 
-| `tools/call` outcome | Logged `http_status` | Logged error fields |
-|---|---:|---|
-| Success | 200 | `error_code` and `error_message` are `null` |
-| HTTP rejection after identification, such as capability denial | Actual HTTP status | Public HTTP `error.code` and `error.message` |
-| JSON-RPC error, such as invalid method params | 200 | Public `error.data.code` and `error.message` |
-| Tool error, including an undefined tool (`NOT_FOUND/not_started`, `isError: true`) | 200 | Common error envelope in text on all versions; `result.structuredContent.error.code` and `result.structuredContent.error.message` on `2025-06-18` and `2025-11-25` |
-
-Traffic rejected before `tools/call` is identified does not emit a request event. This includes HTTP method/body errors, authentication, source-IP and rate-limit rejection, malformed JSON/JSON-RPC, notifications, initialization, ping, tool listing, and unsupported methods. IP, rate-limit, and recovery diagnostics use an `mcp_http_rejected` control event instead, so they do not inflate tool-call request counts.
-
-The request event's `request_id` is a gateway-generated ULID for log collection. It is separate from the client-supplied MCP JSON-RPC `id`.
-
-## Control Events
-
-Control events describe gateway operations and are not request events:
-
-- `openapi_cached` contains only the cached path count.
-- `openapi_snapshot` contains the completed OpenAPI document and is emitted only when `GATEWAY_EMIT_OPENAPI_SNAPSHOT=true`.
-- `mcp_http_rejected` contains a safe HTTP status and public code/message for MCP middleware rejection or recovery.
-
-OpenAPI cache contents are held in memory and filtered per API key when clients request them. The optional `openapi_snapshot` event is unfiltered operational metadata and may include public descriptions and schema names from `capability.yaml`.
-
-## Not Logged
-
-Gateway stdout must not contain:
-
-- request params
-- URL paths
-- agent error detail
-- SQL text
-- DB host, user, password, or DSN
-- plaintext API keys
-- agent private keys
-
-If runtime detail is needed, check the agent local log on the on-prem side.
+`openapi_snapshot` is not filtered per API key: it describes every capability exposed in OpenAPI, including descriptions and schemas. Enable it only when your log pipeline may hold that information.

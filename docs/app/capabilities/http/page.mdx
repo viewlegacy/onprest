@@ -1,0 +1,109 @@
+# HTTP APIs
+
+An `http` capability calls a fixed endpoint of an internal HTTP API. You decide the URL, method, headers, and credentials in the configuration; callers can only fill in the arguments you bind. Use it to publish one operation of an existing on-prem service without exposing the service itself.
+
+```yaml
+sources:
+  http:
+    inventory:
+      base_url: https://inventory.internal.example
+      allowed_methods: [POST]
+      credential_file: ./secrets/inventory-token
+
+capabilities:
+  check_inventory:
+    executor:
+      type: http
+      source: inventory
+      method: POST
+      path: /stock
+      body:
+        kind: json
+        fields:
+          item: {input: /item}
+          channel: {value: onprest}
+      response: {kind: json}
+    input:
+      properties:
+        item: {type: string, minLength: 1}
+      required: [item]
+    output:
+      data: {}
+      properties:
+        item: {type: string}
+        available: {type: integer}
+```
+
+A call with `{"item": "widget-01"}` sends `POST https://inventory.internal.example/stock` with the body `{"channel":"onprest","item":"widget-01"}` and the source's Bearer token, then returns only `item` and `available` from the response. The [HTTP example](https://github.com/viewlegacy/onprest/tree/main/examples/http) runs this against a small local API.
+
+## HTTP sources
+
+| Key | Meaning |
+|---|---|
+| `base_url` | `http://` or `https://` origin of the API |
+| `allowed_methods` | Methods capabilities may use with this source, such as `[GET, POST]` |
+| `allowed_cidrs` | Optional list of IP ranges the host name may resolve to |
+| `headers` | Optional fixed headers sent with every request |
+| `credential` or `credential_file` | Optional Bearer token, inline or in a protected file. Give the token only, without `Bearer ` |
+
+Without `allowed_cidrs`, the agent connects to public and private addresses but not to loopback, link-local, or multicast addresses; list those ranges explicitly if the API runs there, for example `[127.0.0.0/8]`. The address is checked on every connection, HTTPS certificates are always verified, and proxy environment variables such as `HTTPS_PROXY` are ignored.
+
+## Building the request
+
+| Key | Meaning |
+|---|---|
+| `source` | HTTP source to call |
+| `method` | One of the source's `allowed_methods` |
+| `path` | Absolute path such as `/v1/stock`. It replaces any path in `base_url` |
+| `query` | Query parameters: name to binding |
+| `headers` | Extra headers: name to binding |
+| `body` | Request body; see below. Omit it to send no body |
+
+Each binding is either `{input: /pointer}`, a JSON Pointer into the validated input (after defaults), or `{value: ...}`, a fixed value. The pointer `''` means the whole input object. There is no string templating and no automatic forwarding: only what you bind is sent. An optional input that the caller left out is simply not sent.
+
+Query parameters and headers take scalar values; query parameters can also take arrays, which repeat the name. `Host`, `Authorization`, and connection headers cannot be set, and when there is a body the agent sets `Content-Type` and `Content-Length` itself.
+
+| `body.kind` | Sends | Configure with |
+|---|---|---|
+| `json` | `application/json` | `fields` (name to binding), `input` (one pointer for the whole body), or `value` (fixed JSON). Use one |
+| `form` | `application/x-www-form-urlencoded` | `fields` |
+| `multipart` | `multipart/form-data` | `parts`: a list of `{name, kind: text, json, or file, input or value}` |
+| `file` | The raw bytes of one uploaded file | `input`, and optional `content_type` |
+
+For example, to forward a text field and any number of uploaded attachments:
+
+```yaml
+body:
+  kind: multipart
+  parts:
+    - {name: item, kind: text, input: /item}
+    - {name: attachment, kind: file, input: /documents}
+```
+
+With `documents` declared as `{items: {type: file}}`, each file becomes its own `attachment` part. File parts and file bodies use the uploaded file's name and MIME type unless you set `content_type`.
+
+The whole request is assembled and checked before anything is sent, so invalid input or an oversized body never reaches the API.
+
+## Handling the response
+
+| Key | Default | Meaning |
+|---|---|---|
+| `response.kind` | required | `json` parses the body and applies `output`; `file` returns the body as a file |
+| `response.success_statuses` | 200–299 | Status codes that count as success, such as `[200, 404]` |
+| `response.filename` | `response.bin` | File name when `kind: file` |
+| `response.mime_type` | `application/octet-stream` | MIME type when `kind: file` |
+| `response.redirect` | `{enabled: false, max_hops: 3}` | Whether to follow redirects |
+| `limits.max_http_request_bytes` | `32MiB` | Largest request body |
+| `limits.max_http_response_bytes` | `32MiB` | Largest response body |
+
+With `kind: json`, the response value is published as it is (object, array, or scalar) after [output selection](/capabilities/inputs-and-outputs#output); to turn an array of objects into a CSV file, add `output.files` with `format: csv` and, if the array is nested, `from: /items`. With `kind: file`, add `output.files: {}`.
+
+A status outside `success_statuses` fails the call with `EXECUTION_FAILED` and the reason `UPSTREAM_HTTP_STATUS`. The upstream body and headers are never forwarded to the caller; check the agent's local log for details.
+
+When redirects are enabled, only redirects to the same origin are followed, and the original method and body are sent again, including for `POST`.
+
+## Side effects and retries
+
+`policy.timeout` covers the whole exchange: building the request, every redirect, and reading the response. The agent never retries a request. Once a request has been sent, a timeout or broken connection leaves the call's outcome `unknown`, because the API may already have acted on it. Decide retries in the caller, after checking the upstream system; see [Uncertain outcomes](/operations/uncertain-outcomes).
+
+`executor.effects` (`possible` by default, or `none`) tells callers whether the operation may change something. It is published as metadata only; it does not make a retry safe.

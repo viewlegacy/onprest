@@ -1,20 +1,21 @@
-# Wasm host ABI example
+# Raw host ABI example
 
-This module uses the current internal host ABI directly, reads a config-relative file through standard Go WASI file I/O, opens the current request's uploaded file, and returns data plus an independent file snapshot. The output contract removes its private data field. It needs only a read grant for the configuration directory; InputFile handles are request-owned and need no FS grant.
+This module talks to the agent through its low-level host interface directly, without the Go SDK. It reads a file from the configuration directory with ordinary WASI file I/O, opens the file uploaded in the current call, and returns data plus a copy of that file. Read it if you want to see what the SDK does underneath; to write your own capabilities, start from the [SDK example](../sdk/) instead.
 
-Make the matching `onprest-agent` and `onprest-gateway` binaries available on `PATH`. On an author machine with Go, run from the OSS repository root:
+The capability in [agent.yaml](agent.yaml) runs in the sandbox with a single read grant for the configuration directory. The uploaded file needs no grant because it belongs to the call.
+
+## Build and run
+
+You need Go 1.26.9 or later and the `onprest-agent` and `onprest-gateway` binaries on your `PATH`. From the root of a clone of this repository, build the module with the example's helper and copy the configuration:
 
 ```sh
-go run ./examples/wasm/build -output /tmp/onprest-example.wasm
 mkdir -p /tmp/onprest-wasm-example
+go run ./examples/wasm/build -output /tmp/onprest-wasm-example/module.wasm
 cp examples/wasm/agent.yaml examples/wasm/gateway.env examples/wasm/message.txt /tmp/onprest-wasm-example/
-cp /tmp/onprest-example.wasm /tmp/onprest-wasm-example/module.wasm
 onprest-agent validate --config /tmp/onprest-wasm-example/agent.yaml
 ```
 
-Deploy the completed module and configuration with the two normal binaries. No Go compiler or extra Wasm runtime is needed on the Agent installation. Use the public demonstration credentials only on loopback; replace them for deployment.
-
-Start the Gateway in one terminal:
+The credentials are public; use them only on loopback. Start the gateway, then the agent in another terminal:
 
 ```sh
 set -a
@@ -23,13 +24,11 @@ set +a
 onprest-gateway
 ```
 
-Start the Agent in another terminal:
-
 ```sh
 onprest-agent --config /tmp/onprest-wasm-example/agent.yaml
 ```
 
-The Agent user needs permission to create private `identity` and `spool` directories beside this configuration. Wait until `http://127.0.0.1:8080/healthz` reports `"agent_connected": true`, then call `wasm_copy`:
+When `http://127.0.0.1:8080/healthz` reports `"agent_connected": true`, call `wasm_copy` with an inline file:
 
 ```sh
 export ONPREST_API_KEY=orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM
@@ -40,15 +39,11 @@ curl --fail --show-error \
   http://127.0.0.1:8080/api/v1/capabilities/wasm_copy
 ```
 
-The response contains `result.data: {"greeting":"Hello, world","input_bytes":4}` and one file descriptor for `copy.bin`; the private field is absent. Copy `result.files[0].uri` into `FILE_URI`, then retrieve the independent snapshot with the same credential:
+The response has `result.data: {"greeting":"Hello, world","input_bytes":4}` and one file, `copy.bin`. The module also returns a private field that the output declaration drops. Download the file with the `uri` from the response:
 
 ```sh
-FILE_URI='paste the returned URI here'
-curl --fail --show-error \
-  -H "Authorization: Bearer $ONPREST_API_KEY" \
-  "$FILE_URI" --output copy.bin
+FILE_URI='paste result.files[0].uri here'
+curl --fail --show-error -H "Authorization: Bearer $ONPREST_API_KEY" "$FILE_URI" --output copy.bin
 ```
 
-The downloaded file contains the four uploaded bytes (`00 ff 01 02` in hexadecimal). MCP `tools/call` uses `name: wasm_copy` and the same arguments. See the [file API documentation](https://docs.onprest.viewlegacy.com/api/files) for delivery and lifetime rules. Stop both binaries with Ctrl+C when finished.
-
-The helper only builds this internal ABI example and attaches metadata describing its actual imports. For application packages, use the [Agent author CLI](../../docs/app/reference/cli/page.mdx#build-and-test-wasm-code). The Agent's `PWD` is fixed to the configuration base in both sandbox modes, so `message.txt` resolves there independently of the process working directory.
+`copy.bin` holds the four uploaded bytes `00 ff 01 02`. Stop both binaries with Ctrl+C when you are done.

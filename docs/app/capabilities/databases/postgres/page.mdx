@@ -1,0 +1,38 @@
+# PostgreSQL
+
+Set `driver: postgres`. Named parameters such as `:customer_id` become PostgreSQL placeholders (`$1`, `$2`, ...).
+
+```yaml
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: postgres.internal.example.com
+      port: 5432
+      name: legacy
+      user: onprest_reader
+      password_file: ./secrets/postgres-password
+      tls:
+        mode: verify-full
+        ca_file: /etc/onprest/db-ca.pem
+        cert_file: /etc/onprest/db-client.pem
+        key_file: /etc/onprest/db-client-key.pem
+```
+
+## Statements
+
+Startup and `validate` check each statement with `EXPLAIN`, which does not execute or commit a mutation. `INSERT ... ON CONFLICT` works as long as it has no `RETURNING` clause; the returned count is what PostgreSQL reports.
+
+## Timestamps
+
+A `timestamp without time zone` column declared as `type: string` returns the driver's representation, for example `2026-03-15 17:45:47.123456 +0000 +0000`. A `timestamp with time zone` column uses the session time zone, for example `2026-03-15 08:45:47.123456 +0000 UTC`. Neither depends on the agent host's time zone.
+
+## TLS
+
+`tls.mode` accepts `disable` (default), `require`, `verify-ca`, and `verify-full`. `verify-ca` checks the certificate chain but not the host name; `verify-full` checks both. Client certificate authentication uses `cert_file` and `key_file`. `require` encrypts only, so it does not accept `ca_file` or `server_name`.
+
+## Environment variables
+
+The connection uses only the values in `capability.yaml`. The agent overrides the standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT`, and `PGSSLKEY` variables with them and ignores password files such as `~/.pgpass`.
+
+Other libpq variables that would change the connection behind the configuration's back make startup and `validate` fail if they are set to a non-empty value. Remove them from the agent's service environment: `PGSERVICE`, `PGSERVICEFILE`, `PGAPPNAME`, `PGCONNECT_TIMEOUT`, `PGSSLSNI`, `PGSSLPASSWORD`, `PGSSLNEGOTIATION`, `PGTARGETSESSIONATTRS`, `PGTZ`, `PGOPTIONS`, `PGMINPROTOCOLVERSION`, `PGMAXPROTOCOLVERSION`, `PGCHANNELBINDING`, and `PGREQUIREAUTH`. The error names the variable but never its value.

@@ -1,0 +1,26 @@
+# MySQL
+
+Set `driver: mysql`. Named parameters such as `:customer_id` become MySQL placeholders.
+
+```yaml
+sources:
+  databases:
+    primary:
+      driver: mysql
+      host: mysql.internal.example.com
+      port: 3306
+      name: legacy
+      user: onprest_reader
+      password_file: ./secrets/mysql-password
+      tls:
+        mode: verify-full
+        ca_file: /etc/onprest/db-ca.pem
+```
+
+## Statements
+
+Startup and `validate` check each statement with `EXPLAIN`, so the database user needs permission to run `EXPLAIN` on the objects its statements use. `INSERT ... ON DUPLICATE KEY UPDATE` is supported; the returned count is MySQL's native affected-row count, not the number of inserted rows.
+
+## TLS
+
+`tls.mode` accepts `disable` (default), `require`, and `verify-full`. Client certificate authentication uses `cert_file` and `key_file`. `verify-ca` is not available for MySQL.

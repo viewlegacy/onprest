@@ -1,41 +1,33 @@
 # Agent Key Rotation
 
-Rotate the agent key when the private key may have leaked, during scheduled credential rotation, or when moving a customer to a new gateway process.
+The agent proves its identity to the gateway with an Ed25519 key pair: the agent holds the private key, the gateway holds the public key. Rotate the pair on a schedule, when you move a customer to a new gateway, or immediately if the private key may have leaked.
 
 ## Steps
 
-1. Generate a new key pair.
+1. Generate a new key pair:
 
-```bash
-./onprest-gateway create-agent-secret
-```
+   ```bash
+   ./onprest-gateway create-agent-secret
+   ```
 
-2. Update gateway env.
+2. Put the new public key in the gateway environment:
 
-```env
-GATEWAY_AGENT_PUBLIC_KEY=new-base64url-ed25519-public-key
-```
+   ```env
+   GATEWAY_AGENT_PUBLIC_KEY=new-base64url-ed25519-public-key
+   ```
 
-3. Update agent YAML.
+3. Put the new private key in the agent configuration, inline or in its key file:
 
-```yaml
-gateway:
-  agent_private_key: new-base64url-ed25519-private-key
-```
+   ```yaml
+   gateway:
+     agent_private_key_file: ./secrets/agent.key
+   ```
 
-4. In one maintenance window, restart gateway with the new public key.
-5. Immediately restart agent with the matching private key.
-6. Confirm `/healthz`, `/openapi.json`, REST, and MCP.
+4. In one maintenance window, restart the gateway, then restart the agent.
+5. Check that `/healthz` reports `agent_connected: true`, and call one capability through REST and MCP.
 
-## Expected Behavior
+After the restart, the old private key can no longer connect, and the gateway loads a fresh capability contract from the agent. API keys are unaffected.
 
-After rotation:
+## If the key may have leaked
 
-- Old private key connections are rejected.
-- New private key connections pass Ed25519 verification.
-- gateway fetches fresh OpenAPI metadata from the reconnected agent.
-- Existing API key capability authorization remains independent from the agent key.
-
-## Compromise Response
-
-If a suspicious agent is already connected, gateway's one-agent connection limit prevents a second simultaneous agent from replacing it silently. Rotate the key and restart both sides to restore trust in the metadata source.
+The gateway accepts only one agent connection at a time, so a second agent using a stolen key cannot silently replace a connected one. Rotate the key and restart both sides anyway, so the connected agent is known to be yours. See [Security](/security#agent-connection) for how the connection is protected.

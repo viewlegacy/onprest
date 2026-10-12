@@ -1,0 +1,101 @@
+# Agent Configuration
+
+Besides capabilities, `capability.yaml` configures the agent process itself. Most deployments only set `gateway` and leave the rest at their defaults.
+
+```yaml
+schema_version: 1
+
+service:
+  title: Example CRM
+  version: 1.0.0
+  description: Customer operations for the CRM.
+
+gateway:
+  url: wss://gateway.example.com/ws/agent
+  agent_private_key_file: ./secrets/agent.key
+
+runtime:
+  max_concurrent_requests: 16
+  spool_dir: /var/lib/onprest/spool
+  identity_dir: /var/lib/onprest/identity
+
+logging:
+  level: info
+  max_size: 10MB
+  max_files: 3
+
+sources: {}
+defaults: {}
+capabilities: {}
+```
+
+| Section | Purpose |
+|---|---|
+| `schema_version` | Required. Always `1` |
+| `service` | Title, version, and description shown in OpenAPI |
+| `gateway` | Where to connect and how to authenticate |
+| `runtime` | Concurrency, temporary storage, and transfer limits |
+| `logging` | Local log level and rotation; see [Local Logs](/agent/local-logs) |
+| `sources` | Databases, folders, and HTTP APIs; see each [executor page](/capabilities#choose-an-executor) |
+| `defaults` | Policy defaults; see [Policy and limits](/capabilities/policy-and-limits) |
+| `capabilities` | The operations; at least one is required |
+
+## service
+
+| Key | Default |
+|---|---|
+| `title` | `Onprest Agent` |
+| `version` | `0.1.0` |
+| `description` | empty |
+
+## gateway
+
+| Key | Meaning |
+|---|---|
+| `url` | The gateway's agent endpoint, such as `wss://gateway.example.com/ws/agent` |
+| `agent_private_key` or `agent_private_key_file` | The Ed25519 private key from `onprest-gateway create-agent-secret`, inline or in a protected file. Use one |
+| `allow_insecure_non_loopback_ws` | Allows `ws://` to a non-loopback host. For isolated test networks only |
+
+Use `wss://` in production. Plain `ws://` is accepted only for a gateway on the same host unless you set `allow_insecure_non_loopback_ws: true`. A key file contains exactly the key, with no trailing newline.
+
+## runtime
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_concurrent_requests` | `16` | Calls that run at the same time. The same number can wait; further calls get `BUSY` |
+| `spool_dir` | `./spool` | Private directory for uploaded and returned files while they are in use |
+| `spool_total_bytes` | `1GiB` | Disk quota for everything in the spool |
+| `identity_dir` | `./identity` | Private directory for the agent's persistent identity key |
+| `transfer_timeout` | `60s` | Time allowed to receive a call's uploads, or to send one download, up to `300s` |
+| `input_limits.max_pending_requests` | `16` | Calls that can be receiving uploads at the same time |
+| `input_limits.max_multipart_parts` | `128` | Parts in one multipart upload |
+| `input_limits.max_recent_requests` | `4096` | Recently finished uploads remembered to reject duplicates |
+| `control_limits` | see below | Limits for downloads, uploads, and cancellations |
+
+Relative paths are resolved from the configuration directory. The agent creates `spool_dir` and `identity_dir` if needed; its operating-system user must own them and be the only one with access.
+
+The spool belongs to one agent process. Do not share it between agents or keep business files in it. Keep it across restarts: if a file save was interrupted, the agent finishes cleaning it up at the next start. Files in the spool do not survive a restart as downloads.
+
+Keep `identity_dir` across restarts and container replacements as well. It holds a key the agent generates on first start and reuses afterwards.
+
+### control_limits
+
+The gateway forwards downloads, upload chunks, and cancellations to the agent. These limits protect the agent even if the gateway misbehaves, and the defaults suit most deployments:
+
+| Class | `requests` per `per` | `burst` | `max_concurrent` |
+|---|---|---|---|
+| `read` | 60 per `1s` | 120 | 8 |
+| `write` | 10 per `1s` | 20 | 2 |
+| `cancel` | 20 per `1s` | 40 | 2 |
+| `transfer` | 32 per `1s` | 64 | 4 |
+
+`bytes_per_second` (default `8MiB`) and `burst_bytes` (default `16MiB`) cap the transfer rate, and `max_concurrent_transfers` (default `4`, at most `8`) caps parallel transfers. Requests over a limit get `RATE_LIMITED` or `BUSY`. All values must be positive.
+
+## Secret files
+
+Database passwords, HTTP credentials, the agent key, and TLS certificates can be kept in files instead of the YAML:
+
+- Paths are absolute or relative to the configuration directory.
+- Files must be regular files owned by the agent's user and not readable by others. Symbolic links are refused.
+- Contents are used exactly as written; nothing is trimmed.
+- The agent reads them once at startup. Restart it after replacing a file.

@@ -1,28 +1,25 @@
 # REST API
 
-Execute a prepared capability with `POST /api/v1/capabilities/{name}`, `Authorization: Bearer {api_key}` (or `X-API-Key`), and `Content-Type: application/json`. The body is the input object directly:
+Call a capability with `POST /api/v1/capabilities/{name}`. Authenticate with `Authorization: Bearer {api_key}` (or `X-API-Key: {api_key}`) and send the capability's input object as the JSON body:
 
-```json
-{
-  "id": 1
-}
+```bash
+curl -s \
+  -X POST https://gateway.example.com/api/v1/capabilities/get_customer \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":1}'
 ```
 
-Input follows the capability schema. Duplicate keys, invalid UTF-8, signed-int64 overflow, extra top-level values and non-object bodies are rejected. The Gateway encoded JSON body limit defaults to 1 MiB and uses `GATEWAY_MAX_REQUEST_BODY_BYTES`; wire-body overflow returns HTTP 413 `LIMIT_EXCEEDED`, and an unsupported REST content type returns HTTP 415 `INVALID_REQUEST`. Gateway and Agent enforce the same capability input limits. File schemas also accept streaming `multipart/form-data`; see [File Input and Output](/api/files#file-input).
+The body must match the capability's [input schema](/capabilities/inputs-and-outputs#input). Capabilities with file inputs also accept `multipart/form-data`; see [Files](/api/files#sending-files).
 
-## Success response
+## Success
 
 ```json
 {
   "request_id": "01J5ABCDEF1234567890ABCDEF01",
   "result": {
     "data": {
-      "rows": [
-        {
-          "id": 1,
-          "name": "Ada Lovelace"
-        }
-      ],
+      "rows": [{ "id": 1, "name": "Ada Lovelace" }],
       "count": 1
     },
     "files": []
@@ -30,21 +27,25 @@ Input follows the capability schema. Duplicate keys, invalid UTF-8, signed-int64
 }
 ```
 
-The Gateway assigns one request ID for the public response, Agent request and request log. DB SELECT and CSV data use a rows/count object; DML data is `{"count": n}` using native RowsAffected, including zero. Generic JSON data can be an object, array, scalar or null, selected and validated by `output` without a rows/count wrapper. [HTTP responses](/agent/capability-yaml#responses-and-redirects) also support original file output through the common file delivery modes. Output selection and constraints come from `output`. Omitted output returns `data: null` and an empty files array while still executing. DB SELECT and CSV results can also generate CSV files, and file capabilities can return snapshots from configured folders. See [File Output](/api/files) for authenticated references and direct downloads. See [Database JSON values](/databases#json-values) for the representation of database types.
+`request_id` identifies the call in the gateway log. `result.data` has the shape the capability's output declares: `{rows, count}` for database queries and CSV, `{count}` for database mutations, and the JSON value itself for HTTP and Wasm capabilities. It is `null` when the capability publishes no data. `result.files` lists returned files; see [Files](/api/files#receiving-files).
 
-## Failure response
+A capability with `delivery.rest: direct` returns its single file as the response body instead of this envelope.
+
+## Failure
 
 ```json
 {
   "request_id": "01J5ABCDEF1234567890ABCDEF01",
   "error": {
-    "code": "LIMIT_EXCEEDED",
-    "message": "output exceeds configured limit",
-    "outcome": "rolled_back"
+    "code": "VALIDATION_FAILED",
+    "message": "input validation failed",
+    "outcome": "not_started"
   }
 }
 ```
 
-Success and error are mutually exclusive. Errors contain safe code/message/outcome and optionally a fixed safe reason. See [Errors](/api/errors) for status mappings and outcomes. Driver errors, SQL, source details, credentials and input values remain in local diagnostics.
+A response has either `result` or `error`, never both. `code` determines the HTTP status, and `outcome` tells you whether anything happened on the on-prem side. Both are listed in [Errors](/api/errors). Messages are safe to show and never contain SQL, paths, credentials, or the values you sent.
 
-The deadline uses the prepared capability's timeout and caller cancellation. DB SELECT `max_rows` truncates results; CSV returns `LIMIT_EXCEEDED` when its filtered row total exceeds `max_rows`. DML validates count, common output and limits before commit; a confirmed rollback is reported explicitly. After an unknown outcome, verify state through an independent read before retrying a mutation. For fixed APIs, see the [HTTP response and redirect contract](/agent/capability-yaml#responses-and-redirects).
+## Limits
+
+The gateway accepts JSON bodies up to 1 MiB by default (`GATEWAY_MAX_REQUEST_BODY_BYTES`); larger bodies get HTTP 413. Each capability also has its own input limits and a timeout set by its [policy](/capabilities/policy-and-limits). Integers keep full 64-bit precision, so use a JSON library that preserves large integers if your values can exceed 2^53.

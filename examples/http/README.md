@@ -1,38 +1,37 @@
-# Call a fixed on-prem HTTP API
+# HTTP example: call an internal API
 
-Use `onprest-gateway` and `onprest-agent` as separate binaries to bind validated arguments to an existing API and publish selected JSON, without a database. This example uses public demonstration signing and API credentials on loopback. Generate deployment credentials with the [Provisioning CLI](https://docs.onprest.viewlegacy.com/reference/cli).
+The `get_inventory` capability turns one endpoint of an internal inventory API into a named operation. The agent sends the caller's `item` together with a fixed `channel` value to `POST /stock`, and publishes only `item` and `available` from the response. No database is needed.
 
-Save [agent.yaml](agent.yaml) and [gateway.env](gateway.env) beside `onprest-agent` and `onprest-gateway`. For a local demonstration, also save [upstream.py](upstream.py) and run it in its own shell:
+## Run it
+
+Put [agent.yaml](agent.yaml) and [gateway.env](gateway.env) in a directory next to the `onprest-agent` and `onprest-gateway` binaries. To stand in for the internal API, also save [upstream.py](upstream.py) and run it in its own shell. It listens on `127.0.0.1:8090`; Python is needed only for this demonstration.
 
 ```sh
 python3 upstream.py
 ```
 
-This optional fixture needs Python only on your demonstration machine; an Agent connecting to an existing API requires no Python or additional runtime. It listens on `127.0.0.1:8090` and serves `POST /stock`.
-
-Validate the configuration, then start the Gateway in one shell:
+Validate the configuration. This prepares the API source without sending it a request:
 
 ```sh
 ./onprest-agent validate --config ./agent.yaml
+```
+
+The credentials are public; use them only on loopback. Start the gateway, then the agent in another shell:
+
+```sh
 set -a
 . ./gateway.env
 set +a
 ./onprest-gateway
 ```
 
-Validation prepares the source without sending business HTTP requests. Start the Agent in another shell:
-
 ```sh
 ./onprest-agent --config ./agent.yaml
 ```
 
-The Agent user needs permission to create private `identity` and `spool` directories beside the configuration. In another shell, check the connection:
+## Call it
 
-```sh
-curl --fail --show-error http://127.0.0.1:8080/healthz
-```
-
-Wait until the response reports `"agent_connected": true`, then call:
+When `http://127.0.0.1:8080/healthz` reports `"agent_connected": true`:
 
 ```sh
 export ONPREST_API_KEY=orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM
@@ -43,6 +42,6 @@ curl --fail --show-error \
   http://127.0.0.1:8080/api/v1/capabilities/get_inventory
 ```
 
-The response contains `result.data: {"item":"widget-01","available":7}` and `result.files: []`. The Agent sends the fixed channel alongside the input item and excludes the upstream `internal_note` from the public result. MCP calls the same `get_inventory` capability with `arguments: {"item":"widget-01"}`.
+The response has `result.data: {"item":"widget-01","available":7}`. The upstream API also returns an `internal_note`, which the output declaration drops. Over MCP, call the tool `get_inventory` with `arguments: {"item":"widget-01"}`.
 
-Use an HTTPS origin and narrowly permitted methods/CIDRs for deployment. Keep endpoint paths and credentials in Agent configuration. HTTP effects cannot generally be rolled back: a timeout or unknown outcome is not permission to retry. See the [HTTP executor reference](https://docs.onprest.viewlegacy.com/agent/capability-yaml#http-executors) for other body forms, file input, redirect policy, and limits.
+For a real API, use an `https://` base URL, allow only the methods you need, and keep the token in `credential_file`. The agent never retries a request: if a call times out after it was sent, check the upstream system before trying again. See [HTTP APIs](https://docs.onprest.viewlegacy.com/capabilities/http) for query parameters, form and multipart bodies, file responses, and redirects.

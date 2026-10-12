@@ -9,7 +9,7 @@ observe no row, changed contents, and an unavailable read.
 The caller chooses a UNIQUE `external_request_id` before inserting and compares
 all four fields when reading: external request ID, product, quantity, and customer.
 Finding the ID alone is insufficient. This example uses INSERT; see
-[Mutation Reconciliation](https://docs.onprest.viewlegacy.com/operations/mutation-reconciliation)
+[Uncertain Outcomes](https://docs.onprest.viewlegacy.com/operations/uncertain-outcomes)
 for operational decisions and UPDATE/DELETE considerations.
 
 ## Before you start
@@ -160,7 +160,7 @@ curl --fail-with-body -sS \
 The result should contain the `002` order with all four fields matching your
 request. You have confirmed that the intended order is present despite losing
 the INSERT response. For no row, differing contents, or a failed read, use the
-[operational decision table](https://docs.onprest.viewlegacy.com/operations/mutation-reconciliation#order-insert-example).
+[operational decision table](https://docs.onprest.viewlegacy.com/operations/uncertain-outcomes#example-confirming-a-database-insert).
 Do not interpret every missing response as a successful commit.
 
 ### Use MCP instead

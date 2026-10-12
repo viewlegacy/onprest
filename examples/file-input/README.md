@@ -1,15 +1,17 @@
-# File input example
+# File example: upload and save a PDF
 
-Use the two released binaries with this configuration and an existing writable `exchange` folder. The included signing/API credentials are public loopback demonstration values. Generate your own credentials for deployment. File inputs use one capability call and the existing Agent outbound connection.
+The `save_report` capability accepts a PDF in the call, saves it into the `exchange` folder on the agent host under the name the caller sent, and returns a copy of the saved file. No database is needed.
 
-Place `onprest-agent`, `onprest-gateway`, `agent.yaml`, and `gateway.env` in one working directory. Create the source and validate without saving a business file:
+## Run it
+
+Put [agent.yaml](agent.yaml) and [gateway.env](gateway.env) in a directory next to the `onprest-agent` and `onprest-gateway` binaries, create the folder, and validate. Validation does not write anything into the folder.
 
 ```sh
 mkdir -p exchange
 ./onprest-agent validate --config ./agent.yaml
 ```
 
-Start Gateway in one shell:
+The credentials are public; use them only on loopback. Start the gateway, then the agent in another shell:
 
 ```sh
 set -a
@@ -18,9 +20,13 @@ set +a
 ./onprest-gateway
 ```
 
-Start Agent in another shell with `./onprest-agent --config ./agent.yaml`. The Agent user needs private writable identity/spool directories beside this configuration, and permission to save in `exchange`. Wait for `/healthz` to report `agent_connected: true` and for authenticated `/openapi.json` to become available.
+```sh
+./onprest-agent --config ./agent.yaml
+```
 
-Prepare your PDF as `report.pdf`, then call with a binary file and a JSON string argument:
+## Upload a file
+
+When `http://127.0.0.1:8080/healthz` reports `"agent_connected": true`, upload any PDF saved as `report.pdf`. The file goes in a binary part, and the `month` argument in a JSON part:
 
 ```sh
 export ONPREST_API_KEY=orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM
@@ -31,17 +37,15 @@ curl --fail --show-error \
   http://127.0.0.1:8080/api/v1/capabilities/save_report
 ```
 
-The accepted file is saved as `exchange/report.pdf`. The response has null data and one independent file descriptor. Copy its `uri` into the GET command below and use the same credential:
+The file is now `exchange/report.pdf`, and the response lists the saved copy with a `uri`. Download it and compare both with the original:
 
 ```sh
-curl --fail --show-error \
-  -H "Authorization: Bearer $ONPREST_API_KEY" \
-  'http://127.0.0.1:8080/api/v1/files/RETURNED_FILE_ID' \
-  --output returned-report.pdf
-cmp ./report.pdf ./exchange/report.pdf
-cmp ./report.pdf ./returned-report.pdf
+FILE_URI='paste result.files[0].uri here'
+curl --fail --show-error -H "Authorization: Bearer $ONPREST_API_KEY" "$FILE_URI" --output returned-report.pdf
+cmp report.pdf exchange/report.pdf
+cmp report.pdf returned-report.pdf
 ```
 
-Both comparisons exit successfully with no output when the bytes match. Repeating the same filename conflicts by default; choose a new input filename for another business call. Outputs use independent delivery/lifetime settings.
+Both comparisons print nothing when the bytes match. Uploading `report.pdf` again fails with `CONFLICT`, because the capability does not overwrite existing files.
 
-REST JSON and MCP can instead send `document: {name, mime_type, data}` with canonical padded Base64. Their encoded request limit is 1 MiB by default. Larger inputs use multipart. See [File input](https://docs.onprest.viewlegacy.com/api/files#file-input) for naming, schema, limits, deadlines and failure contracts. TLS and reverse proxy choice belong to the deployment environment.
+Small files can also be sent inline in JSON or MCP as `{"name": ..., "mime_type": ..., "data": "<Base64>"}`, within the gateway's 1 MiB JSON limit. See [Files](https://docs.onprest.viewlegacy.com/capabilities/files#saving-uploaded-files) for save options and [API: Files](https://docs.onprest.viewlegacy.com/api/files#sending-files) for the upload forms.

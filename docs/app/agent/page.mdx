@@ -1,54 +1,35 @@
 # Agent
 
-`onprest-agent` runs in the on-prem or DB-adjacent environment. It reads `capability.yaml`, validates startup safety, executes prepared capabilities against approved sources, and keeps execution detail local. It owns the meaning of every capability and is the only OSS core component that holds private source connection settings, credentials and SQL.
+`onprest-agent` runs inside the on-prem network, next to the databases, folders, and APIs its capabilities use. It reads `capability.yaml`, connects out to the gateway over WebSocket, and runs capabilities when the gateway forwards a call. It opens no listening port.
 
-The agent connects outbound to the gateway over WebSocket. It does not require inbound access to the on-prem network.
+## Runtime model
 
-## Runtime Model
+- One binary, configured by one `capability.yaml`. Pass it with `--config`; without it, the agent uses `AGENT_CAPABILITY_FILE` or `capability.yaml` next to the binary.
+- The configuration is loaded once at startup. Restart the agent to apply changes.
+- If the gateway is unreachable, the agent retries every 30 seconds.
+- Up to `runtime.max_concurrent_requests` calls (default 16) run at once, with a waiting queue of the same size. Responses may complete in a different order than requests arrived.
+- Detailed errors go to [local log files](/agent/local-logs) next to the binary, never to the gateway.
 
-- Single Go binary.
-- Configured by `capability.yaml`.
-- Connects outbound to the gateway over WebSocket.
-- Does not open an inbound HTTP server.
-- Reconnects every 30 seconds by default when the gateway is unavailable.
-- Executes up to `runtime.max_concurrent_requests` independent requests concurrently on one connection (default `16`); response order is correlated by request ID and may differ from request order.
-- Optionally enforces a per-capability execution rate limit independently of the Gateway's HTTP rate limit.
-- Opens a protected, writable private spool before receiving requests; see [runtime settings](/agent/capability-yaml#top-level-sections).
-- Requires restart to pick up capability changes.
+## Startup checks
 
-## Startup Checks
+Before it connects, the agent:
 
-Before connecting to the gateway, the agent performs:
+1. Loads and checks `capability.yaml`.
+2. Prepares every source a capability references: reads secret and certificate files, checks folder roots, and, for databases, connects and runs `EXPLAIN` for each SQL statement. HTTP sources are not called.
+3. Checks every Wasm module without running it.
+4. Opens its private spool directory and finishes any cleanup left from a previous run.
 
-1. `capability.yaml` load.
-2. Structural lint and required-field validation.
-3. Prepare only the providers and sources referenced by capabilities, including protected secret/TLS snapshots and folder-root validation.
-4. Open and Ping databases and verify SQL with EXPLAIN for DB capabilities only.
+If any step fails, the agent exits without connecting, the gateway keeps reporting `agent_connected: false`, and the reason is on stderr or in the local log. A configuration with no DB capabilities needs no database.
 
-Normal startup and `onprest-agent validate` share checks 1–4. Normal startup additionally opens the protected, exclusive private spool and completes any [recorded save cleanup](/operations/troubleshooting#private-spool-recovery-prevents-startup) before connecting; validation does not open that runtime directory.
+## Checking without starting
 
-HTTP preparation fixes source settings without sending a business request; a configuration with no DB capabilities needs no database. See [HTTP executors](/agent/capability-yaml#http-executors) for bindings and response behavior.
+Two commands run the same checks without taking over from a running agent:
 
-Validation closes its prepared resources and finalizes its dedicated detail-log lifecycle before reporting the result, and never connects to the Gateway. Normal-startup DB failures write private detail to `onprest-agent.log`. For standalone validation, inspect a validation log only when the CLI returns its `detail_log` path (or the text equivalent); configuration and busy failures are CLI-only, and diagnostic-finalization failure has no current diagnostic path. Fatal stderr and validation output stay safe so SQL and DB-specific detail are not exposed to process supervisors or remote logs. See [Agent Local Logs](/agent/local-logs) and [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure).
+- `onprest-agent validate --config PATH` runs steps 1 to 3 and exits. Use it before every restart.
+- `onprest-agent doctor --config PATH` additionally checks DNS, TLS, and key authentication against the gateway, without opening the normal connection.
 
-Use `onprest-agent doctor` when the same local checks plus Gateway connectivity and Agent-key authentication need diagnosis. It does not replace a running Agent connection or execute a capability; see the [CLI reference](/reference/cli).
+Neither runs a capability. See the [CLI reference](/reference/cli#validate-the-configuration) for their output and [Troubleshooting](/operations/troubleshooting) for what to do when they fail.
 
-## Execution Flow
+## Configuration
 
-When the gateway sends a capability request, the agent:
-
-1. Rejects unknown capability names.
-2. Validates params against the YAML contract.
-3. Applies policy settings.
-4. Runs the configured executor using its prepared sources and validated input bindings.
-5. Selects and validates output data and files, or validates the native affected count for DML.
-6. Returns the common `request_id/result` envelope with `result.data` and `result.files`. Data follows the configured output schema; DB SELECT/CSV use rows/count, DML uses affected count, and generic JSON retains its selected shape. Omitted output publishes null data. Failures return the common error envelope with an observed outcome.
-
-Error detail remains local to the agent side.
-
-## Topics
-
-- [Capability YAML](/agent/capability-yaml)
-- [File Input and Output](/api/files)
-- [Local Logs](/agent/local-logs)
-- [Key Rotation](/agent/key-rotation)
+The agent's own settings (runtime limits, spool and identity directories, gateway connection, logging) are in [Agent configuration](/agent/configuration). Capabilities and their sources are described under [Capabilities](/capabilities).

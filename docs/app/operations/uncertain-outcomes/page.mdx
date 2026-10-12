@@ -1,0 +1,42 @@
+# Uncertain Outcomes
+
+When a call that changes something fails, the error's `outcome` tells you what happened on the on-prem side:
+
+| `outcome` | What to do |
+|---|---|
+| `not_started` | Nothing ran. It is safe to try again |
+| `rolled_back` | The change was undone. Fix the cause, then try again |
+| `committed` | The change completed even though the call reported an error |
+| `unknown` | The change may or may not have happened. Check before doing anything else |
+
+`unknown` happens when the agent cannot confirm the result: a database commit that lost its connection, a timeout after an HTTP request was sent, a file save that failed halfway, code that failed after writing something, or an agent that disconnected mid-call. The error code alone does not tell you; `EXECUTION_TIMEOUT` can mean either `not_started` or `unknown`.
+
+Onprest never retries a call by itself, and you should not retry an `unknown` call automatically either. Repeating it can create a second order or a second payment. Instead, look at the real state, then decide.
+
+## Check before you retry
+
+Plan for this when you design a capability that changes data: define a separate read capability that can confirm the result.
+
+- **Database insert**: have the caller choose a unique business ID (such as `external_request_id`) before inserting, and read it back by that ID. Compare all the important fields, not just the ID.
+- **Database update**: read the record and compare the values you intended to set. If other writers may change it, include a version column or similar so you can tell your change from theirs.
+- **Database delete**: check whether the record still exists. If you need to prove which request deleted it, use an audit record.
+- **HTTP API**: ask the upstream system, through its own read endpoint or an idempotency key it supports.
+- **File save**: check whether the file exists in the target folder and compare its size or hash. Completed files are never removed by a failed call.
+- **Code**: use whatever the code changed: a file, a record, or an upstream API.
+
+A current value only shows the current state; it does not prove that this particular request made the change. Decide what evidence your business process needs before exposing the capability.
+
+## Example: confirming a database insert
+
+The [order example](https://github.com/viewlegacy/onprest/tree/main/examples/mutation-reconciliation) defines an INSERT capability and a matching read capability for PostgreSQL, MySQL, SQL Server, and Oracle. After a lost response, it reads the order by its `external_request_id` and compares the ID, product, quantity, and customer:
+
+| Read result | Decision |
+|---|---|
+| One row, all four fields match | The order exists as intended. Do not insert again |
+| No row | Not confirmed. The earlier transaction may still be finishing; resolve that before inserting again |
+| A row with different fields | Investigate the existing order and other writers |
+| The read fails or is itself `unknown` | Restore read access first. The insert is still unconfirmed |
+
+A `CONFLICT` on the unique key with `outcome: rolled_back` means this attempt was rolled back because the ID already exists. Read the existing row to find out what it means for your order.
+
+The example README sets up a disposable database for each engine and walks through all four read results with REST and MCP.

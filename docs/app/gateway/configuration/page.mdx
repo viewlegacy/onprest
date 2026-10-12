@@ -1,118 +1,56 @@
 # Gateway Configuration
 
-`onprest-gateway` is configured with environment variables. Configuration is process-scoped, so each customer should have a dedicated gateway, dedicated env, dedicated agent public key, and dedicated API keys.
+The gateway reads its configuration from environment variables at startup. It does not read a file itself, so load `gateway.env` into the environment (or set the variables in your service manager) before starting it. Restart the gateway after any change.
 
-## Example
+Run one gateway per customer, with its own variables, agent public key, and API keys.
 
 ```env
-# Required.
+# Required
 GATEWAY_AGENT_PUBLIC_KEY=base64url-ed25519-public-key
-GATEWAY_API_KEYS_JSON='[{"name":"internal","key_hash":"$2a$10$xxxxx","capabilities":["*"]},{"name":"partner-a","key_hash":"$2a$10$xxxxx","capabilities":["get_customer","get_orders"]}]'
+GATEWAY_API_KEYS_JSON='[{"name":"partner-a","key_hash":"$2a$10$xxxxx","capabilities":["get_customer","get_orders"]}]'
 
-# Optional. Omit these to use defaults or disabled behavior.
-# GATEWAY_ADDR=:8080
-# GATEWAY_PUBLIC_URL=https://gateway.example.com
-# ONPREST_PUBLIC_BASE_URL=https://gateway.example.com
-# GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
-# GATEWAY_IP_ALLOW_LIST=203.0.113.0/24,198.51.100.0/24
-# GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12
-# GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=10
-# GATEWAY_RATE_LIMIT_BURST=20
-# GATEWAY_EMIT_OPENAPI_SNAPSHOT=false
-# GATEWAY_MAX_REQUEST_BODY_BYTES=1048576
-```
-
-## Variables
-
-The full list of gateway environment variables, with defaults and descriptions, is the [Environment Variables](/reference/environment-variables) reference. `GATEWAY_AGENT_PUBLIC_KEY` and `GATEWAY_API_KEYS_JSON` are required at startup. File reference delivery additionally requires `ONPREST_PUBLIC_BASE_URL`.
-
-Other variables may be omitted. Empty values are treated the same as omitted values. Invalid configured values are startup errors; the gateway does not silently fall back to defaults when a configured value is invalid.
-
-The sections below explain the most operationally important variables in more detail.
-
-## Request Body Limit
-
-`GATEWAY_MAX_REQUEST_BODY_BYTES` applies to encoded JSON bodies at both `POST /api/v1/capabilities/{name}` and `POST /mcp`. The default is `1048576` bytes (1 MiB). The value must be a positive base-10 integer; non-integers, zero, negative values, and values larger than a signed 64-bit integer are startup errors rather than silent fallback. A restart is required after changing the environment. Size it for the largest legitimate JSON request while keeping a finite ingress memory bound; capability result limits such as `policy.max_output_bytes` are separate agent-side output controls.
-
-`GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` separately bounds complete multipart wire bodies (default `104857600`). `GATEWAY_MAX_REQUEST_BODY_BYTES` also bounds the cumulative encoded JSON parts within multipart. `GATEWAY_MAX_CONCURRENT_BODY_READERS` defaults to `16` and limits all REST/MCP input retention, including parsed JSON and queued Agent sends, until buffers are released. These are positive integers; invalid values prevent startup. Size the encoded JSON budget and concurrent slot count together for memory, allowing for decoder overhead and fixed transfer buffers. Full capacity returns 503 `BUSY` before reading another body. See [File input](/api/files#file-input) for framing, capability limits, and deadlines.
-
-## Listen Address
-
-Use `GATEWAY_ADDR` to bind gateway to a specific address or port.
-
-```env
-GATEWAY_ADDR=127.0.0.1:8080
-```
-
-When omitted, gateway listens on `:8080`.
-
-## Public URL
-
-Set `GATEWAY_PUBLIC_URL` to the external HTTP(S) base URL clients should call. Gateway writes this value into OpenAPI `servers`, including `/openapi.json` and the optional `openapi_snapshot` stdout event.
-
-```env
+# Common optional settings
 GATEWAY_PUBLIC_URL=https://gateway.example.com
-```
-
-When omitted, gateway derives a direct-access fallback from `GATEWAY_ADDR`, such as `http://localhost:8080`. For reverse proxy or load balancer deployments, set `GATEWAY_PUBLIC_URL` explicitly.
-
-## File Reference Origin
-
-Set `ONPREST_PUBLIC_BASE_URL` when an Agent capability uses REST or MCP reference delivery:
-
-```env
 ONPREST_PUBLIC_BASE_URL=https://gateway.example.com
+GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12
 ```
 
-This value is an origin, with no path, userinfo, query or fragment. HTTPS is required except for HTTP on localhost or a loopback IP for local testing. A trailing `/` is normalized away. A configured invalid value prevents Gateway startup. If it is omitted, JSON-only capabilities and direct REST plus inline MCP definitions can run; Agent metadata requiring references is rejected and capabilities remain unavailable with `DEPENDENCY_UNAVAILABLE` until the configuration is corrected and Gateway restarted.
+The full list with defaults is in [Environment Variables](/reference/environment-variables). An empty value means the same as leaving the variable out. An invalid value stops the gateway at startup instead of falling back to a default.
 
-References use this explicit origin and `/api/v1/files/{id}`. Gateway never reflects `Host`, `Forwarded` or Agent-provided URLs into references. This setting does not change `GATEWAY_PUBLIC_URL`, which retains its OpenAPI `servers` role. Configure a compatible reverse proxy to route the file path as well as capability and MCP requests. See [File Output](/api/files).
+## Required settings
+
+`GATEWAY_AGENT_PUBLIC_KEY` is the public half of the key pair from `onprest-gateway create-agent-secret`. The private half goes into the agent's `gateway` section.
+
+`GATEWAY_API_KEYS_JSON` lists the API keys as a JSON array of `name`, bcrypt `key_hash`, and `capabilities`; see [API Keys](/gateway/api-keys). Bcrypt hashes contain `$`, so wrap the whole value in single quotes when a shell loads the file. Otherwise the shell expands `$2a` and `$10` and corrupts the hash.
+
+## Public URLs
+
+`GATEWAY_PUBLIC_URL` is the address clients use, written into the OpenAPI `servers` list. Without it, the gateway derives one from `GATEWAY_ADDR`, such as `http://localhost:8080`. Set it whenever a proxy or load balancer sits in front.
+
+### File reference origin
+
+`ONPREST_PUBLIC_BASE_URL` is the origin used in download links for returned files, for example `https://gateway.example.com`. It must be an origin only (no path) and use HTTPS, except `http://localhost` or a loopback address for local testing. The gateway builds every link from this value and never from request headers.
+
+Set it whenever any capability uses `reference` delivery, the default for returned files. Until it is set, the gateway publishes none of the agent's capabilities: `/openapi.json` and MCP `tools/list` report `AGENT_OFFLINE`, and every capability call returns `DEPENDENCY_UNAVAILABLE`, while `/healthz` still reports the agent as connected. A configuration where every capability returns only JSON, or files with `delivery.rest: direct` and `delivery.mcp: inline`, does not need it. If a proxy is in front, route `/api/v1/files/` to the gateway as well.
+
+## Request size limits
+
+| Variable | Default | Limits |
+|---|---|---|
+| `GATEWAY_MAX_REQUEST_BODY_BYTES` | `1048576` (1 MiB) | A REST or MCP JSON body, and the JSON parts of a multipart upload together |
+| `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` | `104857600` (100 MiB) | A whole multipart upload |
+| `GATEWAY_MAX_CONCURRENT_BODY_READERS` | `16` | Requests whose input the gateway holds at the same time |
+
+Requests over a size limit get HTTP 413; when all readers are busy, new requests get HTTP 503 `BUSY` before their body is read. The gateway's memory use grows with the JSON limit times the number of readers, so raise them together with care. Capability-level limits are separate; see [Policy and limits](/capabilities/policy-and-limits).
+
+## Listen address
+
+The gateway listens on `:8080`. Set `GATEWAY_ADDR`, such as `127.0.0.1:8080`, to bind to one interface or another port.
 
 ## CORS
 
-Set `GATEWAY_CORS_ALLOWED_ORIGINS` when browser-based clients, such as Swagger UI hosted on another origin, need to call the gateway directly.
+Set `GATEWAY_CORS_ALLOWED_ORIGINS` to a comma-separated list of origins when browser-based clients, such as a Swagger UI on another host, call the gateway directly. Only those origins get CORS headers. MCP requests from any other browser origin are rejected.
 
-```env
-GATEWAY_CORS_ALLOWED_ORIGINS=https://cors.example.com
-```
+## Network controls
 
-The gateway allows `GET`, `POST`, and `OPTIONS` with `Authorization`, `X-API-Key`, `Content-Type`, `Accept`, and `MCP-Protocol-Version` only for configured origins. When omitted, the gateway does not emit CORS headers; MCP requests with an `Origin` that is not configured are rejected before authentication.
-
-## Agent Public Key
-
-Generate the agent key pair with the gateway CLI.
-
-```bash
-./onprest-gateway create-agent-secret
-```
-
-The public key goes into `GATEWAY_AGENT_PUBLIC_KEY`. The private key goes into `capability.yaml` on the agent side.
-
-## API Keys JSON
-
-`GATEWAY_API_KEYS_JSON` is a JSON array.
-
-```json
-[
-  {
-    "name": "partner-a",
-    "key_hash": "$2a$10$xxxxx",
-    "capabilities": [
-      "get_customer",
-      "get_orders"
-    ]
-  }
-]
-```
-
-The `name` is used in access logs. The plaintext key is shown only when generated by `create-key`; gateway stores and verifies the bcrypt hash.
-
-## Shell Quoting
-
-bcrypt hashes contain `$`. When loading env files with a shell, wrap the whole JSON value in single quotes.
-
-```env
-GATEWAY_API_KEYS_JSON='[{"name":"dev","key_hash":"$2a$10$...","capabilities":["*"]}]'
-```
-
-Without single quotes, shells may expand `$2a`, `$10`, or later segments and corrupt the hash.
+`GATEWAY_IP_ALLOW_LIST` restricts every route, including `/healthz` and the agent connection, to the listed CIDRs or IPs. `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND` and `GATEWAY_RATE_LIMIT_BURST` (defaults 10 and 20) limit requests per source IP. Behind a proxy, set `GATEWAY_TRUSTED_PROXY_CIDRS` so these controls see the real client address; see [Reverse Proxy](/gateway/reverse-proxy).

@@ -1,0 +1,100 @@
+# Code (Wasm)
+
+A `wasm` capability runs a WebAssembly module you wrote. Use it when a capability needs logic the other executors cannot express: combining several files, transforming data, or calling an API in more than one step. The agent includes the runtime, so the agent host needs no compiler or extra software.
+
+The usual way to write a module is in Go with the Onprest SDK; see [Writing code in Go](/capabilities/code/go). This page covers how the agent runs it.
+
+```yaml
+capabilities:
+  customer_report:
+    executor:
+      type: wasm
+      module: ./customer-report.wasm
+      effects: none
+      sandbox:
+        enabled: true
+        permissions:
+          filesystem: [{root: ./templates, access: read}]
+    input:
+      properties:
+        customer: {type: string, pattern: '^[A-Za-z0-9 ]{1,64}$'}
+      required: [customer]
+    output:
+      data: {}
+      files: {}
+```
+
+The module receives the validated input and returns data and files. As with every executor, only what `output` declares reaches the caller.
+
+## Executor settings
+
+| Key | Default | Meaning |
+|---|---|---|
+| `module` | required | Path to the `.wasm` file, relative to the configuration directory |
+| `sha256` | none | Expected SHA-256 of the module, as 64 lowercase hex characters. The agent refuses to start if the file differs |
+| `effects` | `possible` | `none` or `possible`: whether the code may change anything. Published as metadata only |
+| `sandbox` | `{enabled: false}` | What the code may access; see below |
+| `limits` | see below | Memory and I/O budgets |
+
+Modules must be built with `onprest-agent code build` (or carry the same metadata). At startup and in `validate`, the agent checks the module's metadata, imports, and size without running it.
+
+## Sandbox
+
+**The sandbox is off by default.** With `sandbox.enabled: false`, the code can read and write any file and reach any network address that the agent's operating-system user can, and it sees the agent's environment variables. Run the agent as a dedicated user with narrow permissions if you use code this way.
+
+With `sandbox.enabled: true`, the code can access nothing except what `permissions` grants:
+
+```yaml
+sandbox:
+  enabled: true
+  permissions:
+    filesystem:
+      - {root: ./templates, access: read}
+      - {root: /srv/exchange/out, access: read_write}
+    http:
+      - origin: https://inventory.internal.example
+        methods: [GET]
+        path_prefix: /v1/stock
+    environment: [TZ]
+```
+
+| Permission | Fields |
+|---|---|
+| `filesystem` | `root` (absolute or relative to the configuration directory) and `access`: `read` or `read_write` |
+| `http` | `origin`, `methods`, `path_prefix`, and optional `allowed_cidrs`. HTTPS certificates are verified and proxy variables are ignored |
+| `environment` | Names of environment variables the code may read |
+
+Files uploaded in the current call are always readable by that call, even with no permissions. Leave out `permissions` entirely when the sandbox is off.
+
+The sandbox limits what the code can reach, not what it does with it. Code with an HTTP grant can send any data it can read to that destination, and file changes or HTTP requests it makes are not rolled back when the call fails. Review the code and how it uses its input, especially input that selects a path or a destination.
+
+Inside the module, relative paths and the working directory are the agent's configuration directory, in both modes. On Windows, absolute paths use a WASI form: `C:\service\data` is `/volumes/C/service/data`, and a UNC path `\\server\share\data` is `/unc/server/share/data`.
+
+## Limits
+
+Set these under `executor.limits`. All must be positive.
+
+| Key | Default |
+|---|---|
+| `memory_bytes` | `128MiB` (between 64KiB and 4GiB) |
+| `max_module_bytes` | `32MiB` |
+| `max_handles` | `64` |
+| `max_host_calls` | `8` |
+| `max_file_read_bytes`, `max_file_write_bytes` | `64MiB` each, per file |
+| `max_total_file_read_bytes`, `max_total_file_write_bytes` | `256MiB` each, per call |
+| `max_file_operations` | `65536` |
+| `max_http_request_bytes`, `max_http_response_bytes` | `32MiB` each |
+
+File and HTTP budgets count every byte the code reads or writes during the call, including reopened files. Exceeding one fails the operation with a limit error; if the code does not handle it, the call fails with `LIMIT_EXCEEDED`. The usual [policy limits](/capabilities/policy-and-limits) such as `timeout` apply as well.
+
+## Results, errors, and logs
+
+The module's return value becomes `data` and its returned files become `files`, then pass through output selection like any other executor.
+
+An ordinary error from the code fails the call with `EXECUTION_FAILED` and a generic message. To show the caller a specific business error, return an application error with a code such as `APP_CUSTOMER_NOT_FOUND` and a message; REST returns it with HTTP 422. See [Errors](/api/errors#application-errors).
+
+Log messages from the SDK and anything the module writes to stdout or stderr go to the agent's [local log](/agent/local-logs), not to the caller. HTTP requests made by the code are sent once without retries, and redirects are followed only if the code enables them.
+
+## Without the SDK
+
+The SDK is the supported way to write modules. The [raw host ABI example](https://github.com/viewlegacy/onprest/tree/main/examples/wasm) shows a module that talks to the agent directly, for readers who want to see the low-level interface.
