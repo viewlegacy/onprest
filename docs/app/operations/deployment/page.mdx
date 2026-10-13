@@ -46,7 +46,7 @@ Then follow the bundled [`INSTALL.md`](https://github.com/viewlegacy/onprest/blo
 
 1. Generate an agent key pair with `onprest-gateway create-agent-secret`.
 2. Generate API keys with `onprest-gateway create-key`.
-3. Write the customer's `gateway.env` and start a dedicated gateway.
+3. Write the customer's `gateway.env`, start a dedicated gateway, and [terminate TLS in front of it](/gateway/reverse-proxy).
 4. Put `onprest-agent` and a `capability.yaml` on the on-prem host. Fill in the gateway URL (`wss://.../ws/agent`), the agent private key, the sources, and the capabilities.
 5. Run `onprest-agent validate --config PATH`.
 6. Start the agent, or install it as a service.
@@ -88,7 +88,7 @@ For capabilities that read or save files, create the folders with the permission
 
 ## Docker
 
-Docker is optional. To build images:
+Docker is optional. Build the images from a checkout of the repository; release archives do not include the Dockerfile.
 
 ```bash
 docker build --build-arg TARGET=gateway --build-arg VERSION=x.y.z -t onprest-gateway .
@@ -115,6 +115,8 @@ docker run --rm \
 ```
 
 Keep the identity volume when you recreate the container. Use one spool per agent container. Addresses in `capability.yaml` must be reachable from inside the container, and `onprest-agent service install` does not apply in containers. When an env file is passed to Docker, make sure `GATEWAY_API_KEYS_JSON` keeps its `$` characters.
+
+The agent's detailed log is `/app/onprest.log` inside the container and is deleted with it; to keep it, run without `--rm` and copy it out with `docker cp`.
 
 ## Database TLS certificate rotation
 

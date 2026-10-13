@@ -2,6 +2,8 @@
 
 The agent loads `capability.yaml` only at startup. To change a capability, edit the file, validate it, and restart the agent. The commands below stop the running agent only if validation succeeds, so a broken file never takes a working agent offline.
 
+Run the commands on this page, including `validate`, as an administrator: the service runs as root (LocalSystem on Windows), and the spool and identity directories and the secret files must be owned by that user.
+
 ## Apply a change to an existing service
 
 Edit the file registered with the service, then run:

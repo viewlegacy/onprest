@@ -21,7 +21,7 @@ Onprest separates two questions. The gateway answers "who may call what". The ag
 
 | Component | Runs | Does |
 |---|---|---|
-| `onprest-gateway` | Where callers can reach it, directly or behind a reverse proxy | Authenticates API keys, authorizes capabilities, serves REST, MCP, OpenAPI, and `/healthz`, and accepts the agent's connection |
+| `onprest-gateway` | Where callers and the agent can reach it | Authenticates API keys, authorizes capabilities, serves REST, MCP, OpenAPI, and `/healthz`, and accepts the agent's connection |
 | `onprest-agent` | Inside the on-prem network, next to the systems it uses | Loads `capability.yaml`, prepares the sources it references, runs capabilities, and keeps detailed errors in a local log |
 | `capability.yaml` | With the agent | Defines every operation that can exist, its sources, input, limits, and output |
 
@@ -69,6 +69,6 @@ Run a dedicated gateway process for each customer or trust domain. API keys, the
 
 ## Network and TLS
 
-TLS termination and the network edge are yours to choose. Expose the gateway directly or put any compatible reverse proxy or load balancer in front of it; see [Reverse Proxy](/gateway/reverse-proxy). The agent always connects outbound and must use `wss://` unless the gateway is on the same host. Database and upstream API TLS are configured separately on the agent.
+TLS termination and the network edge are yours to choose; see [Reverse Proxy](/gateway/reverse-proxy). The agent always connects outbound and must use `wss://` unless the gateway is on the same host. Database and upstream API TLS are configured separately on the agent.
 
 Managed products and dashboards are outside the OSS core and are not dependencies of either binary.

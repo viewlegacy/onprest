@@ -65,7 +65,7 @@ Use `wss://` in production. Plain `ws://` is accepted only for a gateway on the 
 | `max_concurrent_requests` | `16` | Calls that run at the same time. The same number can wait; further calls get `BUSY` |
 | `spool_dir` | `./spool` | Private directory for uploaded and returned files while they are in use |
 | `spool_total_bytes` | `1GiB` | Disk quota for everything in the spool |
-| `identity_dir` | `./identity` | Private directory for the agent's persistent identity key |
+| `identity_dir` | `./identity` | Private directory for the key the agent uses to fingerprint its configuration. Unrelated to the gateway key and [Key Rotation](/agent/key-rotation) |
 | `transfer_timeout` | `60s` | Time allowed to receive a call's uploads, or to send one download, up to `300s` |
 | `input_limits.max_pending_requests` | `16` | Calls that can be receiving uploads at the same time |
 | `input_limits.max_multipart_parts` | `128` | Parts in one multipart upload |

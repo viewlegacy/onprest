@@ -19,7 +19,7 @@ For clients that accept the `mcpServers` format:
 }
 ```
 
-The endpoint uses stateless JSON-RPC over HTTP and answers with JSON, not an event stream. Supported protocol versions are `2025-03-26`, `2025-06-18`, and `2025-11-25`. Clients negotiate the version during `initialize` and send it in the `MCP-Protocol-Version` header afterwards; a request without the header is treated as `2025-03-26`.
+If your client asks for a transport, choose Streamable HTTP, not SSE. The endpoint uses stateless JSON-RPC over HTTP and answers with JSON, not an event stream. Supported protocol versions are `2025-03-26`, `2025-06-18`, and `2025-11-25`. Clients negotiate the version during `initialize` and send it in the `MCP-Protocol-Version` header afterwards; a request without the header is treated as `2025-03-26`.
 
 Browser-based clients must run on an origin listed in `GATEWAY_CORS_ALLOWED_ORIGINS`.
 

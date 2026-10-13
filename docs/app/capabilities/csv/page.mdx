@@ -90,6 +90,6 @@ The matching rows are published as `{"rows": [...], "count": n}` and, if configu
 - No matching rows is a success with an empty list (and a CSV with only the header).
 - A folder selector that finds no file returns `NOT_FOUND`.
 - Unlike a database query, more matching rows than `policy.max_rows` fail the call with `LIMIT_EXCEEDED` instead of being cut off.
-- A declared output column that is missing from the file fails with `OUTPUT_INVALID`.
+- A column declared in `output` that is missing from the file, or whose type differs from its `csv.columns` type (string by default), fails with `OUTPUT_INVALID`.
 
 To return the original CSV file unchanged, use a [file capability](/capabilities/files) instead.

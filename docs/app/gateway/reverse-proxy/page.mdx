@@ -1,6 +1,6 @@
 # Reverse Proxy
 
-A reverse proxy or load balancer is optional. Use one when TLS or the public network edge is handled outside the gateway; any product that supports WebSocket works.
+The gateway serves plain HTTP. When agents on other hosts connect over `wss://` or download links use `https`, terminate TLS in front of the gateway with a reverse proxy, load balancer, or your platform; any product that supports WebSocket works.
 
 ## Routes
 

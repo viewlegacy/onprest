@@ -94,7 +94,3 @@ Do not retry automatically. Check the real state first, as described in [Uncerta
 - `NOT_FOUND`: the link expired (`file_ttl`), or the gateway or agent restarted or reconnected. Make a new call, keeping in mind what else that call does.
 - `BUSY`: another download from the same call is running.
 - A cut-off file: the transfer failed. Download again while the link is valid.
-
-## Docker or Testcontainers issues
-
-Container-backed integration tests need access to a Docker daemon. Set `ONPREST_IT_REQUIRE_CONTAINERS=1` so a missing daemon fails the run instead of skipping tests, and check for leftover Testcontainers resources after an interrupted run. See [Test Commands](/reference/test-commands).

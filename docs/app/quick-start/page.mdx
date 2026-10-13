@@ -100,7 +100,7 @@ curl -s http://localhost:8080/healthz
 { "ok": true, "agent_connected": true }
 ```
 
-If `agent_connected` is `false`, wait a moment for the agent to finish connecting and try again.
+If `agent_connected` is `false`, wait a moment for the agent to finish connecting and try again. If it stays `false`, read the agent's terminal output and see [Troubleshooting](/operations/troubleshooting#agent-cannot-connect).
 
 ## 6. Call a capability
 
@@ -132,6 +132,15 @@ curl -s \
 ```
 
 The request body is the capability's input object itself, not wrapped in `{"params": ...}`.
+
+On Windows PowerShell:
+
+```powershell
+$env:ONPREST_API_KEY = 'orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/capabilities/get_customer `
+  -Headers @{ Authorization = "Bearer $env:ONPREST_API_KEY" } `
+  -ContentType 'application/json' -Body '{"customer_id":1}' | ConvertTo-Json -Depth 10
+```
 
 ## 7. Change data and read it back
 

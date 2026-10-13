@@ -1,13 +1,6 @@
 # Uncertain Outcomes
 
-When a call that changes something fails, the error's `outcome` tells you what happened on the on-prem side:
-
-| `outcome` | What to do |
-|---|---|
-| `not_started` | Nothing ran. It is safe to try again |
-| `rolled_back` | The change was undone. Fix the cause, then try again |
-| `committed` | The change completed even though the call reported an error |
-| `unknown` | The change may or may not have happened. Check before doing anything else |
+When a call that changes something fails, its [`outcome`](/api/errors#outcome) tells you whether you can try again. `unknown` is the one that needs care.
 
 `unknown` happens when the agent cannot confirm the result: a database commit that lost its connection, a timeout after an HTTP request was sent, a file save that failed halfway, code that failed after writing something, or an agent that disconnected mid-call. The error code alone does not tell you; `EXECUTION_TIMEOUT` can mean either `not_started` or `unknown`.
 

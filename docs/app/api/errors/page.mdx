@@ -49,15 +49,15 @@ For `RATE_LIMITED`, the message tells you which limit was hit; see [Troubleshoot
 
 `outcome` says what happened on the on-prem side, independent of the code:
 
-| Outcome | Meaning |
-|---|---|
-| `not_started` | Nothing ran |
-| `no_change` | It ran and changed nothing, for example a failed read |
-| `rolled_back` | It made changes, and they were all rolled back |
-| `committed` | All changes were completed |
-| `unknown` | Changes may or may not have happened |
+| Outcome | Meaning | What to do |
+|---|---|---|
+| `not_started` | Nothing ran | Safe to try again |
+| `no_change` | It ran and changed nothing, for example a failed read | Safe to try again |
+| `rolled_back` | It made changes, and they were all rolled back | Fix the cause, then try again |
+| `committed` | All changes were completed | Do not repeat it; the change is done |
+| `unknown` | Changes may or may not have happened | Check the real state first |
 
-Trust `outcome`, not the code or the capability's annotations. `EXECUTION_TIMEOUT`, for example, can come with `not_started` or `unknown`. Never retry an operation with `unknown` automatically: check the real state first, as described in [Uncertain outcomes](/operations/uncertain-outcomes).
+Trust `outcome`, not the code or the capability's annotations. `EXECUTION_TIMEOUT`, for example, can come with `not_started` or `unknown`. Treat a call whose response you never received as `unknown`. Never retry an operation with `unknown` automatically: check the real state first, as described in [Uncertain outcomes](/operations/uncertain-outcomes).
 
 ## Application errors
 

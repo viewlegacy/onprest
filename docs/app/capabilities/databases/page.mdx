@@ -67,7 +67,7 @@ Relative file paths are resolved from the configuration directory. Password file
 ## Writing the SQL
 
 - One statement: `SELECT`, `INSERT`, `UPDATE`, or `DELETE`. `WITH`, `MERGE`, DDL, stored procedure calls, transaction control, and statements that return rows from a mutation (`RETURNING`, `OUTPUT`) are not accepted.
-- Use named parameters such as `:customer_id`. Each must be a scalar property declared in `input`. The agent sends them as bound parameters, not as text spliced into the SQL.
+- Use named parameters such as `:customer_id`. Each must be a scalar property declared in `input`. Every call needs a value for each one, so make it `required` or give it a `default`; an omitted parameter fails the call with `EXECUTION_FAILED`. The agent sends them as bound parameters, not as text spliced into the SQL.
 - `policy.readonly` defaults to `true`, which allows only `SELECT`. A mutation needs `readonly: false`.
 
 At startup and in `validate`, the agent connects to each database and runs the driver's `EXPLAIN` for every statement. This catches syntax errors, missing objects, wrong parameters, and many permission problems without executing anything. It cannot catch constraint violations or trigger behavior that depends on data.

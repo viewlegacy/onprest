@@ -29,7 +29,7 @@ The full list with defaults is in [Environment Variables](/reference/environment
 
 ### File reference origin
 
-`ONPREST_PUBLIC_BASE_URL` is the origin used in download links for returned files, for example `https://gateway.example.com`. It must be an origin only (no path) and use HTTPS, except `http://localhost` or a loopback address for local testing. The gateway builds every link from this value and never from request headers.
+`ONPREST_PUBLIC_BASE_URL` is the origin used in download links for returned files, for example `https://gateway.example.com`. It must be an origin only (no path) and use HTTPS, [terminated in front of the gateway](/gateway/reverse-proxy), except `http://localhost` or a loopback address for local testing. The gateway builds every link from this value and never from request headers.
 
 Set it whenever any capability uses `reference` delivery, the default for returned files. Until it is set, the gateway publishes none of the agent's capabilities: `/openapi.json` and MCP `tools/list` report `AGENT_OFFLINE`, and every capability call returns `DEPENDENCY_UNAVAILABLE`, while `/healthz` still reports the agent as connected. A configuration where every capability returns only JSON, or files with `delivery.rest: direct` and `delivery.mcp: inline`, does not need it. If a proxy is in front, route `/api/v1/files/` to the gateway as well.
 

@@ -84,6 +84,8 @@ A failed check is `failed` and the checks that depend on it are `skipped`. With 
 
 The commands use systemd on Linux, launchd on macOS, and Windows Service on Windows. `install` without `--config` registers `capability.yaml` next to the binary, and does not enable start on boot. `remove` is an alias for `uninstall`. There is no `restart`; use the [change procedure](/operations/capability-changes), which validates first.
 
+Run every command except `status` with administrator rights; see [Capability Changes](/operations/capability-changes).
+
 ### Author commands
 
 These run on the machine where you write code, not on the agent host. [Writing code in Go](/capabilities/code/go) shows them in context.
