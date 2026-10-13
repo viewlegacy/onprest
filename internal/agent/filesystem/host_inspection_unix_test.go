@@ -13,7 +13,7 @@ import (
 )
 
 func TestHostSpecialInspectionNoDeviceMutation(t *testing.T) {
-	base, e := os.MkdirTemp("/tmp", "p15-016-fs-")
+	base, e := os.MkdirTemp("/tmp", "host-inspect-")
 	if e != nil {
 		t.Fatal(e)
 	}

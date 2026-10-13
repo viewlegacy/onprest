@@ -3,7 +3,7 @@ set -euo pipefail
 # Development verification of the published two-binary example. No DB needed.
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 binary_dir=${BIN_DIR:-"$repo_dir/dist"}
-evidence_dir=${P11_BINARY_EVIDENCE_DIR:-$(mktemp -d /tmp/onprest-csv.XXXXXX)}
+evidence_dir=${ONPREST_EXAMPLE_EVIDENCE_DIR:-$(mktemp -d /tmp/onprest-csv.XXXXXX)}
 mkdir -p "$evidence_dir/reports"
 cp "$repo_dir/examples/csv/agent.yaml" "$evidence_dir/agent.yaml"
 cp "$repo_dir/examples/csv/gateway.env" "$evidence_dir/gateway.env"

@@ -13,11 +13,11 @@ import (
 	"testing"
 )
 
-func TestWasmReview2DirectoryDescriptorAndRewind(t *testing.T) {
+func TestWasmDirectoryDescriptorAndRewind(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, synthetic := range []bool{false, true} {
 			t.Run(map[bool]string{false: "off", true: "on"}[on]+map[bool]string{false: "normal", true: "synthetic"}[synthetic], func(t *testing.T) {
-				s, base := reviewSession(t, DefaultLimits())
+				s, base := directSession(t, DefaultLimits())
 				s.bridge.Sandbox = map[string]any{"enabled": on}
 				if on {
 					s.bridge.Sandbox["permissions"] = map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read"}}}
@@ -72,7 +72,7 @@ func TestWasmReview2DirectoryDescriptorAndRewind(t *testing.T) {
 	}
 }
 
-func TestWasmReview2RealDirectoryPathReplacement(t *testing.T) {
+func TestWasmRealDirectoryPathReplacement(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, synthetic := range []bool{false, true} {
 			t.Run(map[bool]string{false: "off", true: "on"}[on]+map[bool]string{false: "normal", true: "synthetic"}[synthetic], func(t *testing.T) {
@@ -104,7 +104,7 @@ func TestWasmReview2RealDirectoryPathReplacement(t *testing.T) {
 					}
 					return io.NopCloser(bytes.NewReader(nil)), nil
 				}
-				out := bridgeRun(t, r, m, c, map[string]any{"scenario": "review2_dir", "path": path}, DefaultLimits()).(map[string]any)
+				out := bridgeRun(t, r, m, c, map[string]any{"scenario": "dir_descriptor", "path": path}, DefaultLimits()).(map[string]any)
 				first, last := out["first"].([]any), out["last"].([]any)
 				if len(first) != 1 || first[0] != "original" || len(last) != 2 || last[0] != "original" || last[1] != "second" {
 					t.Fatal(out)
@@ -115,19 +115,19 @@ func TestWasmReview2RealDirectoryPathReplacement(t *testing.T) {
 	// Deny-all keeps module initialization and InputFile functional, while actual
 	// preopen enumeration obtains no descriptor or metadata without a grant.
 	r, m, c, _ := bridgeSetup(t, true, "")
-	out := bridgeRun(t, r, m, c, map[string]any{"scenario": "review_rawdir", "path": "."}, DefaultLimits()).(map[string]any)
+	out := bridgeRun(t, r, m, c, map[string]any{"scenario": "raw_readdir", "path": "."}, DefaultLimits()).(map[string]any)
 	if len(out["names"].([]any)) != 0 || out["error"] == "" {
 		t.Fatal(out)
 	}
 }
 
-func TestWasmReview2PositionedBudgetAndOffset(t *testing.T) {
+func TestWasmPositionedBudgetAndOffset(t *testing.T) {
 	for _, write := range []bool{false, true} {
 		for _, operations := range []int64{1, 2, 3} {
 			t.Run(map[bool]string{false: "pread", true: "pwrite"}[write]+string(rune('0'+operations)), func(t *testing.T) {
 				l := DefaultLimits()
 				l.FileOperations = operations
-				s, base := reviewSession(t, l)
+				s, base := directSession(t, l)
 				p := filepath.Join(base, "x")
 				os.WriteFile(p, []byte("abcd"), 0600)
 				fsys := &wasiFS{rpc: s.dispatch, prefix: base + "/"}
@@ -181,9 +181,9 @@ func TestWasmReview2PositionedBudgetAndOffset(t *testing.T) {
 	}
 	for _, write := range []bool{false, true} {
 		for _, offset := range []int64{-1, 1<<63 - 1} {
-			s, base := reviewSession(t, DefaultLimits())
+			s, base := directSession(t, DefaultLimits())
 			os.WriteFile(filepath.Join(base, "x"), []byte("abcd"), 0600)
-			id := reviewBody(t, s, "x", os.O_RDWR)
+			id := directOpenBody(t, s, "x", os.O_RDWR)
 			op := "pread"
 			if write {
 				op = "pwrite"
@@ -197,16 +197,16 @@ func TestWasmReview2PositionedBudgetAndOffset(t *testing.T) {
 	}
 }
 
-func TestWasmReview2PositionedShortGrowthRefundAndEffects(t *testing.T) {
+func TestWasmPositionedShortGrowthRefundAndEffects(t *testing.T) {
 	l := DefaultLimits()
 	l.ReadBytes = 8
 	l.TotalReadBytes = 8
 	l.WriteBytes = 8
 	l.TotalWriteBytes = 8
-	s, base := reviewSession(t, l)
+	s, base := directSession(t, l)
 	p := filepath.Join(base, "x")
 	os.WriteFile(p, []byte("abcd"), 0600)
-	id := reviewBody(t, s, "x", os.O_RDWR)
+	id := directOpenBody(t, s, "x", os.O_RDWR)
 	if out := s.dispatch(packet{Op: "pread", Handle: id, Offset: 3, Count: 4}); out.Count != 1 || string(out.Data) != "d" || s.readBytes != 1 {
 		t.Fatal(out, s.readBytes)
 	}
@@ -230,15 +230,15 @@ func TestWasmReview2PositionedShortGrowthRefundAndEffects(t *testing.T) {
 	}
 	// Append WriteAt is invalid before reservation, and sparse growth cannot use
 	// a partial reservation. An OS failure refunds all unused reserved bytes.
-	s, base = reviewSession(t, l)
+	s, base = directSession(t, l)
 	os.WriteFile(filepath.Join(base, "x"), []byte("abcd"), 0600)
-	appendID := reviewBody(t, s, "x", os.O_WRONLY|os.O_APPEND)
+	appendID := directOpenBody(t, s, "x", os.O_WRONLY|os.O_APPEND)
 	out := s.dispatch(packet{Op: "pwrite", Handle: appendID, Offset: 0, Data: []byte("X")})
 	if out.Count != invalid || s.writeBytes != 0 || s.bridge.Effects.Outcome() == "committed" {
 		t.Fatal(out, s.writeBytes)
 	}
 	s.close(appendID)
-	id = reviewBody(t, s, "x", os.O_RDWR)
+	id = directOpenBody(t, s, "x", os.O_RDWR)
 	out = s.dispatch(packet{Op: "pwrite", Handle: id, Offset: 20, Data: []byte("Z")})
 	if out.Count != limit || s.writeBytes != 0 {
 		t.Fatal(out, s.writeBytes)
@@ -260,11 +260,11 @@ func TestWasmReview2PositionedShortGrowthRefundAndEffects(t *testing.T) {
 		t.Fatal(string(body))
 	}
 	for _, quota := range []int64{1, 2, 3} {
-		s, base = reviewSession(t, l)
+		s, base = directSession(t, l)
 		s.l.WriteBytes = quota
 		s.l.TotalWriteBytes = quota
 		os.WriteFile(filepath.Join(base, "x"), []byte("abcd"), 0600)
-		id = reviewBody(t, s, "x", os.O_RDWR)
+		id = directOpenBody(t, s, "x", os.O_RDWR)
 		out = s.dispatch(packet{Op: "pwrite", Handle: id, Offset: 0, Data: []byte("XY")})
 		if out.Count != int32(min(quota, int64(2))) || s.writeBytes != int64(out.Count) {
 			t.Fatal(quota, out, s.writeBytes)
@@ -273,8 +273,8 @@ func TestWasmReview2PositionedShortGrowthRefundAndEffects(t *testing.T) {
 	}
 }
 
-func TestWasmReview2ReadOnlySyncAndRealPositioned(t *testing.T) {
-	s, base := reviewSession(t, DefaultLimits())
+func TestWasmReadOnlySyncAndRealPositioned(t *testing.T) {
+	s, base := directSession(t, DefaultLimits())
 	os.WriteFile(filepath.Join(base, "x"), []byte("abcd"), 0600)
 	os.Mkdir(filepath.Join(base, "d"), 0700)
 	fsys := &wasiFS{rpc: s.dispatch, prefix: base + "/"}
@@ -317,7 +317,7 @@ func TestWasmReview2ReadOnlySyncAndRealPositioned(t *testing.T) {
 		r, m, c, base := bridgeSetup(t, on, "read_write")
 		path := filepath.Join(base, "x")
 		os.WriteFile(path, []byte("abcd"), 0600)
-		v := bridgeRun(t, r, m, c, map[string]any{"scenario": "review2_positioned", "path": filesystem.WASIPath(path)}, DefaultLimits()).(map[string]any)
+		v := bridgeRun(t, r, m, c, map[string]any{"scenario": "positioned_io", "path": filesystem.WASIPath(path)}, DefaultLimits()).(map[string]any)
 		if v["read"] != "bc" || v["written"] != int64(2) || v["before"] != v["after"] || v["sync"] != int64(0) || v["datasync"] != int64(0) || v["closed_sync"] != int64(8) {
 			t.Fatal(v)
 		}
@@ -328,7 +328,7 @@ func TestWasmReview2ReadOnlySyncAndRealPositioned(t *testing.T) {
 	}
 }
 
-func TestWasmReview2RealReadOnlySyncDirectories(t *testing.T) {
+func TestWasmRealReadOnlySyncDirectories(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		r, m, c, base := bridgeSetup(t, on, "read")
 		os.Mkdir(filepath.Join(base, "d"), 0700)
@@ -347,7 +347,7 @@ func TestWasmReview2RealReadOnlySyncDirectories(t *testing.T) {
 			if nativeErr == nil {
 				want = 0
 			}
-			v := bridgeRun(t, r, m, c, map[string]any{"scenario": "review2_sync", "path": path}, DefaultLimits()).(map[string]any)
+			v := bridgeRun(t, r, m, c, map[string]any{"scenario": "readonly_sync", "path": path}, DefaultLimits()).(map[string]any)
 			if v["sync"] != int64(want) || v["datasync"] != int64(want) || v["closed_sync"] != int64(8) || v["closed_datasync"] != int64(8) {
 				t.Fatal(path, v, want)
 			}
@@ -358,21 +358,21 @@ func TestWasmReview2RealReadOnlySyncDirectories(t *testing.T) {
 	}
 }
 
-func TestWasmReview2PositionedReadQuotaAndFailureRefund(t *testing.T) {
+func TestWasmPositionedReadQuotaAndFailureRefund(t *testing.T) {
 	for _, quota := range []int64{1, 2, 3} {
 		l := DefaultLimits()
 		l.ReadBytes = quota
 		l.TotalReadBytes = quota
-		s, base := reviewSession(t, l)
+		s, base := directSession(t, l)
 		os.WriteFile(filepath.Join(base, "x"), []byte("abcd"), 0600)
-		id := reviewBody(t, s, "x", os.O_RDONLY)
+		id := directOpenBody(t, s, "x", os.O_RDONLY)
 		out := s.dispatch(packet{Op: "pread", Handle: id, Offset: 1, Count: 2})
 		if out.Count != int32(min(quota, int64(2))) || s.readBytes != int64(out.Count) || string(out.Data) != "bc"[:out.Count] {
 			t.Fatal(quota, out, s.readBytes)
 		}
 		s.close(id)
 	}
-	s, base := reviewSession(t, DefaultLimits())
+	s, base := directSession(t, DefaultLimits())
 	os.WriteFile(filepath.Join(base, "x"), []byte("abcd"), 0600)
 	f, e := os.OpenFile(filepath.Join(base, "x"), os.O_WRONLY, 0)
 	if e != nil {
@@ -387,16 +387,16 @@ func TestWasmReview2PositionedReadQuotaAndFailureRefund(t *testing.T) {
 	s.close(id)
 }
 
-func TestWasmReview2DescriptorEnumerationPartialSecurityError(t *testing.T) {
-	s, base := reviewSession(t, DefaultLimits())
+func TestWasmDescriptorEnumerationPartialSecurityError(t *testing.T) {
+	s, base := directSession(t, DefaultLimits())
 	s.bridge.Sandbox = map[string]any{"enabled": true, "permissions": map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read"}}}}
 	os.Mkdir(filepath.Join(base, "d"), 0700)
 	os.WriteFile(filepath.Join(base, "d", "a"), []byte("x"), 0600)
 	if e := os.Symlink("a", filepath.Join(base, "d", "z")); e != nil {
 		t.Fatal(e)
 	}
-	id := reviewBody(t, s, "d", os.O_RDONLY)
-	out, c := reviewCall(t, s, "files.readdir", map[string]any{"body_handle": id})
+	id := directOpenBody(t, s, "d", os.O_RDONLY)
+	out, c := directCall(t, s, "files.readdir", map[string]any{"body_handle": id})
 	var errorCode, metaID int64
 	json.Unmarshal(out["error"], &errorCode)
 	json.Unmarshal(out["body_handle"], &metaID)

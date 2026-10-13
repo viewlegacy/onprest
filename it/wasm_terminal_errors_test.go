@@ -21,7 +21,7 @@ import (
 	"github.com/viewlegacy/onprest/internal/agent/wasmruntime"
 )
 
-func buildP15ErrorFixture(t *testing.T, repo, module string) {
+func buildWasmErrorFixture(t *testing.T, repo, module string) {
 	t.Helper()
 	c := exec.Command("go", "build", "-trimpath", "-mod=readonly", "-o", module, "./internal/agent/wasmruntime/testdata/fixture.go")
 	c.Dir = repo
@@ -86,7 +86,7 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 	gatewayBin, agentBin := filepath.Join(tmp, "onprest-gateway"), filepath.Join(tmp, "onprest-agent")
 	buildBinary(t, repo, gatewayBin, "./cmd/gateway")
 	buildBinary(t, repo, agentBin, "./cmd/agent")
-	buildP15ErrorFixture(t, repo, filepath.Join(tmp, "error.wasm"))
+	buildWasmErrorFixture(t, repo, filepath.Join(tmp, "error.wasm"))
 	addr := freeAddr(t)
 	base := "http://" + addr
 	read := func(name string) string {

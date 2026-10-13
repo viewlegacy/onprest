@@ -10,7 +10,8 @@ import (
 	"testing"
 )
 
-// Native execution of this table and the host ABI mutation fixtures is P20.
+// Native execution of this table and the host ABI mutation fixtures requires a
+// Windows host.
 func TestHostWindowsErrorCategories(t *testing.T) {
 	cases := []struct{ err, errorClass error }{
 		{nil, nil}, {windows.STATUS_OBJECT_NAME_NOT_FOUND, fs.ErrNotExist}, {windows.STATUS_OBJECT_PATH_NOT_FOUND, fs.ErrNotExist},

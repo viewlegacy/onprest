@@ -134,7 +134,7 @@ func Open(options Options) (_ *Store, err error) {
 	if err = s.openSaveJournal(); err != nil {
 		return nil, safe(err)
 	}
-	// Only the dedicated ephemeral namespace is recovered. P08's cleanup
+	// Only the dedicated ephemeral namespace is recovered. File executor cleanup
 	// manifests and business directories are never scanned or deleted here.
 	err = r.Mkdir("objects", 0700)
 	newDirectory := err == nil

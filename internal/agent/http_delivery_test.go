@@ -174,7 +174,7 @@ func TestHTTPExecutorProductionRESTMCPAndSchema(t *testing.T) {
 	default:
 	}
 	req, _ := http.NewRequest("GET", f.base+"/openapi.json", nil)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	resp, e := http.DefaultClient.Do(req)
 	if e != nil {
 		t.Fatal(e)

@@ -49,8 +49,8 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	base := "http://" + addr
 	private, _ := base64.RawURLEncoding.DecodeString(testAgentPrivateKey)
 	public := ed25519.PrivateKey(private).Public().(ed25519.PublicKey)
-	hash, _ := bcrypt.GenerateFromPassword([]byte("p09-key"), bcrypt.MinCost)
-	other, _ := bcrypt.GenerateFromPassword([]byte("p09-other"), bcrypt.MinCost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("output-key"), bcrypt.MinCost)
+	other, _ := bcrypt.GenerateFromPassword([]byte("output-other-key"), bcrypt.MinCost)
 	var logs transportLogBuffer
 	server := gateway.NewServer(gateway.Config{Addr: addr, PublicBaseURL: base, AgentPublicKey: base64.RawURLEncoding.EncodeToString(public), APIKeys: []gateway.APIKey{{Name: "caller", KeyHash: string(hash), Capabilities: []string{"*"}}, {Name: "same-name", KeyHash: string(other), Capabilities: []string{"*"}}}, AgentPingInterval: 20 * time.Millisecond, AgentPongTimeout: time.Second}, &logs)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -136,7 +136,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		req, _ := http.NewRequest("GET", base+"/openapi.json", nil)
-		req.Header.Set("Authorization", "Bearer p09-key")
+		req.Header.Set("Authorization", "Bearer output-key")
 		resp, e := http.DefaultClient.Do(req)
 		if e == nil {
 			resp.Body.Close()
@@ -149,13 +149,13 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	_, openAPIBytes, _ := request("GET", "/openapi.json", "p09-key", nil, "")
+	_, openAPIBytes, _ := request("GET", "/openapi.json", "output-key", nil, "")
 	openAPIValidator := testschema.OpenAPI(t, openAPIBytes)
 	var document map[string]any
 	if e := json.Unmarshal(openAPIBytes, &document); e != nil {
 		t.Fatal(e)
 	}
-	_, toolBytes, _ := request("POST", "/mcp", "p09-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`), "2025-11-25")
+	_, toolBytes, _ := request("POST", "/mcp", "output-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`), "2025-11-25")
 	var toolList map[string]any
 	json.Unmarshal(toolBytes, &toolList)
 	toolSchemas := map[string]any{}
@@ -165,7 +165,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	}
 	call := func(name string) contract.SuccessEnvelope {
 		t.Helper()
-		status, b, header := request("POST", "/api/v1/capabilities/"+name, "p09-key", strings.NewReader(`{}`), "")
+		status, b, header := request("POST", "/api/v1/capabilities/"+name, "output-key", strings.NewReader(`{}`), "")
 		var out contract.SuccessEnvelope
 		if status != 200 || json.Unmarshal(b, &out) != nil {
 			t.Fatalf("call %s: %d %s", name, status, b)
@@ -187,17 +187,17 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 		t.Fatal(e)
 	}
 	for range 2 {
-		status, b, h := request("GET", "/api/v1/files/"+f.ID, "p09-key", nil, "")
+		status, b, h := request("GET", "/api/v1/files/"+f.ID, "output-key", nil, "")
 		if status != 200 || !bytes.Equal(b, binary) || h.Get("X-Request-ID") != out.RequestID || h.Get("Content-Length") != fmt.Sprint(len(binary)) {
 			t.Fatal("snapshot retrieval", status, h)
 		}
 	}
-	status, _, _ := request("GET", "/api/v1/files/"+f.ID, "p09-other", nil, "")
+	status, _, _ := request("GET", "/api/v1/files/"+f.ID, "output-other-key", nil, "")
 	if status != 403 {
 		t.Fatal("foreign caller", status)
 	}
 	req, _ := http.NewRequest("GET", f.URI, nil)
-	req.Header.Set("Authorization", "Bearer p09-key")
+	req.Header.Set("Authorization", "Bearer output-key")
 	req.Header.Set("Range", "bytes=0-3")
 	resp, e := http.DefaultClient.Do(req)
 	if e != nil {
@@ -207,12 +207,12 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	if resp.StatusCode != 416 {
 		t.Fatal("range", resp.StatusCode)
 	}
-	status, b, h := request("POST", "/api/v1/capabilities/direct", "p09-key", strings.NewReader(`{}`), "")
+	status, b, h := request("POST", "/api/v1/capabilities/direct", "output-key", strings.NewReader(`{}`), "")
 	if status != 200 || string(b) != "new version" || !strings.Contains(h.Get("Content-Disposition"), "attachment") {
 		t.Fatal("direct", status, string(b), h)
 	}
 	testschema.HTTPResponse(t, openAPIValidator, base+"/api/v1/capabilities/direct", h, b)
-	status, b, h = request("POST", "/api/v1/capabilities/empty", "p09-key", strings.NewReader(`{}`), "")
+	status, b, h = request("POST", "/api/v1/capabilities/empty", "output-key", strings.NewReader(`{}`), "")
 	if status != 200 || len(b) != 0 || h.Get("Content-Length") != "0" {
 		t.Fatal("empty direct", status, h)
 	}
@@ -221,7 +221,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 		t.Run(version, func(t *testing.T) {
 			rpc := func(method, params string) map[string]any {
 				t.Helper()
-				status, b, _ := request("POST", "/mcp", "p09-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"`+method+`","params":`+params+`}`), version)
+				status, b, _ := request("POST", "/mcp", "output-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"`+method+`","params":`+params+`}`), version)
 				var v map[string]any
 				if status != 200 || json.Unmarshal(b, &v) != nil {
 					t.Fatalf("MCP %s: %d %s", method, status, b)
@@ -303,12 +303,12 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	}
 	expired := call("expires")
 	time.Sleep(80 * time.Millisecond)
-	status, _, _ = request("GET", "/api/v1/files/"+expired.Result.Files[0].ID, "p09-key", nil, "")
+	status, _, _ = request("GET", "/api/v1/files/"+expired.Result.Files[0].ID, "output-key", nil, "")
 	if status != 404 {
 		t.Fatal("TTL", status)
 	}
 	// The pinned official client consumes the same real Streamable HTTP endpoint.
-	client := mcp.NewClient(&mcp.Implementation{Name: "p09", Version: "1"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "output-delivery-test", Version: "1"}, nil)
 	session, e := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: base + "/mcp", HTTPClient: &http.Client{Transport: outputKeyTransport{}}}, nil)
 	if e != nil {
 		t.Fatal(e)
@@ -346,7 +346,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 		slowClients = append(slowClients, conn)
 		defer conn.Close()
 		conn.(*net.TCPConn).SetReadBuffer(1024)
-		fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer p09-key\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
+		fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer output-key\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 		conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 		slowReaders = append(slowReaders, bufio.NewReader(conn))
 	}
@@ -362,7 +362,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	if activeTransfers != 0 {
 		t.Fatal("Agent transfer slots remained after HTTP headers", activeTransfers)
 	}
-	status, _, _ = request("POST", "/mcp", "p09-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"reference","arguments":{}}}`), "2025-11-25")
+	status, _, _ = request("POST", "/mcp", "output-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"reference","arguments":{}}}`), "2025-11-25")
 	if status != 503 {
 		t.Fatal("completed MCP buffers did not retain response slots", status)
 	}
@@ -377,7 +377,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	})
 	deadline = time.Now().Add(time.Second)
 	for {
-		status, _, _ = request("POST", "/mcp", "p09-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"reference","arguments":{}}}`), "2025-11-25")
+		status, _, _ = request("POST", "/mcp", "output-key", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"reference","arguments":{}}}`), "2025-11-25")
 		if status == 200 {
 			break
 		}
@@ -407,7 +407,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	go func() { runnerDone <- next.Run(ctx) }()
 	deadline = time.Now().Add(3 * time.Second)
 	for {
-		status, _, _ = request("GET", "/openapi.json", "p09-key", nil, "")
+		status, _, _ = request("GET", "/openapi.json", "output-key", nil, "")
 		if status == 200 {
 			break
 		}
@@ -416,14 +416,14 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	status, _, _ = request("GET", "/api/v1/files/"+f.ID, "p09-key", nil, "")
+	status, _, _ = request("GET", "/api/v1/files/"+f.ID, "output-key", nil, "")
 	if status != 404 {
 		t.Fatal("old generation reference", status)
 	}
 	retained := call("reference")
 	usage := next.store.Usage()
 	for _, id := range []string{"unknown_one", "unknown_two", retained.Result.Files[0].ID} {
-		status, _, _ = request("GET", "/api/v1/files/"+id, "p09-key", nil, "")
+		status, _, _ = request("GET", "/api/v1/files/"+id, "output-key", nil, "")
 		if id == retained.Result.Files[0].ID && status != 429 {
 			t.Fatal("Agent lookup-before-rate", status)
 		}
@@ -452,7 +452,7 @@ type outputKeyTransport struct{}
 
 func (outputKeyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
-	r.Header.Set("Authorization", "Bearer p09-key")
+	r.Header.Set("Authorization", "Bearer output-key")
 	return http.DefaultTransport.RoundTrip(r)
 }
 

@@ -32,7 +32,7 @@ func bridgeSetup(t *testing.T, on bool, access string) (*Runner, *Module, *contr
 		}
 		sb["permissions"] = map[string]any{"filesystem": grants, "http": []any{}, "environment": []string{}}
 	}
-	r.Bridge = &Bridge{Base: base, Sandbox: sb, Environment: map[string]string{"PWD": "/unrelated", "P15_SECRET": "secret"}, Effects: &providers.Effects{}}
+	r.Bridge = &Bridge{Base: base, Sandbox: sb, Environment: map[string]string{"PWD": "/unrelated", "WASM_TEST_SECRET": "secret"}, Effects: &providers.Effects{}}
 	r.Bridge.Effects.Start()
 	return r, m, c, base
 }
@@ -365,7 +365,7 @@ func TestWasmBridgePreparedEnvironmentBaseAndImmutableSnapshot(t *testing.T) {
 			if mode == "read" || mode == "environment" {
 				names := "[]"
 				if mode == "environment" {
-					names = "[P15_SECRET]"
+					names = "[WASM_TEST_SECRET]"
 				}
 				sandbox = "{enabled: true, permissions: {filesystem: [{root: ., access: read}], environment: " + names + "}}"
 			}
@@ -373,7 +373,7 @@ func TestWasmBridgePreparedEnvironmentBaseAndImmutableSnapshot(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			env := map[string]string{"PWD": "/ambient-before", "P15_SECRET": "snapshot-secret"}
+			env := map[string]string{"PWD": "/ambient-before", "WASM_TEST_SECRET": "snapshot-secret"}
 			options := providers.ResolveOptions{ModuleDigests: map[string]string{"run": m.Digest()}, Environment: env}
 			snapshot, e := providers.Resolve(context.Background(), cfg, filepath.Join(base, "agent.yaml"), "run", options)
 			if e != nil {
@@ -384,9 +384,9 @@ func TestWasmBridgePreparedEnvironmentBaseAndImmutableSnapshot(t *testing.T) {
 			if e != nil || same.DefinitionHash() != snapshot.DefinitionHash() {
 				t.Fatal("ambient PWD changed hash", e)
 			}
-			env["P15_SECRET"] = "changed-after-prepare"
+			env["WASM_TEST_SECRET"] = "changed-after-prepare"
 			getter := snapshot.Environment()
-			getter["P15_SECRET"] = "getter-tamper"
+			getter["WASM_TEST_SECRET"] = "getter-tamper"
 			r.Bridge.Base = snapshot.BaseDirectory()
 			r.Bridge.Environment = snapshot.Environment()
 			r.Bridge.Sandbox = snapshot.Definition().Executor.Settings["sandbox"].(map[string]any)

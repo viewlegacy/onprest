@@ -149,12 +149,12 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
 		t.Fatal("write protected runtime settings")
 	}
 	identityVolume := fmt.Sprintf("onprest-it-identity-%x", time.Now().UnixNano())
-	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=p04-identity", identityVolume).Run(); err != nil {
+	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=compose-identity", identityVolume).Run(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", identityVolume).Run() })
 	spoolVolume := fmt.Sprintf("onprest-it-spool-%x", time.Now().UnixNano())
-	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=p07-spool", spoolVolume).Run(); err != nil {
+	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=compose-spool", spoolVolume).Run(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", spoolVolume).Run() })

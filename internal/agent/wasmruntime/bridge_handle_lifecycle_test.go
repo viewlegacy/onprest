@@ -20,7 +20,7 @@ import (
 	"github.com/viewlegacy/onprest/internal/contract"
 )
 
-func reviewSession(t *testing.T, l Limits) (*session, string) {
+func directSession(t *testing.T, l Limits) (*session, string) {
 	t.Helper()
 	r, _, _, base := bridgeSetup(t, false, "")
 	s := newSession(context.Background(), r.Store, l, &diagnostics{})
@@ -33,7 +33,7 @@ func reviewSession(t *testing.T, l Limits) (*session, string) {
 	})
 	return s, base
 }
-func reviewCall(t *testing.T, s *session, method string, args map[string]any) (map[string]json.RawMessage, int32) {
+func directCall(t *testing.T, s *session, method string, args map[string]any) (map[string]json.RawMessage, int32) {
 	t.Helper()
 	if args == nil {
 		args = map[string]any{}
@@ -63,9 +63,9 @@ func reviewCall(t *testing.T, s *session, method string, args map[string]any) (m
 	}
 	return v, 0
 }
-func reviewBody(t *testing.T, s *session, path string, flags int) int64 {
+func directOpenBody(t *testing.T, s *session, path string, flags int) int64 {
 	t.Helper()
-	v, c := reviewCall(t, s, "files.wasi_open", map[string]any{"path": path, "flags": flags})
+	v, c := directCall(t, s, "files.wasi_open", map[string]any{"path": path, "flags": flags})
 	if c != 0 {
 		t.Fatal(c)
 	}
@@ -73,7 +73,7 @@ func reviewBody(t *testing.T, s *session, path string, flags int) int64 {
 	json.Unmarshal(v["body_handle"], &id)
 	return id
 }
-func TestWasmReviewReadDirEntryInfoBudget(t *testing.T) {
+func TestWasmReadDirEntryInfoBudget(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for count := 0; count <= 2; count++ {
 			t.Run(string(rune('0'+count))+map[bool]string{false: "off", true: "on"}[on], func(t *testing.T) {
@@ -103,7 +103,7 @@ func TestWasmReviewReadDirEntryInfoBudget(t *testing.T) {
 					if count == 0 {
 						l.FileOperations++
 					}
-					raw := bridgeRun(t, r, m, c, map[string]any{"scenario": "review_rawdir", "path": filesystem.WASIPath(base)}, l).(map[string]any)
+					raw := bridgeRun(t, r, m, c, map[string]any{"scenario": "raw_readdir", "path": filesystem.WASIPath(base)}, l).(map[string]any)
 					rawWant := count
 					if delta < 0 {
 						rawWant = 0
@@ -116,12 +116,12 @@ func TestWasmReviewReadDirEntryInfoBudget(t *testing.T) {
 		}
 	}
 	// Failed entry inspection also consumes exactly one operation.
-	s, base := reviewSession(t, DefaultLimits())
+	s, base := directSession(t, DefaultLimits())
 	s.bridge.Sandbox = map[string]any{"enabled": true, "permissions": map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read"}}}}
 	if e := os.Symlink("missing", filepath.Join(base, "entry")); e != nil {
 		t.Fatal(e)
 	}
-	v, c := reviewCall(t, s, "files.read_dir", map[string]any{"path": "."})
+	v, c := directCall(t, s, "files.read_dir", map[string]any{"path": "."})
 	if c != 0 {
 		t.Fatal(c)
 	}
@@ -131,11 +131,11 @@ func TestWasmReviewReadDirEntryInfoBudget(t *testing.T) {
 		t.Fatal(code, s.operations)
 	}
 }
-func TestWasmReviewTruncateRefundAndBoundaries(t *testing.T) {
+func TestWasmTruncateRefundAndBoundaries(t *testing.T) {
 	l := DefaultLimits()
 	l.WriteBytes = 4
 	l.TotalWriteBytes = 4
-	s, base := reviewSession(t, l)
+	s, base := directSession(t, l)
 	p := filepath.Join(base, "x")
 	os.WriteFile(p, []byte("x"), 0600)
 	readonly, e := os.Open(p)
@@ -144,7 +144,7 @@ func TestWasmReviewTruncateRefundAndBoundaries(t *testing.T) {
 	}
 	bad := &business{file: readonly, writable: true, size: 1}
 	id := s.id(&handle{kind: "fs", business: bad})
-	_, code := reviewCall(t, s, "files.truncate", map[string]any{"body_handle": id, "size": int64(4)})
+	_, code := directCall(t, s, "files.truncate", map[string]any{"body_handle": id, "size": int64(4)})
 	if code == 0 || s.writeBytes != 0 || bad.write != 0 || s.bridge.Effects.Outcome() == "committed" {
 		t.Fatal(code, s.writeBytes, bad.write)
 	}
@@ -153,9 +153,9 @@ func TestWasmReviewTruncateRefundAndBoundaries(t *testing.T) {
 		t.Fatal(string(body))
 	}
 	s.close(id)
-	good := reviewBody(t, s, "x", os.O_RDWR)
+	good := directOpenBody(t, s, "x", os.O_RDWR)
 	for _, size := range []int64{6, 5, 4} {
-		_, code = reviewCall(t, s, "files.truncate", map[string]any{"body_handle": good, "size": size})
+		_, code = directCall(t, s, "files.truncate", map[string]any{"body_handle": good, "size": size})
 		if (code == limit) != (size == 6) {
 			t.Fatal(size, code)
 		}
@@ -168,20 +168,20 @@ func TestWasmReviewTruncateRefundAndBoundaries(t *testing.T) {
 	l = DefaultLimits()
 	l.WriteBytes = 4
 	l.TotalWriteBytes = 4
-	s, base = reviewSession(t, l)
+	s, base = directSession(t, l)
 	os.WriteFile(filepath.Join(base, "x"), []byte("x"), 0600)
 	f, _ := os.Open(filepath.Join(base, "x"))
 	bad = &business{file: f, writable: true}
 	id = s.id(&handle{kind: "fs", business: bad})
-	reviewCall(t, s, "files.truncate", map[string]any{"body_handle": id, "size": int64(4)})
+	directCall(t, s, "files.truncate", map[string]any{"body_handle": id, "size": int64(4)})
 	s.close(id)
-	good = reviewBody(t, s, "out", os.O_WRONLY|os.O_CREATE)
+	good = directOpenBody(t, s, "out", os.O_WRONLY|os.O_CREATE)
 	if n := s.write(good, []byte("abcd")); n != 4 {
 		t.Fatal(n)
 	}
 	s.close(good)
 }
-func TestWasmReviewEOFCurrentSizeAndSeekABI(t *testing.T) {
+func TestWasmEOFCurrentSizeAndSeekABI(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		t.Run(map[bool]string{false: "off", true: "on"}[on], func(t *testing.T) {
 			r, m, c, base := bridgeSetup(t, on, "read_write")
@@ -191,7 +191,7 @@ func TestWasmReviewEOFCurrentSizeAndSeekABI(t *testing.T) {
 				l := DefaultLimits()
 				l.ReadBytes = 1
 				l.TotalReadBytes = 1
-				v := bridgeRun(t, r, m, c, map[string]any{"scenario": "review_eof", "path": "x", "size": size}, l).(map[string]any)
+				v := bridgeRun(t, r, m, c, map[string]any{"scenario": "eof_size", "path": "x", "size": size}, l).(map[string]any)
 				want := int64(0)
 				if size > 1 {
 					want = -4
@@ -200,13 +200,13 @@ func TestWasmReviewEOFCurrentSizeAndSeekABI(t *testing.T) {
 					t.Fatal(size, v)
 				}
 				os.WriteFile(path, []byte("a"), 0600)
-				raw := bridgeRun(t, r, m, c, map[string]any{"scenario": "review_raweof", "path": filesystem.WASIPath(path), "size": size}, l).(map[string]any)
+				raw := bridgeRun(t, r, m, c, map[string]any{"scenario": "raw_eof", "path": filesystem.WASIPath(path), "size": size}, l).(map[string]any)
 				if raw["first"] != int64(1) || raw["next"] != int64(0) || raw["error"] != (size > 1) {
 					t.Fatal(size, raw)
 				}
 			}
 			os.WriteFile(path, []byte("abcd"), 0600)
-			v := bridgeRun(t, r, m, c, map[string]any{"scenario": "review_seek", "path": "x"}, DefaultLimits()).(map[string]any)
+			v := bridgeRun(t, r, m, c, map[string]any{"scenario": "seek_abi", "path": "x"}, DefaultLimits()).(map[string]any)
 			for i, n := range v["abi"].([]any) {
 				want := int64(0)
 				if i < 3 {
@@ -236,10 +236,10 @@ func TestWasmReviewEOFCurrentSizeAndSeekABI(t *testing.T) {
 			l := DefaultLimits()
 			l.ReadBytes = quota
 			l.TotalReadBytes = quota
-			s, base := reviewSession(t, l)
+			s, base := directSession(t, l)
 			p := filepath.Join(base, "x")
 			os.WriteFile(p, bytes.Repeat([]byte("a"), int(quota)), 0600)
-			id := reviewBody(t, s, "x", os.O_RDONLY)
+			id := directOpenBody(t, s, "x", os.O_RDONLY)
 			if quota > 0 {
 				s.read(id, 1)
 			}
@@ -255,7 +255,7 @@ func TestWasmReviewEOFCurrentSizeAndSeekABI(t *testing.T) {
 		t.Fatal("wrapped invalid")
 	}
 }
-func TestWasmReviewHTTPAbortOwnsAllHandles(t *testing.T) {
+func TestWasmHTTPAbortOwnsAllHandles(t *testing.T) {
 	var sent atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sent.Add(1)
@@ -271,7 +271,7 @@ func TestWasmReviewHTTPAbortOwnsAllHandles(t *testing.T) {
 				size = 4
 			}
 			before := sent.Load()
-			v := entries(bridgeRun(t, r, m, c, map[string]any{"scenario": "review_httpabort", "url": server.URL, "size": size, "envelope": mode}, DefaultLimits()))
+			v := entries(bridgeRun(t, r, m, c, map[string]any{"scenario": "http_abort", "url": server.URL, "size": size, "envelope": mode}, DefaultLimits()))
 			for _, n := range v {
 				if n != int64(-1) {
 					t.Fatal(v)
@@ -289,14 +289,14 @@ func TestWasmReviewHTTPAbortOwnsAllHandles(t *testing.T) {
 			}
 		})
 	}
-	s, _ := reviewSession(t, DefaultLimits())
-	v, code := reviewCall(t, s, "http.open", map[string]any{"method": "POST", "url": server.URL, "headers": map[string]any{}, "content_length": 0})
+	s, _ := directSession(t, DefaultLimits())
+	v, code := directCall(t, s, "http.open", map[string]any{"method": "POST", "url": server.URL, "headers": map[string]any{}, "content_length": 0})
 	if code != 0 {
 		t.Fatal(code)
 	}
 	var id int64
 	json.Unmarshal(v["request_handle"], &id)
-	reviewCall(t, s, "http.abort", map[string]any{"request_handle": id})
+	directCall(t, s, "http.abort", map[string]any{"request_handle": id})
 	if len(s.handles) != 0 {
 		t.Fatal(len(s.handles))
 	}
@@ -307,7 +307,7 @@ func TestWasmReviewHTTPAbortOwnsAllHandles(t *testing.T) {
 		t.Fatal(e)
 	}
 }
-func TestWasmReviewCommitAckRequiredForPublication(t *testing.T) {
+func TestWasmCommitAckRequiredForPublication(t *testing.T) {
 	for handles := 1; handles <= 5; handles++ {
 		t.Run(string(rune('0'+handles)), func(t *testing.T) {
 			r, m, c, _ := bridgeSetup(t, false, "")
@@ -316,7 +316,7 @@ func TestWasmReviewCommitAckRequiredForPublication(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			count := 0
-			_, e := r.ExecutePublication(ctx, m, map[string]any{"scenario": "review_commit", "size": max(0, handles-1)}, c, l, func(v contract.ProviderResult) (*contract.PreparedOutput, error) {
+			_, e := r.ExecutePublication(ctx, m, map[string]any{"scenario": "commit_ack", "size": max(0, handles-1)}, c, l, func(v contract.ProviderResult) (*contract.PreparedOutput, error) {
 				count++
 				return contract.ProcessOutput(context.Background(), c, v, r.Store.Scratch())
 			})
@@ -324,7 +324,7 @@ func TestWasmReviewCommitAckRequiredForPublication(t *testing.T) {
 				t.Fatal(e, count)
 			}
 			if handles >= 3 {
-				out, e := r.ExecutePublication(ctx, m, map[string]any{"scenario": "review_commit", "size": handles - 2}, c, l, func(v contract.ProviderResult) (*contract.PreparedOutput, error) {
+				out, e := r.ExecutePublication(ctx, m, map[string]any{"scenario": "commit_ack", "size": handles - 2}, c, l, func(v contract.ProviderResult) (*contract.PreparedOutput, error) {
 					count++
 					return contract.ProcessOutput(context.Background(), c, v, r.Store.Scratch())
 				})
@@ -336,8 +336,8 @@ func TestWasmReviewCommitAckRequiredForPublication(t *testing.T) {
 		})
 	}
 }
-func TestWasmReviewRawCloseLifetime(t *testing.T) {
-	s, base := reviewSession(t, DefaultLimits())
+func TestWasmRawCloseLifetime(t *testing.T) {
+	s, base := directSession(t, DefaultLimits())
 	os.Mkdir(filepath.Join(base, "d"), 0700)
 	os.WriteFile(filepath.Join(base, "d", "x"), []byte("x"), 0600)
 	os.WriteFile(filepath.Join(base, "x"), []byte("x"), 0600)
@@ -399,7 +399,7 @@ func TestWasmReviewRawCloseLifetime(t *testing.T) {
 	}
 	r, m, c, _ := bridgeSetup(t, false, "")
 	for _, path := range []string{base, filepath.Join(base, "x"), "."} {
-		v := entries(bridgeRun(t, r, m, c, map[string]any{"scenario": "review_rawclose", "path": filesystem.WASIPath(path)}, DefaultLimits()))
+		v := entries(bridgeRun(t, r, m, c, map[string]any{"scenario": "raw_close", "path": filesystem.WASIPath(path)}, DefaultLimits()))
 		for _, n := range v {
 			if n != int64(8) {
 				t.Fatal(v)
@@ -408,12 +408,12 @@ func TestWasmReviewRawCloseLifetime(t *testing.T) {
 	}
 }
 
-func TestWasmReviewCommitAckStateAndReadClose(t *testing.T) {
+func TestWasmCommitAckStateAndReadClose(t *testing.T) {
 	for _, full := range []bool{false, true} {
 		l := DefaultLimits()
 		l.Handles = 3
-		s, _ := reviewSession(t, l)
-		v, code := reviewCall(t, s, "result.open", nil)
+		s, _ := directSession(t, l)
+		v, code := directCall(t, s, "result.open", nil)
 		if code != 0 {
 			t.Fatal(code)
 		}
@@ -435,7 +435,7 @@ func TestWasmReviewCommitAckStateAndReadClose(t *testing.T) {
 				t.Fatal(c)
 			}
 		}
-		_, code = reviewCall(t, s, "result.commit", map[string]any{"result_handle": marker})
+		_, code = directCall(t, s, "result.commit", map[string]any{"result_handle": marker})
 		if full {
 			if code != limit || s.committed || !s.failed || s.value.Data != nil {
 				t.Fatal(code, s.committed, s.failed, s.value)

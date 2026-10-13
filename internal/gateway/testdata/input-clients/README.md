@@ -7,10 +7,10 @@ npm ci --ignore-scripts --prefix internal/gateway/testdata/input-clients
 curl --fail --location \
   https://repo.maven.apache.org/maven2/org/openapitools/openapi-generator-cli/7.25.0/openapi-generator-cli-7.25.0.jar \
   --output /tmp/openapi-generator-7.25.0.jar
-P10_CLIENT_WIRE=1 \
-P10_GENERATOR_JAR=/tmp/openapi-generator-7.25.0.jar \
-P10_EVIDENCE_DIR=/tmp/p10-client-evidence \
-P10_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+ONPREST_IT_INPUT_CLIENT_WIRE=1 \
+ONPREST_IT_INPUT_CLIENT_GENERATOR_JAR=/tmp/openapi-generator-7.25.0.jar \
+ONPREST_IT_INPUT_CLIENT_EVIDENCE_DIR=/tmp/onprest-input-client-evidence \
+ONPREST_IT_INPUT_CLIENT_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
 go test ./internal/agent -run '^TestInputDeliveryPinnedBrowserAndGeneratedClient$' -count=1 -v
 ```
 

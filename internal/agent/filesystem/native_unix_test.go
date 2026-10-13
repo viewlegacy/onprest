@@ -13,7 +13,7 @@ import (
 func TestFilesystemNativeSpecialFilesAndInvalidNames(t *testing.T) {
 	for _, kind := range []string{"fifo", "socket"} {
 		t.Run(kind, func(t *testing.T) {
-			p, e := os.MkdirTemp("/tmp", "p05-")
+			p, e := os.MkdirTemp("/tmp", "fs-native-")
 			if e != nil {
 				t.Fatal(e)
 			}

@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-func TestP18SourceFreeSpoolRecoveryAndControlReset(t *testing.T) {
+func TestSourceFreeSpoolRecoveryAndControlReset(t *testing.T) {
 	repo, tmp := repoRoot(t), t.TempDir()
 	gatewayBin, agentBin := filepath.Join(tmp, "onprest-gateway"), filepath.Join(tmp, "onprest-agent")
 	buildBinary(t, repo, gatewayBin, "./cmd/gateway")
@@ -155,7 +155,7 @@ capabilities:
 	reader, writer := io.Pipe()
 	r, _ := http.NewRequestWithContext(ctx, "POST", base+"/api/v1/capabilities/save", reader)
 	r.Header.Set("Authorization", "Bearer "+secrets.APIKey)
-	r.Header.Set("Content-Type", "multipart/form-data; boundary=p18-input")
+	r.Header.Set("Content-Type", "multipart/form-data; boundary=spool-input")
 	ended := make(chan struct{})
 	go func() {
 		resp, _ := http.DefaultClient.Do(r)
@@ -166,7 +166,7 @@ capabilities:
 	}()
 	sent := make(chan struct{})
 	go func() {
-		fmt.Fprint(writer, "--p18-input\r\nContent-Disposition: form-data; name=\"document\"; filename=\"private-orphan.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n")
+		fmt.Fprint(writer, "--spool-input\r\nContent-Disposition: form-data; name=\"document\"; filename=\"private-orphan.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n")
 		writer.Write(bytes.Repeat([]byte("x"), 256<<10))
 		close(sent)
 	}()

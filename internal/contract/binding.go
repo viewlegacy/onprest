@@ -183,7 +183,8 @@ func bindingValue(v any, mode string) error {
 }
 
 // Output pointers may enter retained, unconstrained JSON. Only statically known
-// exclusions or scalar traversal are rejected here; value existence is P02.
+// exclusions or scalar traversal are rejected here; value existence is
+// checked by common output processing.
 func (s *Schema) resolveOutputPointer(pointer string) (*Schema, error) {
 	if pointer == "" {
 		return s, nil

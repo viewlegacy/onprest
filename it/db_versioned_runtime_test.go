@@ -26,9 +26,9 @@ func TestContainerDBDriverVersionedRuntimePublication(t *testing.T) {
 		}
 		t.Run(driver, func(t *testing.T) {
 			db := selectedContainerDBConfig(t, driver)
-			statements := []string{"drop table if exists onprest_p04_mutation", "create table onprest_p04_mutation (id bigint primary key, value integer not null)", "insert into onprest_p04_mutation values (1,1)", "insert into onprest_p04_mutation values (2,1)"}
+			statements := []string{"drop table if exists onprest_it_runtime_mutation", "create table onprest_it_runtime_mutation (id bigint primary key, value integer not null)", "insert into onprest_it_runtime_mutation values (1,1)", "insert into onprest_it_runtime_mutation values (2,1)"}
 			if driver == "oracle" {
-				statements = []string{"begin execute immediate 'drop table onprest_p04_mutation purge'; exception when others then if sqlcode != -942 then raise; end if; end;", "create table onprest_p04_mutation (id number(19,0) primary key, value number(10,0) not null)", "insert into onprest_p04_mutation values (1,1)", "insert into onprest_p04_mutation values (2,1)"}
+				statements = []string{"begin execute immediate 'drop table onprest_it_runtime_mutation purge'; exception when others then if sqlcode != -942 then raise; end if; end;", "create table onprest_it_runtime_mutation (id number(19,0) primary key, value number(10,0) not null)", "insert into onprest_it_runtime_mutation values (1,1)", "insert into onprest_it_runtime_mutation values (2,1)"}
 			}
 			execDBStatements(t, driver, db, statements)
 			normalization := map[string]string{
@@ -37,9 +37,9 @@ func TestContainerDBDriverVersionedRuntimePublication(t *testing.T) {
 				"sqlserver": `select cast(:id as bigint) as id, cast(0x00ff01 as varbinary(3)) as binary_value, cast(N'日本' as nvarchar(10)) as text_value, cast(9007199254740993.123456789012 as decimal(28,12)) as decimal_value, cast('2024-01-02T03:04:05+09:00' as datetimeoffset) as timestamp_value, cast(NULL as nvarchar(10)) as null_value`,
 				"oracle":    `select cast(:id as number(19,0)) as "id", hextoraw('00ff01') as "binary_value", cast('日本' as nvarchar2(10)) as "text_value", cast(9007199254740993.123456789012 as number(28,12)) as "decimal_value", to_timestamp_tz('2024-01-02 03:04:05 +09:00','YYYY-MM-DD HH24:MI:SS TZH:TZM') as "timestamp_value", cast(NULL as nvarchar2(10)) as "null_value" from dual`,
 			}[driver]
-			selectAll := "select id, value from onprest_p04_mutation order by id"
+			selectAll := "select id, value from onprest_it_runtime_mutation order by id"
 			if driver == "oracle" {
-				selectAll = `select id as "id", value as "value" from onprest_p04_mutation order by id`
+				selectAll = `select id as "id", value as "value" from onprest_it_runtime_mutation order by id`
 			}
 			secrets := newITSecrets(t)
 			addr := freeAddr(t)
@@ -62,22 +62,22 @@ limited:
   policy: {max_rows: 1}
   output: {data: {}}
 rollback_output:
-  executor: {type: db, source: primary, sql: 'update onprest_p04_mutation set value=2 where id=1'}
+  executor: {type: db, source: primary, sql: 'update onprest_it_runtime_mutation set value=2 where id=1'}
   policy: {readonly: false}
   output: {properties: {count: {type: integer, maximum: 0}}, data: {}}
 rollback_capacity:
-  executor: {type: db, source: primary, sql: 'update onprest_p04_mutation set value=2 where id=1'}
+  executor: {type: db, source: primary, sql: 'update onprest_it_runtime_mutation set value=2 where id=1'}
   policy: {readonly: false, max_output_bytes: 1}
   output: {data: {}}
 rollback_rows:
-  executor: {type: db, source: primary, sql: 'update onprest_p04_mutation set value=2'}
+  executor: {type: db, source: primary, sql: 'update onprest_it_runtime_mutation set value=2'}
   policy: {readonly: false, max_affected_rows: 1}
   output: {data: {}}
 suppressed:
-  executor: {type: db, source: primary, sql: 'update onprest_p04_mutation set value=3 where id=1'}
+  executor: {type: db, source: primary, sql: 'update onprest_it_runtime_mutation set value=3 where id=1'}
   policy: {readonly: false}
 committed:
-  executor: {type: db, source: primary, sql: 'update onprest_p04_mutation set value=4 where id=1'}
+  executor: {type: db, source: primary, sql: 'update onprest_it_runtime_mutation set value=4 where id=1'}
   policy: {readonly: false}
   output: {properties: {count: {type: integer}}, data: {}}
 `, yamlString(normalization), yamlString(selectAll))
@@ -159,7 +159,7 @@ committed:
 				if status != c.status || env.Error.Code != c.code || env.Error.Outcome != "rolled_back" || len(env.RequestID) != 26 {
 					t.Fatalf("%s: status=%d body=%s", c.name, status, raw)
 				}
-				assertP04Value(t, driver, db, 1)
+				assertRuntimeMutationValue(t, driver, db, 1)
 			}
 			status, body = postCapabilityEnvelope(t, base, secrets.APIKey, "limited", `{}`)
 			var limited contract.SuccessEnvelope
@@ -184,7 +184,7 @@ committed:
 				if name == "committed" {
 					want = 4
 				}
-				assertP04Value(t, driver, db, want)
+				assertRuntimeMutationValue(t, driver, db, want)
 			}
 			status, body = postCapabilityEnvelope(t, base, secrets.APIKey, "normalize", `{"id":1.5}`)
 			var invalid contract.ErrorEnvelope
@@ -205,7 +205,7 @@ committed:
 	}
 }
 func osReadCapability(path string) (string, error) { b, e := os.ReadFile(path); return string(b), e }
-func assertP04Value(t *testing.T, driver string, cfg postgresConfig, want int) {
+func assertRuntimeMutationValue(t *testing.T, driver string, cfg postgresConfig, want int) {
 	t.Helper()
 	db, e := sql.Open(sqlDriverName(driver), integrationDBDSN(driver, cfg))
 	if e != nil {
@@ -213,7 +213,7 @@ func assertP04Value(t *testing.T, driver string, cfg postgresConfig, want int) {
 	}
 	defer db.Close()
 	var got int
-	if e = db.QueryRow("select value from onprest_p04_mutation where id=1").Scan(&got); e != nil || got != want {
+	if e = db.QueryRow("select value from onprest_it_runtime_mutation where id=1").Scan(&got); e != nil || got != want {
 		t.Fatalf("DB value=%d want=%d err=%v", got, want, e)
 	}
 }

@@ -109,7 +109,7 @@ func csvEnvelope(t *testing.T, raw []byte) map[string]any {
 func csvGet(t *testing.T, f *inputHTTPFixture, uri string) []byte {
 	t.Helper()
 	req, _ := http.NewRequest("GET", uri, nil)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	r, e := http.DefaultClient.Do(req)
 	if e != nil {
 		t.Fatal(e)
@@ -177,7 +177,7 @@ func TestCSVDeliveryProductionFolderUploadRESTAndMCP(t *testing.T) {
 	}
 	wantCSV := "id,amount\r\n'=cmd,9223372036854775807\r\n00123,7\r\n"
 	req, _ := http.NewRequest("GET", f.base+"/openapi.json", nil)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	r, e := http.DefaultClient.Do(req)
 	if e != nil {
 		t.Fatal(e)

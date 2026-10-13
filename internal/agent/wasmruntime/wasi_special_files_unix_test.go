@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-func review4Run(t *testing.T, r *Runner, m *Module, c *contract.Capability, scenario string, steps []any) []any {
+func runScenarioSteps(t *testing.T, r *Runner, m *Module, c *contract.Capability, scenario string, steps []any) []any {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -27,12 +27,12 @@ func review4Run(t *testing.T, r *Runner, m *Module, c *contract.Capability, scen
 	return out.Data.([]any)
 }
 
-func TestWasmReview4SpecialMutationHostAndRaw(t *testing.T) {
+func TestWasmSpecialMutationHostAndRaw(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, socket := range []bool{false, true} {
 			t.Run(map[bool]string{false: "off", true: "on"}[on]+map[bool]string{false: "fifo", true: "socket"}[socket], func(t *testing.T) {
 				r, m, c, base := bridgeSetup(t, on, "read_write")
-				short, e := os.MkdirTemp("/tmp", "p15-016-")
+				short, e := os.MkdirTemp("/tmp", "wasm-special-")
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -74,13 +74,13 @@ func TestWasmReview4SpecialMutationHostAndRaw(t *testing.T) {
 				source := filepath.Join(base, "source")
 				os.WriteFile(source, []byte("same"), 0600)
 				steps := []any{step("files.remove", map[string]any{"path": "node"}, nil, false), step("files.rename", map[string]any{"old_path": "node", "new_path": "moved"}, nil, false), step("files.rename", map[string]any{"old_path": "source", "new_path": "node"}, nil, false), step("files.mkdir_all", map[string]any{"path": "node/child", "perm": 0700}, nil, false)}
-				for _, v := range review4Run(t, r, m, c, "bridge", steps) {
+				for _, v := range runScenarioSteps(t, r, m, c, "bridge", steps) {
 					if callCode(v) != -2 {
 						t.Fatal(v)
 					}
 				}
 				raw := []any{step("files.remove", map[string]any{"path": filesystem.WASIPath(node)}, nil, false), step("files.rename", map[string]any{"old_path": filesystem.WASIPath(node), "new_path": filesystem.WASIPath(filepath.Join(base, "moved"))}, nil, false), step("files.rename", map[string]any{"old_path": filesystem.WASIPath(source), "new_path": filesystem.WASIPath(node)}, nil, false), step("files.mkdir_all", map[string]any{"path": filesystem.WASIPath(filepath.Join(node, "child"))}, nil, false)}
-				for _, v := range review4Run(t, r, m, c, "review4_raw", raw) {
+				for _, v := range runScenarioSteps(t, r, m, c, "raw_mutation", raw) {
 					if callCode(v) == 0 {
 						t.Fatal("raw special admitted", v)
 					}
@@ -110,12 +110,12 @@ func TestWasmReview4SpecialMutationHostAndRaw(t *testing.T) {
 	}
 }
 
-func TestWasmReview4OrdinarySymlinkAndFailureSemantics(t *testing.T) {
+func TestWasmOrdinarySymlinkAndFailureSemantics(t *testing.T) {
 	for _, raw := range []bool{false, true} {
 		r, m, c, base := bridgeSetup(t, false, "")
 		scenario := "bridge"
 		if raw {
-			scenario = "review4_raw"
+			scenario = "raw_mutation"
 		}
 		os.WriteFile(filepath.Join(base, "target"), []byte("same"), 0600)
 		os.Mkdir(filepath.Join(base, "dir"), 0700)
@@ -134,7 +134,7 @@ func TestWasmReview4OrdinarySymlinkAndFailureSemantics(t *testing.T) {
 			}
 			return p
 		}
-		values := review4Run(t, r, m, c, scenario, []any{step("files.rename", map[string]any{"old_path": path("replacement"), "new_path": path("destlink")}, nil, false), step("files.rename", map[string]any{"old_path": path("second"), "new_path": path("destdangling")}, nil, false), step("files.remove", map[string]any{"path": path("fifolink")}, nil, false), step("files.rename", map[string]any{"old_path": path("dangling"), "new_path": path("movedlink")}, nil, false), step("files.remove", map[string]any{"path": path("filelink")}, nil, false), step("files.mkdir_all", map[string]any{"path": path("dirlink/new/sub"), "perm": 0700}, nil, false)})
+		values := runScenarioSteps(t, r, m, c, scenario, []any{step("files.rename", map[string]any{"old_path": path("replacement"), "new_path": path("destlink")}, nil, false), step("files.rename", map[string]any{"old_path": path("second"), "new_path": path("destdangling")}, nil, false), step("files.remove", map[string]any{"path": path("fifolink")}, nil, false), step("files.rename", map[string]any{"old_path": path("dangling"), "new_path": path("movedlink")}, nil, false), step("files.remove", map[string]any{"path": path("filelink")}, nil, false), step("files.mkdir_all", map[string]any{"path": path("dirlink/new/sub"), "perm": 0700}, nil, false)})
 		for _, v := range values {
 			if raw && callCode(v) != 0 || !raw && callCode(v) <= 0 {
 				t.Fatal(v)
@@ -178,25 +178,25 @@ func TestWasmReview4OrdinarySymlinkAndFailureSemantics(t *testing.T) {
 		}
 	}
 	for _, on := range []bool{false, true} {
-		s, base := reviewSession(t, DefaultLimits())
+		s, base := directSession(t, DefaultLimits())
 		s.bridge.Effects.NoChange()
 		s.bridge.Sandbox = map[string]any{"enabled": on}
 		if on {
 			s.bridge.Sandbox["permissions"] = map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read_write"}}}
 		}
-		_, code := reviewCall(t, s, "files.remove", map[string]any{"path": "missing"})
+		_, code := directCall(t, s, "files.remove", map[string]any{"path": "missing"})
 		if code != notFound || s.bridge.Effects.Outcome() != "unknown" {
 			t.Fatal(code, s.bridge.Effects.Outcome())
 		}
 		os.Mkdir(filepath.Join(base, "dir"), 0700)
 		os.WriteFile(filepath.Join(base, "dir/child"), []byte("same"), 0600)
-		_, code = reviewCall(t, s, "files.remove", map[string]any{"path": "dir"})
+		_, code = directCall(t, s, "files.remove", map[string]any{"path": "dir"})
 		if code >= 0 || s.bridge.Effects.Outcome() == "committed" {
 			t.Fatal(code, s.bridge.Effects.Outcome())
 		}
 
 		os.WriteFile(filepath.Join(base, "source"), []byte("source"), 0600)
-		_, code = reviewCall(t, s, "files.rename", map[string]any{"old_path": "source", "new_path": "dir"})
+		_, code = directCall(t, s, "files.rename", map[string]any{"old_path": "source", "new_path": "dir"})
 		if code >= 0 || s.bridge.Effects.Outcome() == "committed" {
 			t.Fatal(code, s.bridge.Effects.Outcome())
 		}
@@ -211,18 +211,18 @@ func TestWasmReview4OrdinarySymlinkAndFailureSemantics(t *testing.T) {
 	}
 }
 
-func TestWasmReview4SpecialFailureSingleOperation(t *testing.T) {
+func TestWasmSpecialFailureSingleOperation(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		l := DefaultLimits()
 		l.FileOperations = 1
-		s, base := reviewSession(t, l)
+		s, base := directSession(t, l)
 		s.bridge.Effects.NoChange()
 		s.bridge.Sandbox = map[string]any{"enabled": on}
 		if on {
 			s.bridge.Sandbox["permissions"] = map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read_write"}}}
 		}
 		unix.Mkfifo(filepath.Join(base, "fifo"), 0600)
-		_, code := reviewCall(t, s, "files.remove", map[string]any{"path": "fifo"})
+		_, code := directCall(t, s, "files.remove", map[string]any{"path": "fifo"})
 		if code != denied || s.operations != 1 || s.readBytes != 0 || s.writeBytes != 0 || len(s.handles) != 0 || s.bridge.Effects.Outcome() != "no_change" {
 			t.Fatal(code, s.operations, s.bridge.Effects.Outcome())
 		}

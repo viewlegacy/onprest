@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func TestWasmReview3AtomicCreateObservedEffects(t *testing.T) {
+func TestWasmAtomicCreateObservedEffects(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, tc := range []struct {
 			name   string
@@ -28,7 +28,7 @@ func TestWasmReview3AtomicCreateObservedEffects(t *testing.T) {
 			{"exclusivefailure", true, os.O_WRONLY | os.O_CREATE | os.O_EXCL, false, "unknown", "same"},
 		} {
 			t.Run(tc.name+map[bool]string{false: "off", true: "on"}[on], func(t *testing.T) {
-				s, base := reviewSession(t, DefaultLimits())
+				s, base := directSession(t, DefaultLimits())
 				s.bridge.Sandbox = map[string]any{"enabled": on}
 				if on {
 					s.bridge.Sandbox["permissions"] = map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read_write"}}}
@@ -80,10 +80,10 @@ func TestWasmReview3AtomicCreateObservedEffects(t *testing.T) {
 	}
 }
 
-func TestWasmReview3CreateCloseFailureRemainsUnknown(t *testing.T) {
-	s, base := reviewSession(t, DefaultLimits())
+func TestWasmCreateCloseFailureRemainsUnknown(t *testing.T) {
+	s, base := directSession(t, DefaultLimits())
 	s.bridge.Effects.Start()
-	id := reviewBody(t, s, "new", os.O_WRONLY|os.O_CREATE)
+	id := directOpenBody(t, s, "new", os.O_WRONLY|os.O_CREATE)
 	if e := s.handles[id].business.file.Close(); e != nil {
 		t.Fatal(e)
 	}
@@ -99,7 +99,7 @@ func TestWasmReview3CreateCloseFailureRemainsUnknown(t *testing.T) {
 	}
 }
 
-func TestWasmReview3RealAtomicCreateTerminals(t *testing.T) {
+func TestWasmRealAtomicCreateTerminals(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		for _, tc := range []struct{ name, outcome string }{
 			{"existing", "no_change"}, {"new", "committed"}, {"truncate", "committed"}, {"write", "committed"}, {"failed", "unknown"},

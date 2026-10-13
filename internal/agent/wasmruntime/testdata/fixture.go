@@ -144,7 +144,7 @@ func main() {
 		panic("invalid input")
 	}
 	switch input.Scenario {
-	case "review2_dir":
+	case "dir_descriptor":
 		f, e := os.Open(input.Path)
 		if e != nil {
 			panic(e)
@@ -177,7 +177,7 @@ func main() {
 		b, _ := json.Marshal(map[string]any{"data": map[string]any{"first": first, "last": last}, "files": []any{}})
 		result(b)
 		return
-	case "review2_sync":
+	case "readonly_sync":
 		f, e := os.Open(input.Path)
 		if e != nil {
 			panic(e)
@@ -188,7 +188,7 @@ func main() {
 		b, _ := json.Marshal(map[string]any{"data": map[string]any{"sync": sync, "datasync": datasync, "closed_sync": fdSync(fd), "closed_datasync": fdDatasync(fd)}, "files": []any{}})
 		result(b)
 		return
-	case "review2_positioned":
+	case "positioned_io":
 		f, e := os.OpenFile(input.Path, os.O_RDWR, 0)
 		if e != nil {
 			panic(e)
@@ -216,7 +216,7 @@ func main() {
 		b, _ := json.Marshal(map[string]any{"data": map[string]any{"read": string(buf), "written": n, "before": before, "after": after, "sync": sync, "datasync": datasync, "closed_sync": closed}, "files": []any{}})
 		result(b)
 		return
-	case "review_rawdir":
+	case "raw_readdir":
 		f, e := os.Open(input.Path)
 		if e != nil {
 			panic(e)
@@ -234,7 +234,7 @@ func main() {
 		b, _ := json.Marshal(map[string]any{"data": map[string]any{"names": names, "error": code}, "files": []any{}})
 		result(b)
 		return
-	case "review_raweof":
+	case "raw_eof":
 		f, e := os.Open(input.Path)
 		if e != nil {
 			panic(e)
@@ -254,7 +254,7 @@ func main() {
 		raw, _ := json.Marshal(map[string]any{"data": map[string]any{"first": first, "next": next, "error": e != nil && e != io.EOF}, "files": []any{}})
 		result(raw)
 		return
-	case "review_eof":
+	case "eof_size":
 		h := call("files.open", map[string]any{"path": input.Path})["body_handle"]
 		b := make([]byte, 1)
 		first := hostRead(h, ptr(b), 1)
@@ -266,7 +266,7 @@ func main() {
 		raw, _ := json.Marshal(map[string]any{"data": map[string]any{"first": first, "next": next}, "files": []any{}})
 		result(raw)
 		return
-	case "review_seek":
+	case "seek_abi":
 		h := call("files.open", map[string]any{"path": input.Path})["body_handle"]
 		codes := []int64{}
 		for _, v := range []struct{ o, w int64 }{{-1, 0}, {0, 3}, {9223372036854775807, 2}, {2, 0}, {-1, 1}, {-1, 2}} {
@@ -288,7 +288,7 @@ func main() {
 		raw, _ := json.Marshal(map[string]any{"data": map[string]any{"abi": codes, "raw": rawCodes}, "files": []any{}})
 		result(raw)
 		return
-	case "review_rawclose":
+	case "raw_close":
 		f, e := os.Open(input.Path)
 		if e != nil {
 			panic(e)
@@ -301,7 +301,7 @@ func main() {
 		raw, _ := json.Marshal(map[string]any{"data": codes, "files": []any{}})
 		result(raw)
 		return
-	case "review_commit":
+	case "commit_ack":
 		h := call("result.open", map[string]any{})
 		stream(h["body_handle"], []byte(`{"data":"ack-required","files":[]}`))
 		for i := 0; i < input.Size; i++ {
@@ -311,7 +311,7 @@ func main() {
 		}
 		badCall("result.commit", map[string]any{"result_handle": h["result_handle"]})
 		return
-	case "review_httpabort":
+	case "http_abort":
 		h := call("http.open", map[string]any{"method": "POST", "url": input.URL, "headers": map[string]any{}, "content_length": input.Size})
 		if input.Envelope == "response" {
 			hostClose(h["body_handle"])
@@ -329,7 +329,7 @@ func main() {
 		raw, _ := json.Marshal(map[string]any{"data": codes, "files": []any{}})
 		result(raw)
 		return
-	case "review4_raw":
+	case "raw_mutation":
 		values := []any{}
 		for _, step := range input.Steps {
 			code := uint32(0)
@@ -441,7 +441,7 @@ func main() {
 		if e != nil {
 			code = e.Error()
 		}
-		data, _ := json.Marshal(map[string]any{"data": map[string]any{"body": base64.StdEncoding.EncodeToString(body), "error": code, "pwd": os.Getenv("PWD"), "secret": os.Getenv("P15_SECRET")}, "files": []any{}})
+		data, _ := json.Marshal(map[string]any{"data": map[string]any{"body": base64.StdEncoding.EncodeToString(body), "error": code, "pwd": os.Getenv("PWD"), "secret": os.Getenv("WASM_TEST_SECRET")}, "files": []any{}})
 		result(data)
 		return
 	case "knownhole":

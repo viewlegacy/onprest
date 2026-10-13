@@ -19,7 +19,8 @@ type Descriptor struct {
 	ExpiresAt time.Time
 }
 
-// OutputScope implements the existing P02/P05 private ArtifactStager. Retain is
+// OutputScope implements the private ArtifactStager shared by common output
+// processing and filesystem snapshots. Retain is
 // called only after the complete output has passed common publication checks.
 type OutputScope struct {
 	store     *Store

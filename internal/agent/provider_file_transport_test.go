@@ -22,7 +22,7 @@ import (
 )
 
 // The production registry stays closed to file; this explicitly prepared
-// internal provider uses the real signed P07 connection and private store.
+// internal provider uses the real signed bidirectional WebSocket connection and private store.
 func TestFileProviderRealSignedInputSaveAndIndependentOutput(t *testing.T) {
 	for _, written := range []bool{false, true} {
 		t.Run(map[bool]string{false: "save_only", true: "written"}[written], func(t *testing.T) {

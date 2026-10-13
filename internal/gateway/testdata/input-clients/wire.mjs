@@ -9,20 +9,20 @@ import {createHash} from 'node:crypto';
 import {chromium} from 'playwright-core';
 const require=createRequire(import.meta.url);
 const gateway=process.argv[2];
-const dir=process.env.P10_EVIDENCE_DIR || await fs.mkdtemp(path.join(os.tmpdir(),'p10-wire-'));
+const dir=process.env.ONPREST_IT_INPUT_CLIENT_EVIDENCE_DIR || await fs.mkdtemp(path.join(os.tmpdir(),'onprest-input-wire-'));
 await fs.mkdir(dir,{recursive:true});
-const jar=process.env.P10_GENERATOR_JAR;
+const jar=process.env.ONPREST_IT_INPUT_CLIENT_GENERATOR_JAR;
 if (!jar || createHash('sha256').update(await fs.readFile(jar)).digest('hex')!=='41ce4f6b07f196676439d710759fa1ced7a08066d06ff1bf314681470289efae') throw Error('pinned OpenAPI Generator 7.25.0 JAR required');
-let document=await (await fetch(gateway+'/openapi.json',{headers:{Authorization:'Bearer p10-key'}})).json();
+let document=await (await fetch(gateway+'/openapi.json',{headers:{Authorization:'Bearer input-key'}})).json();
 let recordings=[];
 const uiRoot=path.dirname(require.resolve('swagger-ui-dist/package.json'));
 const server=http.createServer(async(req,res)=>{try{
- if(req.url==='/'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(`<div id="swagger-ui"></div><link rel="stylesheet" href="/swagger-ui.css"><script src="/swagger-ui-bundle.js"></script><script>window.ui=SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui',onComplete:()=>ui.preauthorizeApiKey('bearerAuth','p10-key')});</script>`);return;}
+ if(req.url==='/'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(`<div id="swagger-ui"></div><link rel="stylesheet" href="/swagger-ui.css"><script src="/swagger-ui-bundle.js"></script><script>window.ui=SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui',onComplete:()=>ui.preauthorizeApiKey('bearerAuth','input-key')});</script>`);return;}
  if(req.url==='/swagger-ui.css'||req.url==='/swagger-ui-bundle.js'){res.setHeader('Content-Type',req.url.endsWith('.js')?'application/javascript; charset=utf-8':'text/css; charset=utf-8');res.end(await fs.readFile(path.join(uiRoot,req.url.slice(1))));return;}
  if(req.url==='/openapi.json'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify(document));return;}
  const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>2<<20)throw Error('recording limit');chunks.push(chunk);}const body=Buffer.concat(chunks);
  const record={method:req.method,url:req.url,headers:req.headers,body_base64:body.toString('base64')}; recordings.push(record);
- const target=new URL(req.url,gateway);const forwarded=http.request(target,{method:req.method,headers:{...req.headers,host:target.host,authorization:'Bearer p10-key'}},up=>{record.status=up.statusCode;const responseChunks=[];up.on('data',chunk=>responseChunks.push(chunk));up.on('end',()=>record.response_base64=Buffer.concat(responseChunks).toString('base64'));res.writeHead(up.statusCode,up.headers);up.pipe(res);});forwarded.on('error',e=>{res.statusCode=502;res.end(String(e));});forwarded.end(body);
+ const target=new URL(req.url,gateway);const forwarded=http.request(target,{method:req.method,headers:{...req.headers,host:target.host,authorization:'Bearer input-key'}},up=>{record.status=up.statusCode;const responseChunks=[];up.on('data',chunk=>responseChunks.push(chunk));up.on('end',()=>record.response_base64=Buffer.concat(responseChunks).toString('base64'));res.writeHead(up.statusCode,up.headers);up.pipe(res);});forwarded.on('error',e=>{res.statusCode=502;res.end(String(e));});forwarded.end(body);
  }catch(e){res.statusCode=500;res.end(String(e));}});
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+server.address().port;
 document.servers=[{url:base}];
@@ -33,14 +33,14 @@ try{
  await fs.writeFile(path.join(dir,'generator.log'),run('java',['-jar',jar,'generate','-i',path.join(dir,'openapi.json'),'-g','typescript-fetch','-o',generated,'--additional-properties=withoutRuntimeChecks=true','--type-mappings=null=null,Null=null','--global-property=skipFormModel=false']));
  await fs.writeFile(path.join(dir,'generated-tsc.log'),run(process.execPath,[require.resolve('typescript/bin/tsc'),'--target','es2022','--module','commonjs','--lib','es2022,dom','--outDir',path.join(generated,'compiled'),path.join(generated,'index.ts')]));
  const api=require(path.join(generated,'compiled','index.js'));
- const configuration=new api.Configuration({basePath:base,accessToken:'p10-key'});
+ const configuration=new api.Configuration({basePath:base,accessToken:'input-key'});
  const client=new api.DefaultApi(configuration);
  const apiSource=await fs.readFile(path.join(generated,'apis','DefaultApi.ts'),'utf8');const parameter=apiSource.match(/async save(?:Raw|RequestOpts)[\s\S]*?requestParameters\['([^']+)'\]/)[1];
  const response=await client.save({[parameter]:{document:{name:'report.bin',mime_type:'application/octet-stream',data:Buffer.from([0,255,1,2,3]).toString('base64')},number:42,nested:{},label:'x'}});
  if(!response.result || response.result.files.length!==1)throw Error('generated client failed');
  const generatedRecord=recordings.at(-1);if(generatedRecord.status!==200)throw Error('generated HTTP status '+generatedRecord.status);
  await fs.writeFile(path.join(dir,'report.bin'),Buffer.from([0,255,1,2,3]));
- browser=await chromium.launch({headless:true,executablePath:process.env.P10_BROWSER || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',args:['--no-sandbox']});
+ browser=await chromium.launch({headless:true,executablePath:process.env.ONPREST_IT_INPUT_CLIENT_BROWSER || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',args:['--no-sandbox']});
  console.log("browser",browser.version());page=await browser.newPage();page.on("pageerror",e=>console.error("browser error",e.stack));page.on("console",m=>{if(m.type()==="error")console.error("browser console",m.text())});page.setDefaultTimeout(8000);await page.goto(base);await fs.writeFile(path.join(dir,"swagger-dom.html"),await page.content());const operation=page.locator('#operations-default-save');await operation.locator('.opblock-summary').click();await operation.getByRole('button',{name:'Try it out',exact:true}).click();
  // The operation supports JSON and multipart; select actual multipart rendering.
  await operation.locator('select').filter({has:page.locator('option[value="multipart/form-data"]')}).first().selectOption('multipart/form-data');

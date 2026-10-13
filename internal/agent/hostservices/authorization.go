@@ -33,7 +33,7 @@ type grant struct {
 }
 
 // FixedSource uses the same immutable prepared source and credentials as the
-// definition hash. The caller supplies the URL/body after binding in P13.
+// definition hash. The caller supplies the URL/body after HTTP executor input binding.
 func FixedSource(snapshot *providers.Snapshot, options Options) (*Service, error) {
 	if snapshot == nil || snapshot.Definition().Executor.Type != "http" {
 		return nil, invalid(nil)

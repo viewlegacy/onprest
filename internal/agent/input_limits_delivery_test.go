@@ -134,7 +134,7 @@ func TestInputDeliveryJSONAndMCPBodyAdmissionDeadline(t *testing.T) {
 			ctx, cancel := context.WithTimeout(f.ctx, 2*time.Second)
 			defer cancel()
 			req, _ := http.NewRequestWithContext(ctx, "POST", f.base+path, pr)
-			req.Header.Set("Authorization", "Bearer p10-key")
+			req.Header.Set("Authorization", "Bearer input-key")
 			req.Header.Set("Content-Type", "application/json")
 			if route == "mcp" {
 				req.Header.Set("MCP-Protocol-Version", "2025-11-25")

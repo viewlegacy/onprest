@@ -53,7 +53,7 @@ func productionInputHTTPAdjusted(t *testing.T, route func(string) string, adjust
 	listener.Close()
 	private, _ := base64.RawURLEncoding.DecodeString(testAgentPrivateKey)
 	public := ed25519.PrivateKey(private).Public().(ed25519.PublicKey)
-	hash, _ := bcrypt.GenerateFromPassword([]byte("p10-key"), bcrypt.MinCost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("input-key"), bcrypt.MinCost)
 	logs := &transportLogBuffer{}
 	base := "http://" + addr
 	config := gateway.Config{Addr: addr, PublicBaseURL: base, AgentPublicKey: base64.RawURLEncoding.EncodeToString(public), APIKeys: []gateway.APIKey{{Name: "caller", KeyHash: string(hash), Capabilities: []string{"*"}}}, MaxRequestBodyBytes: 1024, MaxFileRequestBodyBytes: 2 << 20, MaxConcurrentBodyReaders: 2, AgentPingInterval: 20 * time.Millisecond, AgentPongTimeout: time.Second}
@@ -149,7 +149,7 @@ capabilities:
 	until := time.Now().Add(3 * time.Second)
 	for {
 		req, _ := http.NewRequest("GET", base+"/openapi.json", nil)
-		req.Header.Set("Authorization", "Bearer p10-key")
+		req.Header.Set("Authorization", "Bearer input-key")
 		resp, e := http.DefaultClient.Do(req)
 		if e == nil {
 			resp.Body.Close()
@@ -167,7 +167,7 @@ capabilities:
 func (f *inputHTTPFixture) request(t *testing.T, path, media string, body io.Reader, version string) (int, []byte, http.Header) {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(f.ctx, "POST", f.base+path, body)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	req.Header.Set("Content-Type", media)
 	if version != "" {
 		req.Header.Set("MCP-Protocol-Version", version)
@@ -213,7 +213,7 @@ func (f *inputHTTPFixture) assertSaved(t *testing.T, raw []byte, want []byte) {
 		t.Fatal("saved", e, len(file))
 	}
 	req, _ := http.NewRequest("GET", envelope.Result.Files[0].URI, nil)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	resp, e := http.DefaultClient.Do(req)
 	if e != nil {
 		t.Fatal(e)
@@ -228,7 +228,7 @@ func TestInputDeliveryProductionRESTAndMCP(t *testing.T) {
 	f := productionInputHTTP(t)
 	body := []byte{0, 255, 1, 2, 3}
 	req, _ := http.NewRequest("GET", f.base+"/openapi.json", nil)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	resp, e := http.DefaultClient.Do(req)
 	if e != nil {
 		t.Fatal(e)
@@ -320,7 +320,7 @@ func TestInputDeliveryMultipartTransfersBeforeEOFAndCancel(t *testing.T) {
 	done := make(chan error, 1)
 	ctx, cancel := context.WithCancel(f.ctx)
 	req, _ := http.NewRequestWithContext(ctx, "POST", f.base+"/api/v1/capabilities/save", pr)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	go func() {
 		resp, e := http.DefaultClient.Do(req)
@@ -445,8 +445,8 @@ func TestInputDeliveryRepeatedFileOrderAndNestedInline(t *testing.T) {
 }
 
 func TestInputDeliveryPinnedBrowserAndGeneratedClient(t *testing.T) {
-	if os.Getenv("P10_CLIENT_WIRE") != "1" {
-		t.Skip("set P10_CLIENT_WIRE=1 with pinned dev dependencies and P10_GENERATOR_JAR")
+	if os.Getenv("ONPREST_IT_INPUT_CLIENT_WIRE") != "1" {
+		t.Skip("set ONPREST_IT_INPUT_CLIENT_WIRE=1 with pinned dev dependencies and ONPREST_IT_INPUT_CLIENT_GENERATOR_JAR")
 	}
 	f := productionInputHTTP(t)
 	script, e := filepath.Abs("../gateway/testdata/input-clients/wire.mjs")
@@ -501,7 +501,7 @@ func TestInputDeliveryAgentBusyBeforeMultipartBodyRead(t *testing.T) {
 		ctx, cancel := context.WithCancel(f.ctx)
 		cancels = append(cancels, cancel)
 		req, _ := http.NewRequestWithContext(ctx, "POST", f.base+"/api/v1/capabilities/save", pr)
-		req.Header.Set("Authorization", "Bearer p10-key")
+		req.Header.Set("Authorization", "Bearer input-key")
 		req.Header.Set("Content-Type", writer.FormDataContentType())
 		go func() {
 			resp, e := http.DefaultClient.Do(req)
@@ -522,7 +522,7 @@ func TestInputDeliveryAgentBusyBeforeMultipartBodyRead(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
 	req, _ := http.NewRequestWithContext(f.ctx, "POST", f.base+"/api/v1/capabilities/save", pr)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=no-body-sent")
 	go func() {
 		resp, e := http.DefaultClient.Do(req)
@@ -586,7 +586,7 @@ func TestInputDeliveryOfflineBeforeMultipartBodyRead(t *testing.T) {
 	until := time.Now().Add(3 * time.Second)
 	for {
 		req, _ := http.NewRequest("GET", f.base+"/openapi.json", nil)
-		req.Header.Set("Authorization", "Bearer p10-key")
+		req.Header.Set("Authorization", "Bearer input-key")
 		resp, e := http.DefaultClient.Do(req)
 		if e == nil {
 			resp.Body.Close()
@@ -604,7 +604,7 @@ func TestInputDeliveryOfflineBeforeMultipartBodyRead(t *testing.T) {
 	ctx, cancel := context.WithTimeout(f.ctx, time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", f.base+"/api/v1/capabilities/save", pr)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=never-sent")
 	resp, e := http.DefaultClient.Do(req)
 	if e != nil {
@@ -675,7 +675,7 @@ func TestInputDeliveryAuthenticationBeforeUnreadBody(t *testing.T) {
 	for _, test := range []struct {
 		token, path string
 		status      int
-	}{{"", "/api/v1/capabilities/save", 401}, {"invalid", "/mcp", 401}, {"p10-key", "/api/v1/capabilities/undefined", 404}} {
+	}{{"", "/api/v1/capabilities/save", 401}, {"invalid", "/mcp", 401}, {"input-key", "/api/v1/capabilities/undefined", 404}} {
 		pr, pw := io.Pipe()
 		ctx, cancel := context.WithTimeout(f.ctx, time.Second)
 		req, _ := http.NewRequestWithContext(ctx, "POST", f.base+test.path, pr)

@@ -25,7 +25,7 @@ func TestPostgresFileOutputPublicationThroughRESTAndMCP(t *testing.T) {
 		return
 	}
 	db := selectedContainerDBConfig(t, "postgres")
-	execDBStatements(t, "postgres", db, []string{"drop sequence if exists onprest_p09_sequence", "create sequence onprest_p09_sequence"})
+	execDBStatements(t, "postgres", db, []string{"drop sequence if exists onprest_it_output_sequence", "create sequence onprest_it_output_sequence"})
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
 	base := "http://" + addr
@@ -42,7 +42,7 @@ func TestPostgresFileOutputPublicationThroughRESTAndMCP(t *testing.T) {
 		if name == "mixed" {
 			data = "      data: {}\n"
 		}
-		yaml += fmt.Sprintf("  %s:\n    executor: {type: db, source: primary, sql: \"select nextval('onprest_p09_sequence') as counter, :id::bigint as id, '=secret'::text as excluded\"}\n    input: {properties: {id: {type: integer}}, required: [id]}\n    output:\n      items:\n        properties:\n          id: {type: integer}\n          counter: {type: integer}\n%s      files: {format: csv, filename: report.csv%s}\n", name, data, delivery)
+		yaml += fmt.Sprintf("  %s:\n    executor: {type: db, source: primary, sql: \"select nextval('onprest_it_output_sequence') as counter, :id::bigint as id, '=secret'::text as excluded\"}\n    input: {properties: {id: {type: integer}}, required: [id]}\n    output:\n      items:\n        properties:\n          id: {type: integer}\n          counter: {type: integer}\n%s      files: {format: csv, filename: report.csv%s}\n", name, data, delivery)
 	}
 	writeFile(t, path, yaml)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -16,7 +16,7 @@ import (
 	"github.com/viewlegacy/onprest/internal/contract"
 )
 
-func TestSDKRevisionReadDirPartialError(t *testing.T) {
+func TestSDKReadDirPartialError(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		t.Run(fmt.Sprint(on), func(t *testing.T) {
 			r, m, c, base := sdkSetup(t, on, "read_write")
@@ -58,19 +58,19 @@ func TestSDKRevisionReadDirPartialError(t *testing.T) {
 	}
 }
 
-func sdkRevisionRun(t *testing.T, r *Runner, m *Module, c *contract.Capability, p map[string]any, l Limits) (*contract.PreparedOutput, error) {
+func runSDKScenario(t *testing.T, r *Runner, m *Module, c *contract.Capability, p map[string]any, l Limits) (*contract.PreparedOutput, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return r.Execute(ctx, m, p, c, l)
 }
-func TestSDKRevisionEnvelopeBoundaryAndPriority(t *testing.T) {
+func TestSDKEnvelopeBoundaryAndPriority(t *testing.T) {
 	r, m, c, _ := sdkSetup(t, false, "")
 	c.Policy["max_output_bytes"] = int64(40 << 20)
 	l := DefaultLimits()
 	l.MemoryBytes = 512 << 20
 	for _, n := range []int64{EnvelopeLimit - 1, EnvelopeLimit, EnvelopeLimit + 1} {
-		out, e := sdkRevisionRun(t, r, m, c, map[string]any{"scenario": "envelope-boundary", "i64": n}, l)
+		out, e := runSDKScenario(t, r, m, c, map[string]any{"scenario": "envelope-boundary", "i64": n}, l)
 		if n > EnvelopeLimit {
 			errorCode(t, e, "LIMIT_EXCEEDED")
 			if out != nil {
@@ -96,13 +96,13 @@ func TestSDKRevisionEnvelopeBoundaryAndPriority(t *testing.T) {
 		} else {
 			limited.FileBytes = 3
 		}
-		out, e := sdkRevisionRun(t, r, m, c, map[string]any{"scenario": scenario}, limited)
+		out, e := runSDKScenario(t, r, m, c, map[string]any{"scenario": scenario}, limited)
 		errorCode(t, e, "LIMIT_EXCEEDED")
 		if out != nil || r.Store.Usage() != 0 {
 			t.Fatal("returned file limit published or leaked output")
 		}
 	}
-	_, e := sdkRevisionRun(t, r, m, c, map[string]any{"scenario": "large-handler-error", "i64": int64(EnvelopeLimit + 1)}, l)
+	_, e := runSDKScenario(t, r, m, c, map[string]any{"scenario": "large-handler-error", "i64": int64(EnvelopeLimit + 1)}, l)
 	errorCode(t, e, "APP_PRIMARY")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -130,7 +130,7 @@ func (s *sdkFaultStage) Close() error {
 	return e
 }
 
-func TestSDKRevisionFinalResultTransportFailure(t *testing.T) {
+func TestSDKFinalResultTransportFailure(t *testing.T) {
 	for _, mode := range []string{"open-handles", "spool", "open-io", "write", "close"} {
 		t.Run(mode, func(t *testing.T) {
 			r, m, c, _ := sdkSetup(t, false, "")
@@ -163,7 +163,7 @@ func TestSDKRevisionFinalResultTransportFailure(t *testing.T) {
 					return &sdkFaultStage{stage, mode}, nil
 				}
 			}
-			_, e := sdkRevisionRun(t, r, m, c, map[string]any{"scenario": "data"}, l)
+			_, e := runSDKScenario(t, r, m, c, map[string]any{"scenario": "data"}, l)
 			want := "OUTPUT_INVALID"
 			if mode == "open-handles" || mode == "spool" {
 				want = "LIMIT_EXCEEDED"
@@ -176,11 +176,11 @@ func TestSDKRevisionFinalResultTransportFailure(t *testing.T) {
 	r, m, c, _ := bridgeSetup(t, false, "")
 	l := DefaultLimits()
 	l.Handles = 3
-	_, e := sdkRevisionRun(t, r, m, c, map[string]any{"scenario": "review_commit", "size": 2}, l)
+	_, e := runSDKScenario(t, r, m, c, map[string]any{"scenario": "commit_ack", "size": 2}, l)
 	errorCode(t, e, "LIMIT_EXCEEDED")
 }
 
-func TestSDKRevisionTimeoutOverridesResultTransportFailure(t *testing.T) {
+func TestSDKTimeoutOverridesResultTransportFailure(t *testing.T) {
 	r, m, c, _ := sdkSetup(t, false, "")
 	store, e := artifacts.Open(artifacts.Options{Directory: filepath.Join(t.TempDir(), "spool"), QuotaBytes: 1, MaxPending: 16, MaxObjects: 256, TransferTimeout: time.Minute})
 	if e != nil {

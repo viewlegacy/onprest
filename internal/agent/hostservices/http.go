@@ -68,7 +68,7 @@ func newService(o Options, a authorization) (*Service, error) {
 }
 
 // Request belongs to exactly one service lifetime. It is the private analogue
-// of a request handle; ABI handle ownership is wired separately in P15.
+// of a request handle; ABI handle ownership is wired separately by the Wasm host bridge.
 type Request struct {
 	mu                        sync.Mutex
 	service                   *Service

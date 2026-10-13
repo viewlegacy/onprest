@@ -61,7 +61,7 @@ func TestObservedOrdinaryCreateLinksAndExisting(t *testing.T) {
 		t.Fatal(string(b))
 	}
 	// Relative dangling chains preserve ordinary follow semantics. Native
-	// Windows link creation requires operator privileges and is a P20 proof.
+	// Windows link creation requires operator privileges and is outside this test.
 	if e := os.Symlink("chain", filepath.Join(base, "link")); e != nil {
 		t.Fatal(e)
 	}

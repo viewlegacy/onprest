@@ -16,7 +16,7 @@ func codeUnsafeNativeInputs(t *testing.T, directory string) map[string]string {
 	if e := unix.Mkfifo(fifo, 0600); e != nil {
 		t.Fatal(e)
 	}
-	socketDirectory, e := os.MkdirTemp("/tmp", "p17-b001-")
+	socketDirectory, e := os.MkdirTemp("/tmp", "code-input-")
 	if e != nil {
 		t.Fatal(e)
 	}

@@ -154,7 +154,7 @@ func TestInputDeliveryRealACKBackpressureStopsHTTPAndCleans(t *testing.T) {
 	ctx, cancel := context.WithCancel(f.ctx)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", f.base+"/api/v1/capabilities/save", pr)
-	req.Header.Set("Authorization", "Bearer p10-key")
+	req.Header.Set("Authorization", "Bearer input-key")
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	httpDone := make(chan error, 1)
 	go func() {

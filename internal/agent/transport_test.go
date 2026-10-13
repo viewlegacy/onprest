@@ -1201,7 +1201,7 @@ func testSignedDelayedAccept(t *testing.T, late, expiry bool) {
 	if _, e := server.TransferInput(ctx, protocol.Frame{Type: "request_begin", ID: "cancel-before-accept", Capability: "run", CallerBinding: "caller", DefinitionHash: snapshot.DefinitionHash(), InputDeadline: time.Now().Add(time.Second)}, map[string]any{}, nil); e == nil || e.Error() != "CONFLICT" || beginWrites.Load() != 1 || p.calls.Load() != 0 {
 		t.Fatal("recent input ID reused or transmitted", e, beginWrites.Load(), p.calls.Load())
 	}
-	// While request_accept is still held, both finite P06 pending slots must be
+	// While request_accept is still held, both finite spool input slots must be
 	// available. The original 2s input deadline must not perform this cleanup.
 	allFree := false
 	until := time.Now().Add(400 * time.Millisecond)
