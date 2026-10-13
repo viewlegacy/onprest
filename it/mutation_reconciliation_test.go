@@ -562,28 +562,39 @@ func renderMutationReconciliationCapability(t *testing.T, repo, dir, driver stri
 	if err != nil {
 		t.Fatalf("read mutation reconciliation capability example: %v", err)
 	}
-	rendered := string(content)
-	start := strings.Index(rendered, "sources:\n")
-	if start < 0 {
-		t.Fatal("example missing sources section")
-	}
-	end := start + len(rendered[start:])
-	if next := strings.Index(rendered[start:], "\nschema_version:"); next >= 0 {
-		end = start + next
-	}
 	database := "sources:\n  databases:\n    primary:\n      driver: " + driver + "\n      host: " + yamlString(db.Host) + "\n      port: " + db.Port + "\n      name: " + yamlString(db.Name) + "\n      user: " + yamlString(db.User) + "\n      password: " + yamlString(db.Password) + "\n"
-	rendered = rendered[:start] + database + rendered[end:]
-	gatewayStart := strings.Index(rendered, "gateway:\n")
-	if gatewayStart < 0 {
-		t.Fatal("example missing gateway section")
-	}
-	gatewayEnd := strings.Index(rendered[gatewayStart:], "\ndefaults:") + gatewayStart
-	if gatewayEnd <= gatewayStart {
-		t.Fatal("example missing gateway section")
-	}
 	gateway := "gateway:\n  url: " + yamlString(gatewayURL) + "\n  agent_private_key: " + yamlString(agentPrivateKey) + "\n"
-	rendered = rendered[:gatewayStart] + gateway + rendered[gatewayEnd:]
+	rendered := replaceTopLevelYAMLSection(t, string(content), "sources", database)
+	rendered = replaceTopLevelYAMLSection(t, rendered, "gateway", gateway)
 	return writeFile(t, filepath.Join(dir, "capability.reconciliation."+driver+".yaml"), rendered)
+}
+
+// replaceTopLevelYAMLSection replaces one top-level key and its indented body,
+// up to the next line that starts in column 0, regardless of section order.
+func replaceTopLevelYAMLSection(t *testing.T, document, key, replacement string) string {
+	t.Helper()
+	lines := strings.SplitAfter(document, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimRight(line, "\n") == key+":" {
+			if start >= 0 {
+				t.Fatalf("example has duplicate %s section", key)
+			}
+			start = i
+		}
+	}
+	if start < 0 {
+		t.Fatalf("example missing %s section", key)
+	}
+	end := start + 1
+	for end < len(lines) && (strings.HasPrefix(lines[end], " ") || strings.TrimSpace(lines[end]) == "") {
+		end++
+	}
+	// Keep the blank lines that separate this section from the next one.
+	for end > start+1 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return strings.Join(lines[:start], "") + replacement + strings.Join(lines[end:], "")
 }
 
 func setupMutationReconciliationFixture(t *testing.T, repo, driver string, cfg postgresConfig) {

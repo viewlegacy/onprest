@@ -32,10 +32,10 @@ sources:
     exchange: {root: /srv/exchange, access: read_write}
 ```
 
-| Key | Meaning |
-|---|---|
-| `root` | Directory path, absolute or relative to the configuration directory. It must exist |
-| `access` | `read`, or `read_write` to allow saving files |
+| Key | Default | Meaning |
+|---|---|---|
+| `root` | required | Directory path, absolute or relative to the configuration directory. It must exist |
+| `access` | required | `read`, or `read_write` to allow saving files |
 
 The agent's operating-system user also needs the matching permissions on the directory. Symbolic links, hard links, special files, and paths that cross into another filesystem are not followed. Names starting with `.onprest-` are reserved for the agent's temporary files.
 
@@ -94,17 +94,18 @@ capabilities:
 
 Each entry in `write` takes:
 
-| Key | Meaning |
-|---|---|
-| `input` | JSON Pointer to a required file input, such as `/document`. An array input (with `minItems: 1`) saves every file |
-| `source` | Folder source to save into |
-| `path` | Existing subdirectory under the root. Defaults to the root |
-| `name` | Fixed file name to save a single file under |
-| `name_from: input` | Use the file name the caller sent instead |
+| Key | Default | Meaning |
+|---|---|---|
+| `input` | required | JSON Pointer to a required file input, such as `/document`. An array input (with `minItems: 1`) saves every file |
+| `source` | required | Folder source to save into |
+| `path` | the root | Existing subdirectory under the root |
+| `name` | — | Fixed file name to save a single file under |
+| `name_from: input` | — | Use the file name the caller sent instead |
+| `overwrite` | `false` | Replace an existing file. Without it, an existing file fails the call with `CONFLICT` |
 
 Set exactly one of `name` and `name_from`. With `name_from: input`, callers choose the file name, so the capability saves whatever name they send (path separators and reserved names are refused).
 
-All files in a call are checked first (names, sizes, free quota) and then saved. A file that already exists fails with `CONFLICT` unless the entry sets `overwrite: true`. Overwriting is supported on Linux and macOS; on Windows, or on a filesystem that cannot replace files atomically, the call fails instead.
+All files in a call are checked first (names, sizes, free quota) and then saved. `overwrite: true` works on Linux and macOS; on Windows, or on a filesystem that cannot replace files atomically, the call fails instead.
 
 Choose what the call returns:
 
@@ -116,10 +117,10 @@ If saving fails after some files were already written, the error reports `outcom
 
 ## Settings
 
-| Key | Meaning |
-|---|---|
-| `executor.read` | `{source, selector}` or `{written: true}`. Requires `output.files` |
-| `executor.write` | List of save entries |
-| `executor.effects` | Set automatically: `possible` when the capability writes, `none` when it only reads. If you set it, it must match |
+| Key | Default | Meaning |
+|---|---|---|
+| `executor.read` | none | `{source, selector}` or `{written: true}`. Requires `output.files` |
+| `executor.write` | none | List of save entries |
+| `executor.effects` | from `write` | `possible` when the capability writes, `none` when it only reads. If you set it, it must match |
 
 A file capability returns only files, so its `output` has `files` but no `data` or schema. Use `output.files.mime_type` to override the reported MIME type. To parse or filter CSV contents, use a [CSV capability](/capabilities/csv).

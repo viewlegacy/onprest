@@ -123,10 +123,17 @@ func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := cf.Compiled.Capabilities["update_customer"]
-	rate := c.Policy["rate_limit"].(map[string]any)
-	if rate["requests"] != int64(60) || rate["burst"] != int64(10) || rate["per"] != "1m0s" {
-		t.Fatalf("rate=%v", rate)
+	// The Quick Start reads at most one customer and updates at most one row.
+	get := cf.Compiled.Capabilities["get_customer"]
+	if get.Executor.Operation != "select" || get.Policy["readonly"] != true || get.Policy["max_rows"] != int64(1) {
+		t.Fatalf("get_customer operation=%q policy=%v", get.Executor.Operation, get.Policy)
+	}
+	update := cf.Compiled.Capabilities["update_customer"]
+	if update.Executor.Operation != "update" || update.Policy["readonly"] != false || update.Policy["max_affected_rows"] != int64(1) {
+		t.Fatalf("update_customer operation=%q policy=%v", update.Executor.Operation, update.Policy)
+	}
+	if _, ok := update.Policy["rate_limit"]; ok {
+		t.Fatalf("update_customer policy=%v, want no rate limit in the minimal example", update.Policy)
 	}
 }
 

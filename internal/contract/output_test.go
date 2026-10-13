@@ -42,6 +42,9 @@ func TestOutputProjectionModesAndNull(t *testing.T) {
 		{"additional_child_projection", "type: object\nadditionalProperties: {properties: {keep: {type: boolean}}}\ndata: {}", map[string]any{"x": map[string]any{"keep": true, "drop": "hidden"}}, map[string]any{"x": map[string]any{"keep": true}}, false},
 		{"array_no_items", "type: array\ndata: {}", []any{map[string]any{"all": int64(1)}, nil}, []any{map[string]any{"all": int64(1)}, nil}, false},
 		{"no_type_coercion", "properties: {A: {type: integer}}\ndata: {}", map[string]any{"A": "1"}, nil, true},
+		{"object_without_properties_kept", "properties: {A: {type: object}}\ndata: {}", map[string]any{"A": map[string]any{"x": int64(1), "y": "z"}, "B": "hidden"}, map[string]any{"A": map[string]any{"x": int64(1), "y": "z"}}, false},
+		{"untyped_child_kept", "properties: {A: {}}\ndata: {}", map[string]any{"A": map[string]any{"x": []any{int64(1)}}, "B": "hidden"}, map[string]any{"A": map[string]any{"x": []any{int64(1)}}}, false},
+		{"declared_additional_true_kept", "properties: {A: {type: integer}}\nadditionalProperties: true\ndata: {}", map[string]any{"A": int64(1), "B": "kept"}, map[string]any{"A": int64(1), "B": "kept"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

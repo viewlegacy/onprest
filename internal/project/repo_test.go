@@ -773,14 +773,20 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 		"password: onprest-example-password",
 		"sql: select id, name, email from customers where id = :customer_id",
 		"sql: update customers set name = :name where id = :customer_id",
-		"max_size: 10MB",
-		"max_files: 3",
-		"readonly: true",
-		"expose_in_openapi: true",
+		"policy: {max_rows: 1}",
+		"policy: {readonly: false, max_affected_rows: 1}",
 	} {
 		if !strings.Contains(capabilityYAML, want) {
 			t.Fatalf("examples/capability.postgres.yaml missing %q", want)
 		}
+	}
+	capabilitiesStart := strings.Index(capabilityYAML, "\ncapabilities:\n")
+	if capabilitiesStart < 0 {
+		t.Fatal("examples/capability.postgres.yaml missing top-level capabilities")
+	}
+	quickStart := readText(t, filepath.Join(root, "docs", "app", "quick-start", "page.mdx"))
+	if !strings.Contains(quickStart, "```yaml\n"+capabilityYAML[capabilitiesStart+1:]+"```") {
+		t.Fatal("Quick Start must show the capabilities section of examples/capability.postgres.yaml as written")
 	}
 
 	composeYAML := readText(t, filepath.Join(root, "examples", "postgres.compose.yml"))

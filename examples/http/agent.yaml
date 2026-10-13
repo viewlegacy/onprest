@@ -1,14 +1,18 @@
 schema_version: 1
+
 service: {title: Inventory API, version: 1.0.0}
+
 gateway:
   url: ws://127.0.0.1:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+
 sources:
   http:
     inventory:
       base_url: http://127.0.0.1:8090
       allowed_methods: [POST]
       allowed_cidrs: [127.0.0.0/8]
+
 capabilities:
   get_inventory:
     executor:
@@ -22,10 +26,13 @@ capabilities:
           item: {input: /item}
           channel: {value: onprest}
       response: {kind: json}
-    input: {properties: {item: {type: string, minLength: 1}}, required: [item]}
+    input:
+      properties:
+        item: {type: string, minLength: 1}
+      required: [item]
     output:
+      data: {}
       properties:
         item: {type: string}
         available: {type: integer}
       required: [item, available]
-      data: {}

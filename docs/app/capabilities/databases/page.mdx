@@ -54,13 +54,13 @@ The [Quick Start](/quick-start) runs a capability file like this against a dispo
 
 Each entry under `sources.databases` is a named connection. Several capabilities can share one.
 
-| Key | Meaning |
-|---|---|
-| `driver` | `postgres`, `mysql`, `sqlserver`, or `oracle` |
-| `host`, `port`, `name` | Server address and database (Oracle: service name) |
-| `user` | Database user |
-| `password` or `password_file` | The password, inline or in a protected file. Use one, not both |
-| `tls` | Connection encryption; see [TLS](#tls) |
+| Key | Default | Meaning |
+|---|---|---|
+| `driver` | required | `postgres`, `mysql`, `sqlserver`, or `oracle` |
+| `host`, `port`, `name` | required | Server address, port, and database (Oracle: service name). There is no default port |
+| `user` | required | Database user |
+| `password` or `password_file` | none | The password, inline or in a protected file. Use one, not both |
+| `tls` | `{mode: disable}` | Connection encryption; see [TLS](#tls) |
 
 Relative file paths are resolved from the configuration directory. Password files must be regular files readable only by the agent's user, and their bytes are used exactly as written, including any trailing newline. The agent reads secrets and certificates once at startup; restart it after changing them.
 

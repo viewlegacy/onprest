@@ -1,9 +1,12 @@
 # Public demonstration credentials. Use only on loopback; replace for deployment.
 schema_version: 1
+
 service: {title: Customer CSV, version: 1.0.0}
+
 gateway:
   url: ws://127.0.0.1:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+
 capabilities:
   customer_csv:
     executor:

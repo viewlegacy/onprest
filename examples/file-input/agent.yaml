@@ -1,11 +1,15 @@
 schema_version: 1
+
 service: {title: File Exchange, version: 1.0.0}
+
 gateway:
   url: ws://127.0.0.1:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+
 sources:
   folders:
     exchange: {root: ./exchange, access: read_write}
+
 capabilities:
   save_report:
     description: Save a report and return an independent snapshot.

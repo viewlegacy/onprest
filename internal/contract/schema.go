@@ -313,9 +313,9 @@ func compileSchema(m rawMap, input, root, passthrough bool, depth int) (*Schema,
 			seen[string(b)] = true
 		}
 		sort.Slice(a, func(i, j int) bool {
-			a, _ := CanonicalJSON(a[i])
-			b, _ := CanonicalJSON(a[j])
-			return string(a) < string(b)
+			x, _ := CanonicalJSON(a[i])
+			y, _ := CanonicalJSON(a[j])
+			return string(x) < string(y)
 		})
 		s.Constraints["enum"] = a
 		s.normalized["enum"] = a

@@ -1,15 +1,15 @@
 schema_version: 1
-service:
-  title: File Downloads
-  version: 1.0.0
+
+service: {title: File Downloads, version: 1.0.0}
+
 gateway:
   url: ws://127.0.0.1:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+
 sources:
   folders:
-    reports:
-      root: ./reports
-      access: read
+    reports: {root: ./reports, access: read}
+
 capabilities:
   download_report:
     description: Download the completed report.
@@ -17,11 +17,8 @@ capabilities:
       type: file
       read:
         source: reports
-        selector:
-          name: report.txt
+        selector: {name: report.txt}
     output:
       files:
         mime_type: text/plain
-        delivery:
-          rest: reference
-          mcp: reference
+        delivery: {rest: reference, mcp: reference}

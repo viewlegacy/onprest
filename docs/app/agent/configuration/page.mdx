@@ -50,11 +50,11 @@ capabilities: {}
 
 ## gateway
 
-| Key | Meaning |
-|---|---|
-| `url` | The gateway's agent endpoint, such as `wss://gateway.example.com/ws/agent` |
-| `agent_private_key` or `agent_private_key_file` | The Ed25519 private key from `onprest-gateway create-agent-secret`, inline or in a protected file. Use one |
-| `allow_insecure_non_loopback_ws` | Allows `ws://` to a non-loopback host. For isolated test networks only |
+| Key | Default | Meaning |
+|---|---|---|
+| `url` | required | The gateway's agent endpoint, such as `wss://gateway.example.com/ws/agent` |
+| `agent_private_key` or `agent_private_key_file` | required, one of them | The Ed25519 private key from `onprest-gateway create-agent-secret`, inline or in a protected file |
+| `allow_insecure_non_loopback_ws` | `false` | Allows `ws://` to a non-loopback host. For isolated test networks only |
 
 Use `wss://` in production. Plain `ws://` is accepted only for a gateway on the same host unless you set `allow_insecure_non_loopback_ws: true`. A key file contains exactly the key, with no trailing newline.
 
@@ -82,12 +82,14 @@ Keep `identity_dir` across restarts and container replacements as well. It holds
 
 The gateway forwards downloads, upload chunks, and cancellations to the agent. These limits protect the agent even if the gateway misbehaves, and the defaults suit most deployments:
 
-| Class | `requests` per `per` | `burst` | `max_concurrent` |
-|---|---|---|---|
-| `read` | 60 per `1s` | 120 | 8 |
-| `write` | 10 per `1s` | 20 | 2 |
-| `cancel` | 20 per `1s` | 40 | 2 |
-| `transfer` | 32 per `1s` | 64 | 4 |
+| Class | Counts | `requests` per `per` | `burst` | `max_concurrent` |
+|---|---|---|---|---|
+| `read` | Fetching the capability list after the agent connects, and starting a download | 60 per `1s` | 120 | 8 |
+| `write` | Starting and completing a call with file uploads | 10 per `1s` | 20 | 2 |
+| `cancel` | Cancellations of calls and transfers | 20 per `1s` | 40 | 2 |
+| `transfer` | Opening each upload or download stream | 32 per `1s` | 64 | 4 |
+
+Set any of `requests`, `per`, `burst`, and `max_concurrent` per class, for example `control_limits: {read: {requests: 120}}`.
 
 `bytes_per_second` (default `8MiB`) and `burst_bytes` (default `16MiB`) cap the transfer rate, and `max_concurrent_transfers` (default `4`, at most `8`) caps parallel transfers. Requests over a limit get `RATE_LIMITED` or `BUSY`. All values must be positive.
 

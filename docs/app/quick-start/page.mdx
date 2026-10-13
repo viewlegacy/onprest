@@ -189,11 +189,12 @@ docker compose -f examples/postgres.compose.yml down -v
 
 ## What you just ran
 
-`examples/capability.postgres.yaml` defines the two capabilities. Stripped to the essentials:
+`examples/capability.postgres.yaml` defines the database source `primary` and two capabilities that use it:
 
 ```yaml
 capabilities:
   get_customer:
+    description: Fetch one customer by ID.
     executor:
       type: db
       source: primary
@@ -202,7 +203,7 @@ capabilities:
       properties:
         customer_id: {type: integer, minimum: 1}
       required: [customer_id]
-    policy: {timeout: 3s, max_rows: 1}
+    policy: {max_rows: 1}
     output:
       data: {}
       items:
@@ -210,21 +211,23 @@ capabilities:
           id: {type: integer}
           name: {type: string}
           email: {type: string}
+
   update_customer:
+    description: Update one customer's name.
     executor:
       type: db
       source: primary
       sql: update customers set name = :name where id = :customer_id
     input:
       properties:
-        customer_id: {type: integer}
+        customer_id: {type: integer, minimum: 1}
         name: {type: string, minLength: 1, maxLength: 200}
       required: [customer_id, name]
     policy: {readonly: false, max_affected_rows: 1}
     output: {data: {}}
 ```
 
-The example API key in `examples/gateway.env` may call only these two capabilities. [Capabilities](/capabilities) explains each section, and [Databases](/capabilities/databases) covers the DB executor.
+`max_rows: 1` returns at most one row, `max_affected_rows: 1` rolls back an update that would change more than one row, and `readonly: false` allows the `UPDATE`. The example API key in `examples/gateway.env` may call only these two capabilities. [Capabilities](/capabilities) explains each section, and [Databases](/capabilities/databases) covers the DB executor.
 
 ## Try without a database
 

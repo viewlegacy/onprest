@@ -3,7 +3,7 @@
 Onprest lets SaaS products, partner systems, internal tools, and AI agents call selected operations inside your on-premises environment through REST and MCP, without opening inbound firewall ports, copying data to the cloud, or letting credentials leave the network.
 
 > Keep the legacy system. Modernize the access layer.
-> Expose capabilities, not your on-premises.
+> Expose capabilities, not your on-prem.
 
 Most integrations with on-prem systems start from the wrong primitive: access to the system itself.
 

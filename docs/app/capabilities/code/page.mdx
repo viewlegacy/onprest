@@ -61,7 +61,7 @@ sandbox:
 | Permission | Fields |
 |---|---|
 | `filesystem` | `root` (absolute or relative to the configuration directory) and `access`: `read` or `read_write` |
-| `http` | `origin`, `methods`, `path_prefix`, and optional `allowed_cidrs`. HTTPS certificates are verified and proxy variables are ignored |
+| `http` | `origin`, `methods`, `path_prefix`, and optional `allowed_cidrs`. Without `allowed_cidrs`, the same address rules as for [HTTP sources](/capabilities/http#http-sources) apply. HTTPS certificates are verified and proxy variables are ignored |
 | `environment` | Names of environment variables the code may read |
 
 Files uploaded in the current call are always readable by that call, even with no permissions. Leave out `permissions` entirely when the sandbox is off.
@@ -72,20 +72,20 @@ Inside the module, relative paths and the working directory are the agent's conf
 
 ## Limits
 
-Set these under `executor.limits`. All must be positive.
+Set these under `executor.limits`. All must be positive. Each call runs separately, so every limit except the module size applies within one call.
 
-| Key | Default |
-|---|---|
-| `memory_bytes` | `128MiB` (between 64KiB and 4GiB) |
-| `max_module_bytes` | `32MiB` |
-| `max_handles` | `64` |
-| `max_host_calls` | `8` |
-| `max_file_read_bytes`, `max_file_write_bytes` | `64MiB` each, per file |
-| `max_total_file_read_bytes`, `max_total_file_write_bytes` | `256MiB` each, per call |
-| `max_file_operations` | `65536` |
-| `max_http_request_bytes`, `max_http_response_bytes` | `32MiB` each |
+| Key | Default | Meaning |
+|---|---|---|
+| `memory_bytes` | `128MiB` | Memory the module may use, between 64KiB and 4GiB |
+| `max_module_bytes` | `32MiB` | Size of the `.wasm` file, checked at startup and in `validate` |
+| `max_handles` | `64` | Things the code can have open at once: files and directories, uploaded files, returned files being written, and HTTP request and response bodies |
+| `max_host_calls` | `8` | File or HTTP operations that can be in progress at the same time, for example from several goroutines |
+| `max_file_read_bytes`, `max_file_write_bytes` | `64MiB` each | Bytes read from, or written to, one file |
+| `max_total_file_read_bytes`, `max_total_file_write_bytes` | `256MiB` each | Bytes read, or written, across all files in the call |
+| `max_file_operations` | `65536` | Number of file operations, such as opening, reading, writing, or listing |
+| `max_http_request_bytes`, `max_http_response_bytes` | `32MiB` each | Body size of one HTTP request the code sends, or one response it receives |
 
-File and HTTP budgets count every byte the code reads or writes during the call, including reopened files. Exceeding one fails the operation with a limit error; if the code does not handle it, the call fails with `LIMIT_EXCEEDED`. The usual [policy limits](/capabilities/policy-and-limits) such as `timeout` apply as well.
+File and HTTP budgets count every byte the code reads or writes during the call, including reopened files. Going over any limit other than `memory_bytes` and `max_module_bytes` fails that operation with a limit error (`onprest.ErrLimitExceeded` in the SDK); if the code does not handle it, the call fails with `LIMIT_EXCEEDED`. The usual [policy limits](/capabilities/policy-and-limits) such as `timeout` apply as well.
 
 ## Results, errors, and logs
 

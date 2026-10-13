@@ -2,7 +2,7 @@
 
 Onprest lets external applications and AI agents call selected operations inside an on-premises or private network through REST and MCP. You define each operation, called a capability, in `capability.yaml` on the on-prem side. A capability can run a SQL statement, filter CSV files, read or save files in a folder, call an internal HTTP API, or run a WebAssembly module you wrote.
 
-> Expose capabilities, not your on-premises.
+> Expose capabilities, not your on-prem.
 
 The OSS core is two binaries. `onprest-gateway` is the public REST, MCP, and OpenAPI endpoint. `onprest-agent` runs next to your systems and connects out to the gateway, so the on-prem network needs no inbound port. The gateway decides who may call which capability; the agent holds the SQL, paths, credentials, and code, and decides what each call is allowed to return. [How it works](/architecture) explains the split.
 

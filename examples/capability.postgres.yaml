@@ -1,101 +1,13 @@
+schema_version: 1
+
 service:
   title: Example CRM Capabilities
   version: 0.1.0
-  description: Example agent-defined capabilities for a legacy CRM database.
-runtime:
-  max_concurrent_requests: 16
+
 gateway:
   url: ws://localhost:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
-logging:
-  max_size: 10MB
-  max_files: 3
-defaults:
-  readonly: true
-  timeout: 30s
-  max_rows: 1000
-  rate_limit:
-    requests: 60
-    per: 1m
-    burst: 10
-  max_output_bytes: 1MB
-capabilities:
-  get_customer:
-    description: Fetch one customer by id.
-    annotations:
-      read_only: true
-      destructive: false
-      idempotent: true
-      open_world: false
-    examples:
-      - params: {customer_id: 1}
-    policy:
-      timeout: 3s
-      max_rows: 1
-      expose_in_openapi: true
-      max_output_bytes: 256KB
-    executor:
-      type: db
-      source: primary
-      sql: select id, name, email from customers where id = :customer_id
-    input:
-      properties:
-        customer_id:
-          type: integer
-          minimum: 1
-          description: Customer ID.
-      required:
-        - customer_id
-    output:
-      data: {}
-      items:
-        properties:
-          id:
-            type: integer
-            description: Customer ID.
-          name:
-            type: string
-            description: Customer name.
-          email:
-            type: string
-            description: Customer email address.
-  update_customer:
-    description: Update one customer's name.
-    annotations:
-      read_only: false
-      destructive: true
-      idempotent: true
-      open_world: false
-    examples:
-      - params:
-          customer_id: 1
-          name: Ada Lovelace
-    policy:
-      readonly: false
-      timeout: 3s
-      max_affected_rows: 1
-      expose_in_openapi: true
-      max_output_bytes: 256KB
-    executor:
-      type: db
-      source: primary
-      sql: update customers set name = :name where id = :customer_id
-    input:
-      properties:
-        customer_id:
-          type: integer
-          minimum: 1
-          description: Customer ID.
-        name:
-          type: string
-          minLength: 1
-          maxLength: 200
-          description: New customer name.
-      required:
-        - customer_id
-        - name
-    output:
-      data: {}
+
 sources:
   databases:
     primary:
@@ -105,4 +17,37 @@ sources:
       name: legacy
       user: capability_user
       password: onprest-example-password
-schema_version: 1
+
+capabilities:
+  get_customer:
+    description: Fetch one customer by ID.
+    executor:
+      type: db
+      source: primary
+      sql: select id, name, email from customers where id = :customer_id
+    input:
+      properties:
+        customer_id: {type: integer, minimum: 1}
+      required: [customer_id]
+    policy: {max_rows: 1}
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: integer}
+          name: {type: string}
+          email: {type: string}
+
+  update_customer:
+    description: Update one customer's name.
+    executor:
+      type: db
+      source: primary
+      sql: update customers set name = :name where id = :customer_id
+    input:
+      properties:
+        customer_id: {type: integer, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 200}
+      required: [customer_id, name]
+    policy: {readonly: false, max_affected_rows: 1}
+    output: {data: {}}
