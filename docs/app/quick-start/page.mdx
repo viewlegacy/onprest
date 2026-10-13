@@ -227,7 +227,7 @@ capabilities:
     output: {data: {}}
 ```
 
-`max_rows: 1` returns at most one row, `max_affected_rows: 1` rolls back an update that would change more than one row, and `readonly: false` allows the `UPDATE`. The example API key in `examples/gateway.env` may call only these two capabilities. [Capabilities](/capabilities) explains each section, and [Databases](/capabilities/databases) covers the DB executor.
+`readonly: false` is what lets `update_customer` run an `UPDATE`; [Policy and Limits](/capabilities/policy-and-limits) covers the other settings. The example API key in `examples/gateway.env` may call only these two capabilities. [Capabilities](/capabilities) explains each section, and [Databases](/capabilities/databases) covers the DB executor.
 
 ## Try without a database
 
