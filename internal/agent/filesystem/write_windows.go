@@ -82,7 +82,26 @@ func privateTemp(f *os.File) error {
 	}
 	return nil
 }
-func syncDirectoryHandle(f *os.File) error { return windows.FlushFileBuffers(windows.Handle(f.Fd())) }
+
+// syncDirectoryHandle flushes a directory's metadata. FlushFileBuffers needs
+// write access, which the held read-only directory handle lacks, so the same
+// directory is reopened relative to itself for writing and flushed; failure is
+// returned rather than treated as durable.
+func syncDirectoryHandle(f *os.File) error {
+	empty, e := windows.NewNTUnicodeString("")
+	if e != nil {
+		return e
+	}
+	oa := windows.OBJECT_ATTRIBUTES{RootDirectory: windows.Handle(f.Fd()), ObjectName: empty, Attributes: windows.OBJ_DONT_REPARSE}
+	oa.Length = uint32(unsafe.Sizeof(oa))
+	var h windows.Handle
+	var ios windows.IO_STATUS_BLOCK
+	if e = windows.NtCreateFile(&h, windows.GENERIC_WRITE|windows.SYNCHRONIZE, &oa, &ios, nil, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_FOR_BACKUP_INTENT, 0, 0); e != nil {
+		return e
+	}
+	defer windows.CloseHandle(h)
+	return windows.FlushFileBuffers(h)
+}
 func unlinkBelow(dir *os.File, name string, f *os.File) error {
 	// A DELETE-access relative handle binds removal to the inspected file, not
 	// to a subsequently substituted name.
@@ -154,3 +173,7 @@ func publishBelow(dir *os.File, temp, name string, overwrite bool, expected *Fil
 	}
 	return e == nil, e
 }
+
+// ReplaceSupported reports whether an existing destination can be replaced
+// atomically; Windows has no verified exchange primitive, so it cannot.
+func ReplaceSupported() bool { return false }

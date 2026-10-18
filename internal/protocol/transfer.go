@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,10 @@ const ChunkBytes = 64 << 10
 const TransferWindow = 4
 const ConnectionWindow = 32
 const ManagementBytes = 1 << 20
+
+// CommitBytes bounds a request_commit frame like an ordinary request frame:
+// its params are the full validated JSON input, not a management message.
+const CommitBytes = 16 << 20
 
 type FileBinding struct {
 	Pointer string `json:"pointer"`
@@ -99,11 +104,29 @@ func (f Frame) MarshalJSON() ([]byte, error) {
 			m[key] = f.Files
 		}
 	}
-	return json.Marshal(m)
+	var b bytes.Buffer
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	if e := encoder.Encode(m); e != nil {
+		return nil, e
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
+}
+
+// FrameLimit is the encoded byte bound for a transfer frame kind.
+func FrameLimit(kind string) int64 {
+	if kind == "request_commit" {
+		return CommitBytes
+	}
+	return ManagementBytes
 }
 func DecodeFrame(raw []byte, logical ...contract.Limits) (Frame, error) {
 	var f Frame
-	value, e := contract.DecodeWireJSON(raw, ManagementBytes, logical...)
+	var peek struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(raw, &peek)
+	value, e := contract.DecodeWireJSON(raw, FrameLimit(peek.Type), logical...)
 	if e != nil {
 		return f, e
 	}

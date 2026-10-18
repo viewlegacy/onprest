@@ -1445,3 +1445,34 @@ func (w *countBeginFrames) Write(p []byte) (int, error) {
 	w.tail = append([]byte(nil), joined[len(joined)-keep:]...)
 	return w.Writer.Write(p)
 }
+
+// An undecodable but well-framed commit fails only its request: the Agent
+// answers with a request error, reclaims the input and keeps the connection.
+func TestTransportSignedUndecodableCommitFailsOnlyItsRequest(t *testing.T) {
+	r, p, conn, cleanup := signedInputPeer(t)
+	defer cleanup()
+	inputBegin(t, r, conn, "request", time.Now().Add(time.Second))
+	ready := inputFile(t, conn, "request", "transfer", "/doc", true)
+	nested := "null"
+	for range 64 {
+		nested = "[" + nested + "]"
+	}
+	raw := `{"type":"request_commit","id":"request","params":{"doc":null,"deep":` + nested + `},"files":[{"pointer":"/doc","file_id":"` + ready.FileID + `"}]}`
+	if e := conn.WriteText([]byte(raw)); e != nil {
+		t.Fatal(e)
+	}
+	inputError(t, conn, "LIMIT_EXCEEDED")
+	if p.calls.Load() != 0 {
+		t.Fatal("undecodable commit executed")
+	}
+	waitTransport(t, func() bool { return r.store.Usage() == 0 })
+	// The same connection still accepts and completes another request.
+	inputBegin(t, r, conn, "next", time.Now().Add(time.Second))
+	next := inputFile(t, conn, "next", "next-transfer", "/doc", true)
+	conn.WriteText(protocol.MustJSON(protocol.Frame{Type: "request_commit", ID: "next", Params: map[string]any{"doc": nil}, Files: []protocol.FileBinding{{Pointer: "/doc", FileID: next.FileID}}}))
+	response, e := conn.ReadText()
+	var decoded protocol.Response
+	if e != nil || json.Unmarshal(response, &decoded) != nil || decoded.Error != nil || p.calls.Load() != 1 {
+		t.Fatal("connection did not survive", string(response), e)
+	}
+}

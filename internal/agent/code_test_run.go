@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,13 +44,13 @@ func beginCodeOutput(path, id string) (*codeOutput, error) {
 	defer created.Close()
 	temp, e := openCodeDirectory(filepath.Join(parent.path, name))
 	if e != nil {
-		parent.root.Remove(name)
+		parent.root.HostRemove(name)
 		parent.Close()
 		return nil, e
 	}
 	if e = parent.bound(); e != nil || temp.directory.Identity() != created.Identity() {
 		temp.Close()
-		parent.root.Remove(name)
+		parent.root.HostRemove(name)
 		parent.Close()
 		return nil, errors.Join(e, errors.New("temporary directory binding changed"))
 	}
@@ -59,14 +60,14 @@ func (s *codeOutput) close() error {
 	e := s.temp.Close()
 	if !s.committed {
 
-		info, check := s.parent.root.Lstat(s.tempName)
+		info, check := s.parent.root.HostStat(s.tempName)
 		var current *filesystem.Directory
 		if check == nil && !info.IsDir() {
 			check = errors.New("temporary output is not a directory")
 		}
 		if check == nil {
 			var f *os.File
-			f, check = s.parent.root.Open(s.tempName)
+			f, check = s.parent.root.HostOpen(s.tempName, os.O_RDONLY, 0)
 			if check == nil {
 				current, check = filesystem.DirectoryFromFile(f, filepath.Join(s.parent.path, s.tempName))
 			}
@@ -78,8 +79,8 @@ func (s *codeOutput) close() error {
 			current.Close()
 		}
 		if check == nil {
-			e = errors.Join(e, s.parent.root.RemoveAll(s.tempName))
-		} else if !os.IsNotExist(check) {
+			e = errors.Join(e, s.parent.removeFlat(s.tempName))
+		} else if !errors.Is(check, fs.ErrNotExist) {
 			e = errors.Join(e, check)
 		}
 	}
@@ -104,7 +105,7 @@ type codeSaveWriter interface {
 
 func (s *codeOutput) save(ctx context.Context, out *contract.PreparedOutput) ([]codeFile, error) {
 	return s.saveWithIO(ctx, out, func(name string) (codeSaveWriter, error) {
-		return s.temp.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		return s.temp.root.HostOpen(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	}, nil)
 }
 

@@ -46,7 +46,7 @@ func TestCommonPatternASTAndAgentSemantics(t *testing.T) {
 	}
 }
 func TestCommonPatternRejectsOutsideSubset(t *testing.T) {
-	for _, s := range []string{`(?i)a`, `(?m)^a`, `(?=a)`, `(?!a)`, `(?<=a)`, `(?P<name>a)`, `(?<name>a)`, `(a)\1`, `\p{L}`, `[[:alpha:]]`, `\s`, `\b`, `\u0041`, `\x{41}`, `\a`, `\Qx\E`, `a{1001}`, `a{2,1}`, `[a`, `a{`, `\-`, string([]byte{0xff})} {
+	for _, s := range []string{`(?i)a`, `(?m)^a`, `(?=a)`, `(?!a)`, `(?<=a)`, `(?P<name>a)`, `(?<name>a)`, `(a)\1`, `\p{L}`, `[[:alpha:]]`, `\s`, `\b`, `\u0041`, `\x{41}`, `\a`, `\Qx\E`, `a{1001}`, `a{2,1}`, `[a`, `a{`, `\-`, string([]byte{0xff}), `[][:alpha:][x]`, `[][a]`, `[^][a]`, `[]`, `[^]`, `^*`, `^+`, `^?`, `^{2}`, `a$+`, `a$*`, `a$?`} {
 		t.Run(s, func(t *testing.T) {
 			if _, e := CompilePattern(s); e == nil {
 				t.Fatal("unsupported syntax accepted")

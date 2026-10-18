@@ -361,6 +361,11 @@ type multipartGuard struct {
 	headers, closed, first bool
 	previous               byte
 	failure                error
+	// Delimiter recognition per line, without retaining the line: how much of
+	// "--boundary" matched, and whether the rest is "--"? LWSP* CRLF, which is
+	// what mime/multipart accepts as a (close) delimiter with transport padding.
+	dashMatch, tailBytes                 int
+	tailFinal, tailBad, tailDash, tailCR bool
 }
 
 func (g *multipartGuard) Read(p []byte) (int, error) {
@@ -377,6 +382,7 @@ func (g *multipartGuard) Read(p []byte) (int, error) {
 		if len(g.prefix) < len(g.boundary)+6 {
 			g.prefix = append(g.prefix, b)
 		}
+		g.classify(b)
 		if g.headers {
 			g.headerBytes++
 			g.framing++
@@ -386,13 +392,10 @@ func (g *multipartGuard) Read(p []byte) (int, error) {
 			}
 		}
 		if b == '\n' {
-			line := string(g.prefix)
-			if g.line != int64(len(g.prefix)) {
-				line = ""
-			}
-			boundary := "--" + g.boundary
+			delimiter, final := g.delimiter()
+			g.dashMatch, g.tailBytes, g.tailFinal, g.tailBad, g.tailDash, g.tailCR = 0, 0, false, false, false, false
 			if g.first {
-				if line == boundary+"--\r\n" {
+				if delimiter && final {
 					g.first = false
 					g.closed = true
 					g.line = 0
@@ -400,7 +403,7 @@ func (g *multipartGuard) Read(p []byte) (int, error) {
 					g.previous = b
 					continue
 				}
-				if line != boundary+"\r\n" {
+				if !delimiter {
 					g.failure = invalidInput()
 					return i, g.failure
 				}
@@ -416,10 +419,10 @@ func (g *multipartGuard) Read(p []byte) (int, error) {
 				if g.line == 2 {
 					g.headers = false
 				}
-			} else if line == boundary+"\r\n" || line == boundary+"--\r\n" {
+			} else if delimiter {
 				g.framing += g.line
-				g.headers = line == boundary+"\r\n"
-				g.closed = !g.headers
+				g.headers = !final
+				g.closed = final
 				g.headerBytes = 0
 			}
 			if g.framing > 1<<20 {
@@ -435,6 +438,45 @@ func (g *multipartGuard) Read(p []byte) (int, error) {
 		return n, invalidInput()
 	}
 	return n, e
+}
+
+func (g *multipartGuard) classify(b byte) {
+	dash := "--" + g.boundary
+	switch {
+	case g.dashMatch < 0 || g.tailBad:
+	case g.dashMatch < len(dash):
+		if b == dash[g.dashMatch] {
+			g.dashMatch++
+		} else {
+			g.dashMatch = -1
+		}
+	default:
+		g.tailBytes++
+		switch {
+		case g.tailCR && b != '\n':
+			g.tailBad = true
+		case g.tailBytes == 1 && b == '-':
+			g.tailDash = true
+		case g.tailDash:
+			g.tailDash = false
+			g.tailFinal = b == '-'
+			g.tailBad = b != '-'
+		case b == ' ' || b == '\t' || b == '\n':
+		case b == '\r':
+			g.tailCR = true
+		default:
+			g.tailBad = true
+		}
+	}
+}
+
+// delimiter reports, at a line end, whether the line was a delimiter or close
+// delimiter as mime/multipart sees it, transport padding included.
+func (g *multipartGuard) delimiter() (bool, bool) {
+	if g.dashMatch != len("--"+g.boundary) || g.tailBad || g.tailDash || g.previous != '\r' {
+		return false, false
+	}
+	return true, g.tailFinal
 }
 
 type partReader struct{ io.Reader }

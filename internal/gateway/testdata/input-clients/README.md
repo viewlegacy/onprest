@@ -7,11 +7,10 @@ npm ci --ignore-scripts --prefix internal/gateway/testdata/input-clients
 curl --fail --location \
   https://repo.maven.apache.org/maven2/org/openapitools/openapi-generator-cli/7.25.0/openapi-generator-cli-7.25.0.jar \
   --output /tmp/openapi-generator-7.25.0.jar
-ONPREST_IT_INPUT_CLIENT_WIRE=1 \
 ONPREST_IT_INPUT_CLIENT_GENERATOR_JAR=/tmp/openapi-generator-7.25.0.jar \
 ONPREST_IT_INPUT_CLIENT_EVIDENCE_DIR=/tmp/onprest-input-client-evidence \
 ONPREST_IT_INPUT_CLIENT_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
-go test ./internal/agent -run '^TestInputDeliveryPinnedBrowserAndGeneratedClient$' -count=1 -v
+go test -tags=input_client_wire ./internal/agent -run '^TestInputDeliveryPinnedBrowserAndGeneratedClient$' -count=1 -v
 ```
 
 The script verifies JAR SHA-256 `41ce4f6b07f196676439d710759fa1ced7a08066d06ff1bf314681470289efae`. Versions are Swagger UI 5.27.1, OpenAPI Generator 7.25.0, TypeScript 5.9.3 and Playwright Core 1.56.1. Generated options are `withoutRuntimeChecks=true`, `--type-mappings=null=null,Null=null`, and `--global-property=skipFormModel=false`; standard media-specific schema titles avoid request model name collisions. Generated sources are not patched. These settings retain server schema validation while mapping null to TypeScript null and retaining form models referenced by the generated API.

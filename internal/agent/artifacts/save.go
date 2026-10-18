@@ -238,6 +238,31 @@ func (j *saveJournal) persist(name string, m saveManifest) (err error) {
 // Save atomically publishes each file independently. It never deletes a
 // completed business name, retries publication, or rolls back prior files.
 // installed observes the first potentially effectful native publication.
+// syncSpoolDirectory flushes the spool directory's own entries.
+func (s *Store) syncSpoolDirectory() error {
+	if s.syncSpool != nil {
+		return s.syncSpool()
+	}
+	parentFile, e := s.root.Open(".")
+	if e != nil {
+		return e
+	}
+	parent, e := filesystem.DirectoryFromFile(parentFile, s.options.Directory)
+	if e != nil {
+		return e
+	}
+	return errors.Join(parent.Sync(), parent.Close())
+}
+
+// ProbeDurableSaves checks, without creating anything, that the spool supports
+// the directory sync that crash-safe file saving relies on. Prepare calls it for
+// capabilities that save files; configurations that never save do not need it.
+func (s *Store) ProbeDurableSaves() error {
+	if e := s.syncSpoolDirectory(); e != nil {
+		return errors.Join(errors.New("spool directory cannot be synced durably"), e)
+	}
+	return nil
+}
 func (s *Store) Save(ctx context.Context, request string, files []SaveFile, open func(context.Context, contract.FileValue) (io.ReadCloser, error), installed func(bool)) (err error) {
 	defer func() {
 		var a *Error
@@ -268,17 +293,27 @@ func (s *Store) Save(ctx context.Context, request string, files []SaveFile, open
 		}
 	}
 	if s.journal != nil && s.journal.root == nil {
+		// Durable saves need directory sync. Prove it on the spool before the
+		// cleanup namespace exists, so an unsyncable spool refuses this call
+		// without leaving a namespace that would block every later start.
+		if e := s.ProbeDurableSaves(); e != nil {
+			s.saveInit.Unlock()
+			return fail("DEPENDENCY_UNAVAILABLE", e)
+		}
 		e := s.root.Mkdir("file-write-cleanup", 0700)
+		created := e == nil
 		if e == nil {
-			parentFile, pe := s.root.Open(".")
-			if pe == nil {
-				parent, ce := filesystem.DirectoryFromFile(parentFile, s.options.Directory)
-				pe = ce
-				if pe == nil {
-					pe = errors.Join(parent.Sync(), parent.Close())
+			e = s.syncSpoolDirectory()
+		}
+		if e != nil && created {
+			// The empty namespace never held a manifest; removing it keeps the
+			// failure local to this call.
+			if removeErr := s.root.Remove("file-write-cleanup"); removeErr == nil {
+				if syncErr := s.syncSpoolDirectory(); syncErr == nil {
+					s.saveInit.Unlock()
+					return fail("DEPENDENCY_UNAVAILABLE", e)
 				}
 			}
-			e = pe
 		}
 		if e == nil || errors.Is(e, fs.ErrExist) {
 			e = s.openSaveJournal()
@@ -339,6 +374,11 @@ func (s *Store) Save(ctx context.Context, request string, files []SaveFile, open
 		if e == nil {
 			if !v.Overwrite {
 				return fail("CONFLICT", nil)
+			}
+			// Refuse an unsupported replacement while nothing has been written,
+			// so an earlier destination is never completed alone.
+			if !filesystem.ReplaceSupported() {
+				return errors.ErrUnsupported
 			}
 			old = &value
 		} else if !errors.Is(e, fs.ErrNotExist) {

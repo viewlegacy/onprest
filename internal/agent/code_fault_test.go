@@ -47,7 +47,9 @@ func TestCodeBuildPairRollback(t *testing.T) {
 					if e := os.Rename(path, path+"-moved"); e != nil {
 						t.Fatal(e)
 					}
-					os.Mkdir(path, 0700)
+					if e := os.Mkdir(path, 0700); e != nil {
+						t.Fatal(e)
+					}
 					return nil
 				}
 				return nil
@@ -123,10 +125,16 @@ func TestCodeOutputPublicationFaults(t *testing.T) {
 			case "existing-file":
 				os.WriteFile(filepath.Join(path, s.id), []byte("old"), 0600)
 			case "parent-replaced":
-				os.Rename(path, path+"-old")
-				os.Mkdir(path, 0700)
+				if e := os.Rename(path, path+"-old"); e != nil {
+					t.Fatal(e)
+				}
+				if e := os.Mkdir(path, 0700); e != nil {
+					t.Fatal(e)
+				}
 			case "temp-link":
-				os.Rename(filepath.Join(path, s.tempName), filepath.Join(path, "private-old"))
+				if e := os.Rename(filepath.Join(path, s.tempName), filepath.Join(path, "private-old")); e != nil {
+					t.Fatal(e)
+				}
 				if e := os.Symlink("private-old", filepath.Join(path, s.tempName)); e != nil {
 					t.Fatal(e)
 				}
@@ -257,7 +265,7 @@ func TestCodeOutputDiskAndPostFinalizeFaults(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			files, e := s.saveWithIO(ctx, out, func(name string) (codeSaveWriter, error) {
-				f, e := s.temp.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+				f, e := s.temp.root.HostOpen(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 				return &codeFaultWriter{File: f, mode: mode}, e
 			}, func() error {
 				if mode == "post-finalize" {

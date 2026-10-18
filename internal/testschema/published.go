@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/pb33f/libopenapi"
@@ -56,7 +57,20 @@ func HTTPResponse(t *testing.T, v *Document, url string, header http.Header, bod
 		t.Fatal(e)
 	}
 	operation := v.raw["paths"].(map[string]any)[request.URL.Path].(map[string]any)["post"].(map[string]any)
-	schema := operation["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)[media].(map[string]any)["schema"]
+	content := operation["responses"].(map[string]any)["200"].(map[string]any)["content"].(map[string]any)
+	// A direct file whose type is chosen per call is published as a media range.
+	entry, ok := content[media].(map[string]any)
+	exact := ok
+	if !ok {
+		entry, ok = content[strings.SplitN(media, "/", 2)[0]+"/*"].(map[string]any)
+	}
+	if !ok {
+		entry, ok = content["*/*"].(map[string]any)
+	}
+	if !ok {
+		t.Fatalf("published response has no media type for %q", media)
+	}
+	schema := entry["schema"]
 	if media == "application/json" {
 		var value any
 		decoder := json.NewDecoder(bytes.NewReader(body))
@@ -66,8 +80,12 @@ func HTTPResponse(t *testing.T, v *Document, url string, header http.Header, bod
 		}
 		JSON(t, schema, value, true)
 	} else {
-		if ok, es := v.validator.ValidateHttpResponse(request, response); !ok {
-			t.Fatalf("published direct HTTP response does not match OpenAPI: %v", es)
+		// The pinned validator matches only exact media keys; an OAS 3.1 media
+		// range was matched above, and its body schema is still checked below.
+		if exact {
+			if ok, es := v.validator.ValidateHttpResponse(request, response); !ok {
+				t.Fatalf("published direct HTTP response does not match OpenAPI: %v", es)
+			}
 		}
 		JSON(t, schema, string(body), true)
 	}

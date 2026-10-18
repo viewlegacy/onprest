@@ -332,3 +332,39 @@ func TestWasmDiagnosticsUTF8SplitPipeBoundary(t *testing.T) {
 		t.Fatal("valid rune was replaced across pipe reads")
 	}
 }
+
+func TestWasmModuleValidationBudgetRefusesUnfinishedValidation(t *testing.T) {
+	// The fixed budget recorded in architecture.md and the public Docs.
+	if ModuleValidationBudget != 60*time.Second {
+		t.Fatal("module validation budget changed without updating its record", ModuleValidationBudget)
+	}
+	r, _, _ := setup(t)
+	fresh := func() *Runner {
+		copy := *r
+		copy.Cache = NewCache()
+		return &copy
+	}
+	runner := fresh()
+	// One budget expires before the worker starts, the other while the worker
+	// compiles; both refuse the module with a diagnostic naming the budget.
+	for _, budget := range []time.Duration{time.Nanosecond, 50 * time.Millisecond} {
+		validationBudget = budget
+		m, e := runner.Prepare(context.Background(), modulePath, "", DefaultLimits())
+		validationBudget = ModuleValidationBudget
+		var w *Error
+		if m != nil || e == nil || !errors.As(e, &w) || w.Code != "EXECUTION_TIMEOUT" || !strings.Contains(e.Error(), "Wasm module validation did not finish within "+budget.String()) {
+			t.Fatal("unfinished validation was not refused with the budget diagnostic", budget, m, e)
+		}
+	}
+	// A refusal is not cached: the fixed budget then validates the same module.
+	if m, e := runner.Prepare(context.Background(), modulePath, "", DefaultLimits()); e != nil || m == nil {
+		t.Fatal("module refused after a budget refusal", e)
+	}
+	// A caller deadline that ends first is the caller's, not the budget's.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	if _, e := fresh().Prepare(ctx, modulePath, "", DefaultLimits()); e == nil || strings.Contains(e.Error(), "did not finish within") {
+		t.Fatal("caller deadline reported as the validation budget", e)
+	}
+}

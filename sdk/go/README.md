@@ -90,6 +90,7 @@ Relative paths start at the agent's configuration directory. The agent's OS perm
 - `Create` and `WriteFile` do not create parent directories; call `MkdirAll` first. `Create` truncates an existing file.
 - `Rename` is a plain OS rename or replace, with no copy fallback across filesystems.
 - `ReadDir` returns entries sorted by name and can return some entries together with an error.
+- `Stat` follows a final symbolic link like `os.Stat` with the sandbox off, but describes the link itself with the sandbox on.
 - Every read, write, and metadata call counts toward the capability's file budgets for the whole call; reopening a file does not reset them. Use `Open` or `Create` with `io.Copy` for large files.
 - `WriteFile` checks the size limit before touching the target. A streamed `Create` can leave a partial file if it fails, so close the writer and check its error.
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -1218,7 +1219,12 @@ func TestAgentWebSocketHTTPErrorMessages(t *testing.T) {
 func testServer(t *testing.T) (*Server, *bytes.Buffer, string) {
 	t.Helper()
 	apiKey := "test-api-key"
-	hash, err := hashSecret(apiKey)
+	// Requests still authenticate through bcrypt, but at the minimum cost: a
+	// default-cost comparison takes about 0.8s under the race detector and
+	// would consume the short client deadlines of timing tests built on this
+	// server. Production CLI hashing (hashSecret) is unchanged.
+	hashBytes, err := bcrypt.GenerateFromPassword([]byte(apiKey), bcrypt.MinCost)
+	hash := string(hashBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

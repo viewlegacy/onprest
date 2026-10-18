@@ -168,6 +168,22 @@ func Resolve(ctx context.Context, cfg *contract.Config, configPath, name string,
 		return nil, err
 	}
 	identity := resolvePath(base, cfg.Runtime["identity_dir"].(string))
+	var roots []string
+	for key, source := range s.sources {
+		if key.Group == "folders" {
+			roots = append(roots, source["root"].(string))
+		}
+	}
+	if s.cap.Executor.Type == "wasm" {
+		if sb := s.cap.Executor.Settings["sandbox"].(map[string]any); sb["enabled"] == true {
+			for _, raw := range sb["permissions"].(map[string]any)["filesystem"].([]any) {
+				roots = append(roots, raw.(map[string]any)["root"].(string))
+			}
+		}
+	}
+	if err := checkPrivateDirectories(roots, []string{resolvePath(base, cfg.Runtime["spool_dir"].(string)), identity}); err != nil {
+		return nil, err
+	}
 	key, err := identityKey(identity)
 	if err != nil {
 		return nil, errors.New("configuration identity could not be prepared")

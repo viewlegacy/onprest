@@ -45,12 +45,25 @@ func prepareFileProvider(ctx context.Context, s *providers.Snapshot, store *arti
 		p.paths[key.Name] = source["root"].(string)
 	}
 	if writes, ok := p.cap.Executor.Settings["write"].([]any); ok {
+		// Crash-safe saving needs directory sync on the spool and on every
+		// destination; a platform or filesystem without it refuses the
+		// capability now instead of failing, or leaving state behind, later.
+		// Validation prepares without the spool; the running agent probes it.
+		if store != nil {
+			if e := store.ProbeDurableSaves(); e != nil {
+				return fail(e)
+			}
+		}
 		for _, raw := range writes {
 			w := raw.(map[string]any)
 			source := w["source"].(string)
 			d, e := p.roots[source].Directory(w["path"].(string), p.paths[source])
 			if e != nil {
 				return fail(e)
+			}
+			if e = d.Sync(); e != nil {
+				d.Close()
+				return fail(errors.Join(errors.New("save directory cannot be synced durably"), e))
 			}
 			if e = d.Close(); e != nil {
 				return fail(e)

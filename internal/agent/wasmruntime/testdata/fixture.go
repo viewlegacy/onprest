@@ -604,6 +604,34 @@ func main() {
 	case "envelope":
 		result([]byte(input.Envelope))
 		return
+	case "envelope_then_read", "envelope_then_write":
+		// Commit a valid terminal, then violate the protocol and exit 0: the
+		// committed terminal must not be published after the violation.
+		var f *os.File
+		if input.Scenario == "envelope_then_read" {
+			var e error
+			if f, e = os.Open(input.Path); e != nil {
+				panic(e)
+			}
+		}
+		h := call("result.open", map[string]any{})
+		stream(h["body_handle"], []byte(input.Envelope))
+		call("result.commit", map[string]any{"result_handle": h["result_handle"]})
+		if f != nil {
+			buf := make([]byte, 4)
+			_, _ = f.Read(buf)
+		} else {
+			b := []byte(" ")
+			hostWrite(h["body_handle"], ptr(b), uint32(len(b)))
+		}
+		return
+	case "envelope_ignore":
+		// Ignore the refused commit and exit normally: the refusal itself must
+		// decide the public result, not the generic invalid-state fallback.
+		h := call("result.open", map[string]any{})
+		stream(h["body_handle"], []byte(input.Envelope))
+		badCall("result.commit", map[string]any{"result_handle": h["result_handle"]})
+		return
 	case "early":
 		h := call("result.open", map[string]any{})
 		badCall("result.commit", map[string]any{"result_handle": h["result_handle"]})

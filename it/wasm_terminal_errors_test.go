@@ -98,7 +98,7 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 	}
 	cfg := strings.Split(read("agent.yaml"), "capabilities:")[0] + `capabilities:
   wasm_error:
-    executor: {type: wasm, module: ./error.wasm, effects: possible, sandbox: {enabled: true, permissions: {filesystem: [{root: ., access: read_write}]}}}
+    executor: {type: wasm, module: ./error.wasm, effects: possible, sandbox: {enabled: true, permissions: {filesystem: [{root: ./data, access: read_write}]}}}
     input:
       properties:
         scenario: {type: string}
@@ -109,6 +109,11 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 `
 	path := filepath.Join(tmp, "agent.yaml")
 	writeFile(t, path, strings.ReplaceAll(cfg, "127.0.0.1:8080", addr))
+	// The code grant covers business files only, never the private spool.
+	data := filepath.Join(tmp, "data")
+	if e := os.Mkdir(data, 0o700); e != nil {
+		t.Fatal(e)
+	}
 	envFile := filepath.Join(tmp, "gateway.env")
 	writeFile(t, envFile, strings.ReplaceAll(strings.ReplaceAll(read("gateway.env"), "wasm_copy", "wasm_error"), "127.0.0.1:8080", addr))
 	gateway, _ := startShellProcessWithOutput(t, tmp, "set -a; . "+shellQuote(envFile)+"; set +a; exec "+shellQuote(gatewayBin))
@@ -145,6 +150,13 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 		{"control", "envelope", public("APP_DENIED", "PRIVATE_RAW_MESSAGE\n"), "EXECUTION_FAILED", "", "no_change", 502},
 		{"internal", "envelope", `{"error":{"kind":"internal","category":"execution"}}`, "EXECUTION_FAILED", "", "no_change", 502},
 		{"general", "privatefailure", "", "EXECUTION_FAILED", "", "no_change", 502},
+		// The module ignores the refused commit and exits 0; the refusal decides.
+		{"empty_ignored", "envelope_ignore", public("APP_EMPTY", ""), "EXECUTION_FAILED", "", "no_change", 502},
+		{"invalidcode_ignored", "envelope_ignore", public("APP_lower", "PRIVATE_RAW_MESSAGE"), "EXECUTION_FAILED", "", "no_change", 502},
+		// A valid terminal committed before a protocol violation is not
+		// published; the violation is an invalid output.
+		{"read_after_commit", "envelope_then_read", public("APP_DENIED", message), "OUTPUT_INVALID", "output does not satisfy the configured contract", "no_change", 502},
+		{"write_after_commit", "envelope_then_write", public("APP_DENIED", message), "OUTPUT_INVALID", "output does not satisfy the configured contract", "no_change", 502},
 		{"create_existing", "envelope_create_existing", public("APP_CREATE", message), "APP_CREATE", message, "no_change", 422},
 		{"create_new", "envelope_create_new", public("APP_CREATE", message), "APP_CREATE", message, "committed", 422},
 		{"create_truncate", "envelope_create_truncate", public("APP_CREATE", message), "APP_CREATE", message, "committed", 422},
@@ -196,13 +208,18 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 				businessPath = tc.name + ".txt"
 			}
 			prepare := func() {
+				if tc.scenario == "envelope_then_read" {
+					if e := os.WriteFile(filepath.Join(data, businessPath), []byte("readable"), 0600); e != nil {
+						t.Fatal(e)
+					}
+				}
 				if !strings.HasPrefix(tc.name, "create_") {
 					return
 				}
 				if tc.name == "create_new" {
-					os.Remove(filepath.Join(tmp, businessPath))
+					os.Remove(filepath.Join(data, businessPath))
 				} else {
-					if e := os.WriteFile(filepath.Join(tmp, businessPath), []byte("same"), 0600); e != nil {
+					if e := os.WriteFile(filepath.Join(data, businessPath), []byte("same"), 0600); e != nil {
 						t.Fatal(e)
 					}
 				}
@@ -218,13 +235,13 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 				if tc.name == "create_write" {
 					want = "Xame"
 				}
-				raw, e := os.ReadFile(filepath.Join(tmp, businessPath))
+				raw, e := os.ReadFile(filepath.Join(data, businessPath))
 				if e != nil || string(raw) != want {
 					t.Fatal(e, string(raw), want)
 				}
 			}
 			prepare()
-			params := map[string]any{"scenario": tc.scenario, "envelope": tc.envelope, "path": businessPath}
+			params := map[string]any{"scenario": tc.scenario, "envelope": tc.envelope, "path": "data/" + businessPath}
 			b, _ := json.Marshal(params)
 			q, _ := http.NewRequestWithContext(ctx, "POST", base+"/api/v1/capabilities/wasm_error", bytes.NewReader(b))
 			q.Header.Set("Authorization", "Bearer "+key)
@@ -265,9 +282,9 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 				assertBody()
 			}
 			if tc.name == "effect" {
-				data, _ := os.ReadFile(filepath.Join(tmp, "effect.txt"))
-				if string(data) != "observed" {
-					t.Fatal(string(data))
+				effect, _ := os.ReadFile(filepath.Join(data, "effect.txt"))
+				if string(effect) != "observed" {
+					t.Fatal(string(effect))
 				}
 			}
 		})

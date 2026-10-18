@@ -103,10 +103,7 @@ func TestCLIIssuedSecretsAuthenticateGateway(t *testing.T) {
 		}
 		done <- body
 	}()
-	msg, err := conn.ReadText()
-	if err != nil {
-		t.Fatalf("read CLI issued key capability request: %v", err)
-	}
+	msg := readManualAgentFrame(t, conn, done)
 	var req protocol.Request
 	if err := json.Unmarshal(msg, &req); err != nil {
 		t.Fatalf("decode CLI issued key capability request: %v; msg=%s", err, string(msg))
@@ -190,10 +187,7 @@ func TestGatewayPassesStrictAgentErrorWithoutPrivateParams(t *testing.T) {
 		}
 		done <- body
 	}()
-	msg, err := conn.ReadText()
-	if err != nil {
-		t.Fatalf("read capability request: %v", err)
-	}
+	msg := readManualAgentFrame(t, conn, done)
 	var req protocol.Request
 	if err := json.Unmarshal(msg, &req); err != nil {
 		t.Fatalf("decode capability request: %v; msg=%s", err, string(msg))
@@ -230,10 +224,7 @@ func TestGatewayPassesStrictAgentErrorWithoutPrivateParams(t *testing.T) {
 		}
 		mcpDone <- body
 	}()
-	msg, err = conn.ReadText()
-	if err != nil {
-		t.Fatalf("read MCP capability request: %v", err)
-	}
+	msg = readManualAgentFrame(t, conn, mcpDone)
 	if err := json.Unmarshal(msg, &req); err != nil {
 		t.Fatalf("decode MCP capability request: %v; msg=%s", err, string(msg))
 	}
@@ -266,10 +257,12 @@ func TestGatewayPassesStrictAgentErrorWithoutPrivateParams(t *testing.T) {
 
 func serveMetaOnce(t *testing.T, conn *ws.Conn, doc map[string]any) protocol.Request {
 	t.Helper()
-	msg, err := conn.ReadText()
-	if err != nil {
-		t.Fatalf("read meta request: %v", err)
-	}
+	return serveMetaOnceWithExecutionTimeout(t, conn, doc, manualAgentFixtureExecutionTimeout)
+}
+
+func serveMetaOnceWithExecutionTimeout(t *testing.T, conn *ws.Conn, doc map[string]any, executionTimeout string) protocol.Request {
+	t.Helper()
+	msg := readManualAgentFrame(t, conn)
 	var req protocol.Request
 	if err := json.Unmarshal(msg, &req); err != nil {
 		t.Fatalf("decode meta request: %v; msg=%s", err, string(msg))
@@ -277,7 +270,7 @@ func serveMetaOnce(t *testing.T, conn *ws.Conn, doc map[string]any) protocol.Req
 	if req.Capability != "meta" {
 		t.Fatalf("capability = %q, want meta", req.Capability)
 	}
-	if err := conn.WriteText(protocol.MustJSON(currentDBFixtureMetadata(req.ID, doc))); err != nil {
+	if err := conn.WriteText(protocol.MustJSON(currentDBFixtureMetadataWithTimeout(req.ID, doc, executionTimeout))); err != nil {
 		t.Fatalf("write meta response: %v", err)
 	}
 	return req
@@ -293,15 +286,7 @@ func openAPIDocFor(caps ...string) map[string]any {
 				"requestBody": map[string]any{
 					"content": map[string]any{
 						"application/json": map[string]any{
-							"schema": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"params": map[string]any{
-										"type":       "object",
-										"properties": map[string]any{"id": map[string]any{"type": "integer"}},
-									},
-								},
-							},
+							"schema": manualAgentFixtureInputSchema(),
 						},
 					},
 				},

@@ -54,18 +54,21 @@ type handle struct {
 	metadata contract.ArtifactMetadata
 }
 type session struct {
-	mu                                sync.Mutex
-	ctx                               context.Context
-	store                             *artifacts.Store
-	l                                 Limits
-	handles                           map[int64]*handle
-	stages                            []*handle
-	result                            int64
-	committed, failed                 bool
-	files                             int
-	fileBytes                         int64
-	value                             contract.ProviderResult
-	terminalError                     error
+	mu                sync.Mutex
+	ctx               context.Context
+	store             *artifacts.Store
+	l                 Limits
+	handles           map[int64]*handle
+	stages            []*handle
+	result            int64
+	committed, failed bool
+	files             int
+	fileBytes         int64
+	value             contract.ProviderResult
+	terminalError     error
+	// rejectedEnvelope is why a commit's terminal envelope was refused; it is
+	// set only on that refusal, never for a committed terminal.
+	rejectedEnvelope                  error
 	resultFailure                     error
 	createStage                       func(context.Context, string, string, int64) (contract.ArtifactStage, error)
 	logs                              *diagnostics
@@ -310,6 +313,7 @@ func (s *session) call(b []byte) (int64, int32) {
 			s.deleteHandle(ack)
 			s.failed = true
 			s.terminalError = e
+			s.rejectedEnvelope = e
 			return 0, invalid
 		}
 		s.committed = true

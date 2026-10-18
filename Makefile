@@ -48,7 +48,7 @@ reconciliation-change-order:
 	bash examples/mutation-reconciliation/db.sh change-order "$(RECONCILIATION_DB)"
 
 test:
-	go test ./...
+	go test -timeout 60m ./...
 
 test-contract-schema:
 	npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator

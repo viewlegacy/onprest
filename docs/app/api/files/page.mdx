@@ -37,11 +37,12 @@ File names must be plain names without directories. A file input cannot be a ser
 |---|---|---|
 | Whole JSON body, or all JSON parts of a multipart request | 1 MiB | `GATEWAY_MAX_REQUEST_BODY_BYTES` |
 | Whole multipart request | 100 MiB | `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` |
+| Input values other than files, in a call with file inputs | 16 MiB | Fixed |
 | Requests receiving input at the same time | 16 | `GATEWAY_MAX_CONCURRENT_BODY_READERS` |
 | Time to receive all uploads | 60s | agent `runtime.transfer_timeout` |
 | File count and sizes per call | 16 files, 32 MiB each, 64 MiB total | capability [file limits](/capabilities/policy-and-limits#file-limits) |
 
-A request over a gateway size limit gets HTTP 413. When all input slots are busy, the gateway answers HTTP 503 `BUSY` before reading the body; retry later.
+A request over a gateway size limit gets HTTP 413, and one over the fixed 16 MiB limit gets HTTP 422 `LIMIT_EXCEEDED` before anything runs. When all input slots are busy, the gateway answers HTTP 503 `BUSY` before reading the body; retry later.
 
 ## Receiving files
 

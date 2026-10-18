@@ -57,6 +57,18 @@ func TestContainerDBDriverVersionedRuntimePublication(t *testing.T) {
         timestamp_value: {type: string}
         null_value: {type: [string, "null"]}
     data: {}
+normalize_csv:
+  executor: {type: db, source: primary, sql: %s}
+  input: {properties: {id: {type: integer}}, required: [id]}
+  output:
+    items:
+      properties:
+        id: {type: integer}
+        binary_value: {type: string}
+        text_value: {type: string}
+        decimal_value: {type: string}
+        null_value: {type: [string, "null"]}
+    files: {format: csv, filename: rows.csv, delivery: {rest: direct, mcp: inline}}
 limited:
   executor: {type: db, source: primary, sql: %s}
   policy: {max_rows: 1}
@@ -80,7 +92,7 @@ committed:
   executor: {type: db, source: primary, sql: 'update onprest_it_runtime_mutation set value=4 where id=1'}
   policy: {readonly: false}
   output: {properties: {count: {type: integer}}, data: {}}
-`, yamlString(normalization), yamlString(selectAll))
+`, yamlString(normalization), yamlString(normalization), yamlString(selectAll))
 			path := writeContainerCapability(t, tmp, driver, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, "select 1")
 			data, e := osReadCapability(path)
 			if e != nil {
@@ -148,6 +160,28 @@ committed:
 				if !bytes.Equal(a, b) {
 					t.Fatal("MCP envelopes disagree")
 				}
+			}
+			// Every driver's normalized row becomes the same generated CSV on the
+			// REST direct and MCP inline file paths: declared column order, int64
+			// and decimal text exact, Base64 binary, null as an empty cell.
+			wantCSV := "id,binary_value,text_value,decimal_value,null_value\r\n9007199254740993,AP8B,日本,9007199254740993.123456789012,\r\n"
+			status, body = postCapabilityEnvelope(t, base, secrets.APIKey, "normalize_csv", `{"id":9007199254740993}`)
+			if status != 200 || string(body) != wantCSV {
+				t.Fatalf("direct CSV status=%d body=%q", status, body)
+			}
+			raw := postMCPPayloadWithProtocol(t, base, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"normalize_csv","arguments":{"id":9007199254740993}}}`)
+			var resources struct {
+				Result struct {
+					Content []struct {
+						Type     string `json:"type"`
+						Resource struct {
+							Text string `json:"text"`
+						} `json:"resource"`
+					} `json:"content"`
+				} `json:"result"`
+			}
+			if e := json.Unmarshal(raw, &resources); e != nil || len(resources.Result.Content) != 2 || resources.Result.Content[1].Type != "resource" || resources.Result.Content[1].Resource.Text != wantCSV {
+				t.Fatalf("MCP inline CSV %s %v", raw, e)
 			}
 			for _, c := range []struct {
 				name, code string

@@ -15,7 +15,7 @@ capabilities:
       sandbox:
         enabled: true
         permissions:
-          filesystem: [{root: ., access: read}]
+          filesystem: [{root: ./files, access: read}]
     input:
       properties:
         name: {type: string, minLength: 1, maxLength: 64}

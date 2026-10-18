@@ -460,12 +460,19 @@ func (s *session) filesCall(method string, a map[string]any) (int64, int32) {
 		if !hasPath {
 			return 0, invalid
 		}
-		f, e := s.open(p, os.O_RDONLY, 0)
+		// Metadata never opens the target: write-only files, FIFOs and devices
+		// are described as the OS describes them, without reading or blocking.
+		r, n, e := s.authorize(p, false)
 		if e != nil {
 			return 0, codeFor(e)
 		}
-		defer f.Close()
-		i, e := f.Stat()
+		var i fs.FileInfo
+		if r != nil {
+			i, e = r.HostStat(n)
+		} else {
+			// OFF keeps ordinary OS-user semantics, following links like os.Stat.
+			i, e = os.Stat(n)
+		}
 		if e != nil {
 			return 0, codeFor(e)
 		}
@@ -645,13 +652,9 @@ func (s *session) readDirectory(f *os.File) (int64, int32) {
 		if c = s.operation(); c != 0 {
 			break
 		}
-		entry, e := filesystem.HostDirectoryChild(f, v.Name(), s.bridge.Sandbox["enabled"] == true)
-		if e != nil {
-			c = codeFor(e)
-			break
-		}
-		info, e := entry.Stat()
-		entry.Close()
+		// Each entry is described relative to the held directory without being
+		// opened, like a native directory listing; special entries keep their type.
+		info, e := filesystem.HostDirectoryEntryInfo(f, v.Name())
 		if e != nil {
 			c = codeFor(e)
 			break

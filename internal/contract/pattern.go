@@ -16,8 +16,16 @@ func CompilePattern(source string) (*Pattern, error) {
 		return nil, errors.New("pattern must contain Unicode scalars")
 	}
 	inClass := false
+	// ECMA-262 forbids quantifying an assertion (^* or $+) while Go accepts
+	// it, so a quantifier directly after an anchor is outside the subset.
+	afterAnchor := false
 	for i := 0; i < len(source); i++ {
 		c := source[i]
+		anchor := afterAnchor
+		afterAnchor = false
+		if !inClass && anchor && (c == '*' || c == '+' || c == '?' || c == '{') {
+			return nil, errors.New("quantifier after an anchor is unsupported")
+		}
 		if c == '\\' {
 			i++
 			if i >= len(source) {
@@ -55,7 +63,18 @@ func CompilePattern(source string) (*Pattern, error) {
 		}
 		switch c {
 		case '[':
+			// "[]" and "[^]" are an empty and an any-character class in
+			// ECMA-262 but a literal ']' in Go, so a leading ']' is refused.
+			first := i + 1
+			if first < len(source) && source[first] == '^' {
+				first++
+			}
+			if first < len(source) && source[first] == ']' {
+				return nil, errors.New("class starting with ']' is unsupported")
+			}
 			inClass = true
+		case '^', '$':
+			afterAnchor = true
 		case ']', '}':
 			return nil, errors.New("unescaped pattern syntax character")
 		case '(':

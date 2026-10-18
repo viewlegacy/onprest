@@ -86,6 +86,8 @@ type Store struct {
 	write    func(*os.File, []byte) (int, error)
 	remove   func(string) error
 	syncFile func(*os.File) error
+	// syncSpool, when set by package tests, replaces the spool directory sync.
+	syncSpool func() error
 }
 
 var objectName = regexp.MustCompile(`^[ioh]-[0-9a-f]{32}\.spool$`)

@@ -108,10 +108,12 @@ onprest-agent code test --build --config FILE --capability NAME [--source DIR] [
 | `--module FILE` | validate | Module to inspect |
 | `--params JSON`, `--params-file FILE` | test | Input object. Default: `{}` |
 | `--input-file POINTER=PATH` | test | Attach a local file at a `null` placeholder in the input. Repeatable |
-| `--input-mime POINTER=MIME` | test | MIME type for an attached file. Default: from the extension |
+| `--input-mime POINTER=MIME` | test | MIME type for an attached file. Default: from the extension (see below) |
 | `--output-dir DIR` | test | Save returned files under `DIR/<request_id>/` |
 | `--log-level LEVEL` | test | `debug`, `info`, `warn`, or `error`. Default: the YAML's `logging.level` |
 | `--format text\|json` | all | Output format. Default: `text` |
+
+Without `--input-mime`, `code test` takes the MIME type from common extensions, ignoring case (`.txt`, `.csv`, `.json`, `.pdf`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.mp4`, `.zip`), and uses `application/octet-stream` for any other file. Use `--input-mime` with the same pointer to send a different type.
 
 `code build` needs Go 1.26.9 or later and keeps an existing module if the build fails. `code test` really performs whatever the capability does; its result goes to stdout and diagnostics to stderr. Exit codes: `0` success, `1` failure, `2` usage error.
 

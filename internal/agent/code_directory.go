@@ -5,12 +5,16 @@ import (
 	"errors"
 	"github.com/viewlegacy/onprest/internal/agent/filesystem"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
 
+// codeDirectory binds an author-chosen directory by native descriptors. The
+// descriptor root shares delete access (FILE_SHARE_DELETE on Windows), so
+// holding it never blocks publishing or renaming a child directory.
 type codeDirectory struct {
-	root      *os.Root
+	root      *filesystem.Root
 	directory *filesystem.Directory
 	path      string
 }
@@ -24,12 +28,12 @@ func openCodeDirectory(path string) (*codeDirectory, error) {
 	if e != nil {
 		return nil, e
 	}
-	r, e := os.OpenRoot(absolute)
+	r, e := filesystem.OpenRoot(absolute)
 	if e != nil {
 		d.Close()
 		return nil, e
 	}
-	f, e := r.Open(".")
+	f, e := r.HostOpen(".", os.O_RDONLY, 0)
 	if e != nil {
 		r.Close()
 		d.Close()
@@ -70,8 +74,8 @@ func (d *codeDirectory) bound() error {
 	return nil
 }
 func (d *codeDirectory) readRegular(name string, limit int64) ([]byte, bool, error) {
-	info, e := d.root.Lstat(name)
-	if os.IsNotExist(e) {
+	info, e := d.root.HostStat(name)
+	if errors.Is(e, fs.ErrNotExist) {
 		return nil, false, nil
 	}
 	if e != nil {
@@ -80,12 +84,11 @@ func (d *codeDirectory) readRegular(name string, limit int64) ([]byte, bool, err
 	if !info.Mode().IsRegular() {
 		return nil, true, errors.New("artifact is not a regular file")
 	}
-	f, e := d.root.Open(name)
+	f, e := d.root.HostOpen(name, os.O_RDONLY, 0)
 	if e != nil {
 		return nil, true, e
 	}
-	actual, e := f.Stat()
-	if e != nil || !os.SameFile(info, actual) {
+	if !filesystem.SameEntry(info, f) {
 		f.Close()
 		return nil, true, errors.New("artifact binding changed")
 	}
@@ -122,21 +125,21 @@ func (d *codeDirectory) publishPairWithFault(ctx context.Context, name, manifest
 		if err != nil {
 			for _, n := range []string{name, manifest} {
 				if published[n] {
-					err = errors.Join(err, d.root.Remove(n))
+					err = errors.Join(err, d.root.HostRemove(n))
 				}
 				if backup, ok := backups[n]; ok {
-					err = errors.Join(err, d.root.Rename(backup, n))
+					err = errors.Join(err, d.root.HostRename(backup, d.root, n))
 				}
 			}
 		}
 		for _, n := range []string{moduleTemp, manifestTemp} {
-			if e := d.root.Remove(n); e != nil && !os.IsNotExist(e) {
+			if e := d.root.HostRemove(n); e != nil && !errors.Is(e, fs.ErrNotExist) {
 				err = errors.Join(err, e)
 			}
 		}
 		if err == nil {
 			for _, n := range backups {
-				err = errors.Join(err, d.root.Remove(n))
+				err = errors.Join(err, d.root.HostRemove(n))
 			}
 		}
 	}()
@@ -163,7 +166,7 @@ func (d *codeDirectory) publishPairWithFault(ctx context.Context, name, manifest
 		}
 		if exists {
 			backup := prefix + ".old-" + codeHash([]byte(n))[:8]
-			if err = d.root.Rename(n, backup); err != nil {
+			if err = d.root.HostRename(n, d.root, backup); err != nil {
 				return err
 			}
 			backups[n] = backup
@@ -193,4 +196,24 @@ func (d *codeDirectory) publishPairWithFault(ctx context.Context, name, manifest
 		}
 	}
 	return d.directory.Sync()
+}
+
+// removeFlat removes a run directory that holds only regular files, through
+// the same no-follow descriptors; any other entry makes removal fail.
+func (d *codeDirectory) removeFlat(name string) error {
+	dir, e := d.root.HostOpen(name, os.O_RDONLY, 0)
+	if e != nil {
+		return e
+	}
+	entries, e := dir.ReadDir(-1)
+	e = errors.Join(e, dir.Close())
+	if e != nil {
+		return e
+	}
+	for _, entry := range entries {
+		if e := d.root.HostRemove(name + "/" + entry.Name()); e != nil {
+			return e
+		}
+	}
+	return d.root.HostRemove(name)
 }

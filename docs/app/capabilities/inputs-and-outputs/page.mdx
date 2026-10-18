@@ -53,7 +53,7 @@ A few rules that are easy to miss:
 - `enum` and `const` need an explicit `type` unless the schema has `properties` or `items`, and every listed value must match the schema. To accept `null`, include `'null'` in `type`, and in `enum` if there is one.
 - A missing property gets its `default`; an explicit `null` is not missing.
 - Integers keep full 64-bit precision.
-- `pattern` supports the common regular-expression subset (classes, groups, alternation, repetition, anchors). Lookaround and backreferences are not available, and `\d` and `\w` match ASCII only. Anchor the pattern with `^` and `$` when it must match the whole value.
+- `pattern` supports the common regular-expression subset (classes, groups, alternation, repetition, anchors). Lookaround, backreferences, and a few ambiguous forms such as `[]` are refused; `validate` reports them. `\d` and `\w` match ASCII only. Anchor the pattern with `^` and `$` when it must match the whole value.
 - `date` is `YYYY-MM-DD` and `date-time` is RFC 3339, such as `2026-10-13T09:00:00Z`. `uuid` accepts versions 1 to 5, not version 7. `uri` requires a scheme.
 
 Request size and nesting are bounded by [policy](/capabilities/policy-and-limits).

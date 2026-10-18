@@ -1,2 +1,2 @@
 # The seven-byte greeting fixture intentionally ends with a payload space.
-/examples/wasm/message.txt whitespace=-blank-at-eol
+/examples/wasm/files/message.txt whitespace=-blank-at-eol

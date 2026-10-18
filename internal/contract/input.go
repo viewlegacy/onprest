@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/viewlegacy/onprest/internal/valueformat"
 	"math"
-	"math/big"
 	"mime"
 	"reflect"
 	"regexp"
@@ -596,11 +595,7 @@ func exactInteger(v any) (int64, bool) {
 	case int:
 		return int64(n), true
 	case json.Number:
-		r, ok := new(big.Rat).SetString(string(n))
-		if !ok || !r.IsInt() || !r.Num().IsInt64() {
-			return 0, false
-		}
-		return r.Num().Int64(), true
+		return JSONNumberInt64(string(n))
 	case float64:
 		if math.IsNaN(n) || math.IsInf(n, 0) || math.Trunc(n) != n || math.Abs(n) > 1<<53 {
 			return 0, false

@@ -20,7 +20,9 @@ func TestAgentDoesNotDeclareInboundHTTPListener(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if d.IsDir() || !strings.HasSuffix(path, ".go") {
+			// Only sources compiled into the onprest-agent binary are in scope;
+			// package tests may open local listeners for fixtures.
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
 			b, err := os.ReadFile(path)

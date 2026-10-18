@@ -13,6 +13,7 @@ This gate verifies:
 - Go vulnerability analysis reports zero reachable known vulnerabilities for `./...`
 - unit tests
 - PostgreSQL integration tests 3 consecutive times
+- public schema validation: the unit and PostgreSQL integration tests check real values against the published OpenAPI and MCP schemas
 - PostgreSQL DB interruption stability 5 consecutive times
 - all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
 - MySQL special-character credential connection
@@ -38,7 +39,8 @@ Pull requests targeting `main` and pushes to `main` also run these checks:
 | `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
 | `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
 | `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
-| `release-gate / release-ready` | Requires packaging, Linux integration, and the complete reusable service lifecycle workflow to succeed |
+| `release-gate / native-tests` | Runs the agent's OS-dependent tests natively on Linux arm64, macOS, and Windows; a skipped test fails the check |
+| `release-gate / release-ready` | Requires packaging, Linux integration, the native tests, and the complete reusable service lifecycle workflow to succeed |
 
 The three service checks run the binaries from the release archives under the native OS service manager, against a real gateway and PostgreSQL.
 
@@ -55,7 +57,7 @@ Release. It never overwrites an existing Release.
 
 ## Requirements
 
-Release gate commands require Go 1.26.9 or later as declared in `go.mod`. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.9 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
+Release gate commands require Go 1.26.9 or later as declared in `go.mod`. Schema validation also needs Node.js and npm to install the pinned validator. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.9 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
 
 Container-backed tests require Docker daemon access. To make container availability mandatory, use:
 
@@ -67,7 +69,7 @@ If Docker is unavailable and mandatory mode is not enabled, container-backed tes
 
 ## Acceptance Criteria
 
-A release candidate should pass `integration-linux`, all three native service checks, and the final `release-ready` aggregation for the exact candidate commit, and preserve the architecture boundaries:
+A release candidate should pass `integration-linux`, the native tests, all three native service checks, and the final `release-ready` aggregation for the exact candidate commit, and preserve the architecture boundaries:
 
 - zero reachable known vulnerabilities reported by `govulncheck ./...`
 - two deployable binaries: `onprest-gateway` and `onprest-agent`

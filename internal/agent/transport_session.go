@@ -9,6 +9,7 @@ import (
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -172,6 +173,11 @@ func (r *Runner) serveTransport(parent context.Context, conn *ws.Conn) {
 			}
 			f, e := protocol.DecodeFrame(raw, wireLimits)
 			if e != nil {
+				// A well-framed commit whose params cannot be accepted fails only
+				// its own request; other undecodable frames end the connection.
+				if guard.Type == "request_commit" && s.rejectCommit(string(guard.ID), e) {
+					continue
+				}
 				return
 			}
 			if f.Type == "ack" || f.Type == "transfer_chunk" || f.Type == "transfer_end" {
@@ -254,6 +260,20 @@ func (r *Runner) serveTransport(parent context.Context, conn *ws.Conn) {
 			s.respond(ctx, protocol.Response{ID: req.ID, Error: inputFailure("BUSY")})
 		}
 	}
+}
+func (s *transportSession) rejectCommit(id string, cause error) bool {
+	s.mu.Lock()
+	c := s.calls[id]
+	s.mu.Unlock()
+	if c == nil {
+		return false
+	}
+	code := "INVALID_REQUEST"
+	if strings.Contains(cause.Error(), "limit exceeded") {
+		code = "LIMIT_EXCEEDED"
+	}
+	s.abort(c, code, true)
+	return true
 }
 func inputFailure(code string) *contract.ErrorValue {
 	return &contract.ErrorValue{Code: code, Message: executionMessage(code), Outcome: "not_started"}

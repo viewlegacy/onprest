@@ -90,7 +90,7 @@ func main() {
 	if json.NewDecoder(os.Stdin).Decode(&input) != nil {
 		panic("invalid input")
 	}
-	greeting, e := os.ReadFile("message.txt")
+	greeting, e := os.ReadFile("files/message.txt")
 	if e != nil {
 		panic(e)
 	}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,9 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "agent")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-trimpath", "-mod=readonly", "-o", bin, "./cmd/agent")
 	build.Dir = repo
 	if b, e := build.CombinedOutput(); e != nil {
@@ -243,9 +247,12 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 	})
 	t.Run("input-prevents-business", func(t *testing.T) {
-		for _, params := range []string{`[]`, `{"n":"bad"}`, `{"n":null}`, `{"unknown":1}`, `{"n":1,"n":2}`, `{"small":2147483648}`} {
+		// Contract validation rejects before the worker; an int32 overflow passes
+		// the integer contract and fails in the SDK decoder before the handler.
+		for params, code := range map[string]string{`[]`: "VALIDATION_FAILED", `{"n":"bad"}`: "VALIDATION_FAILED", `{"n":null}`: "VALIDATION_FAILED", `{"unknown":1}`: "VALIDATION_FAILED", `{"n":1,"n":2}`: "VALIDATION_FAILED", `{"small":2147483648}`: "EXECUTION_FAILED"} {
 			v, raw, diag := test(1, params)
-			if strings.Contains(diag, "BUSINESS_ENTER") && v["error"].(map[string]any)["code"] == "VALIDATION_FAILED" {
+			failure, _ := v["error"].(map[string]any)
+			if strings.Contains(diag, "BUSINESS_ENTER") || failure == nil || failure["code"] != code {
 				t.Fatal(params, raw, diag)
 			}
 		}

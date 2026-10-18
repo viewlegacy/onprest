@@ -27,8 +27,13 @@ func TestSourceFreeSpoolRecoveryAndControlReset(t *testing.T) {
 	addr := freeAddr(t)
 	base := "http://" + addr
 	config := filepath.Join(tmp, "capability.yaml")
-	writeFile(t, filepath.Join(tmp, "small.bin"), "snapshot-bytes")
-	if err := os.WriteFile(filepath.Join(tmp, "large.bin"), bytes.Repeat([]byte("x"), 8<<20), 0600); err != nil {
+	// Business files live beside, not around, the private spool and identity.
+	business := filepath.Join(tmp, "business")
+	if err := os.Mkdir(business, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(business, "small.bin"), "snapshot-bytes")
+	if err := os.WriteFile(filepath.Join(business, "large.bin"), bytes.Repeat([]byte("x"), 8<<20), 0600); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, config, fmt.Sprintf(`schema_version: 1
@@ -43,7 +48,7 @@ runtime:
     transfer: {requests: 1, per: 24h, burst: 3, max_concurrent: 4}
 sources:
   folders:
-    business: {root: ., access: read_write}
+    business: {root: ./business, access: read_write}
 capabilities:
   read_small:
     executor: {type: file, read: {source: business, selector: {name: small.bin}}}
@@ -140,7 +145,7 @@ capabilities:
 	if status != 200 || string(raw) != "snapshot-bytes" {
 		t.Fatalf("restart bucket not reset: %d %s", status, raw)
 	}
-	completed, err := os.ReadFile(filepath.Join(tmp, "completed.bin"))
+	completed, err := os.ReadFile(filepath.Join(business, "completed.bin"))
 	if err != nil || string(completed) != "completed-business" {
 		t.Fatal("completed business file lost")
 	}
@@ -228,7 +233,7 @@ capabilities:
 	if remaining >= 128<<10 {
 		t.Fatalf("orphan bytes remain: %d", remaining)
 	}
-	completed, err = os.ReadFile(filepath.Join(tmp, "completed.bin"))
+	completed, err = os.ReadFile(filepath.Join(business, "completed.bin"))
 	if err != nil || string(completed) != "completed-business" {
 		t.Fatal("recovery removed completed business file")
 	}

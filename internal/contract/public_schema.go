@@ -290,8 +290,16 @@ func BuildOpenAPI(config *Config) map[string]any {
 				response := c.Executor.Settings["response"].(map[string]any)
 				mime, _ = response["mime_type"].(string)
 			}
+			if mime == "" && c.Executor.Type == "file" {
+				// A folder read is labelled octet-stream; a written snapshot keeps
+				// the caller's MIME type, which the schema cannot fix in advance.
+				if read, _ := c.Executor.Settings["read"].(map[string]any); read["written"] != true {
+					mime = "application/octet-stream"
+				}
+			}
 			if mime == "" {
-				mime = "application/octet-stream"
+				// Code and written snapshots choose the type per call.
+				mime = "*/*"
 			}
 			responseContent = map[string]any{mime: map[string]any{"schema": map[string]any{"type": "string", "format": "binary"}}}
 		}

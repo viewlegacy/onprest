@@ -36,7 +36,9 @@ The module receives the validated input and returns data and files. As with ever
 | `sandbox` | `{enabled: false}` | What the code may access; see below |
 | `limits` | see below | Memory and I/O budgets |
 
-Modules must be built with `onprest-agent code build` (or carry the same metadata). At startup and in `validate`, the agent checks the module's metadata, imports, and size without running it.
+Modules must be built with `onprest-agent code build` (or carry the same metadata). At startup and in `validate`, the agent compiles the module and checks its metadata, imports, and size without running it.
+
+This check must finish within 60 seconds per module, a limit you cannot change. Otherwise the agent refuses to start, and `validate` and the `code` commands fail with `Wasm module validation did not finish within 1m0s`. Retry on a less busy host, give it more CPU, or make the module smaller, for example by removing dependencies it does not need.
 
 ## Sandbox
 

@@ -93,3 +93,7 @@ func publishBelow(dir *os.File, temp, name string, overwrite bool, expected *Fil
 	}
 	return true, nil
 }
+
+// ReplaceSupported reports whether an existing destination can be replaced
+// atomically (Linux RENAME_EXCHANGE, macOS RENAME_SWAP).
+func ReplaceSupported() bool { return true }

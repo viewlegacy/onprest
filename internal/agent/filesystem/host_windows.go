@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"time"
 	"unsafe"
 )
 
@@ -205,4 +206,51 @@ func hostEntryOrdinary(parent *os.File, name string) error {
 		return fs.ErrPermission
 	}
 	return nil
+}
+
+// hostChildInfo opens the entry for attributes only (no data access, final
+// reparse point not followed) relative to the held directory and describes it.
+func hostChildInfo(dir *os.File, name string) (fs.FileInfo, error) {
+	n, e := windows.NewNTUnicodeString(name)
+	if e != nil {
+		return nil, hostWindowsError(e)
+	}
+	oa := windows.OBJECT_ATTRIBUTES{RootDirectory: windows.Handle(dir.Fd()), ObjectName: n, Attributes: windows.OBJ_DONT_REPARSE}
+	oa.Length = uint32(unsafe.Sizeof(oa))
+	var h windows.Handle
+	var ios windows.IO_STATUS_BLOCK
+	if e = windows.NtCreateFile(&h, windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE, &oa, &ios, nil, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_OPEN_FOR_BACKUP_INTENT, 0, 0); e != nil {
+		return nil, hostWindowsError(e)
+	}
+	defer windows.CloseHandle(h)
+	var st windows.ByHandleFileInformation
+	if e = windows.GetFileInformationByHandle(h, &st); e != nil {
+		return nil, hostWindowsError(e)
+	}
+	mode := fs.FileMode(0o666)
+	if st.FileAttributes&windows.FILE_ATTRIBUTE_READONLY != 0 {
+		mode = 0o444
+	}
+	switch {
+	case st.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0:
+		mode |= fs.ModeSymlink
+	case st.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0:
+		mode |= fs.ModeDir | 0o111
+	}
+	size := int64(st.FileSizeHigh)<<32 | int64(st.FileSizeLow)
+	return entryInfo{name: name, size: size, mode: mode, modified: time.Unix(0, st.LastWriteTime.Nanoseconds()), sys: &st}, nil
+}
+
+// SameEntry reports whether an opened file is the entry described by info,
+// as returned by HostStat or HostDirectoryEntryInfo.
+func SameEntry(info fs.FileInfo, f *os.File) bool {
+	st, ok := info.Sys().(*windows.ByHandleFileInformation)
+	if !ok {
+		return false
+	}
+	var actual windows.ByHandleFileInformation
+	if windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &actual) != nil {
+		return false
+	}
+	return st.VolumeSerialNumber == actual.VolumeSerialNumber && st.FileIndexHigh == actual.FileIndexHigh && st.FileIndexLow == actual.FileIndexLow
 }

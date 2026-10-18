@@ -53,7 +53,12 @@ func TestMultipartGuardBoundedFramingAndStrictEOF(t *testing.T) {
 	for _, test := range []struct {
 		name, wire string
 		valid      bool
-	}{{"normal", "--b\r\nContent-Disposition: form-data; name=x\r\n\r\na\n--bxxxx\n\r\n--b--\r\n", true}, {"empty", "--b--\r\n", true}, {"preamble", "pre\r\n--b--\r\n", false}, {"epilogue", "--b--\r\nx", false}, {"LF", "--b\n", false}, {"unfinished", "--b\r\nContent-Type: application/json\r\n\r\n0", false}, {"oversizedheader", "--b\r\nX: " + strings.Repeat("x", 8192) + "\r\n\r\n0\r\n--b--\r\n", false}} {
+	}{{"normal", "--b\r\nContent-Disposition: form-data; name=x\r\n\r\na\n--bxxxx\n\r\n--b--\r\n", true}, {"empty", "--b--\r\n", true}, {"preamble", "pre\r\n--b--\r\n", false}, {"epilogue", "--b--\r\nx", false}, {"LF", "--b\n", false}, {"unfinished", "--b\r\nContent-Type: application/json\r\n\r\n0", false}, {"oversizedheader", "--b\r\nX: " + strings.Repeat("x", 8192) + "\r\n\r\n0\r\n--b--\r\n", false},
+		// Transport padding after a delimiter still opens a counted part header.
+		{"padded", "--b \t\r\nContent-Disposition: form-data; name=x\r\n\r\na\r\n--b  \r\nContent-Disposition: form-data; name=y\r\n\r\nb\r\n--b-- \r\n", true},
+		{"padded_space_oversized_header", "--b \r\nX: " + strings.Repeat("x", 8192) + "\r\n\r\n0\r\n--b--\r\n", false},
+		{"padded_tab_oversized_header", "--b\r\nContent-Disposition: form-data; name=x\r\n\r\na\r\n--b\t\r\nX: " + strings.Repeat("x", 8192) + "\r\n\r\n0\r\n--b--\r\n", false},
+		{"dash_content", "--b\r\nContent-Disposition: form-data; name=x\r\n\r\na\r\n--b-x\r\n--b \rx\r\n--b--\r\n", true}} {
 		t.Run(test.name, func(t *testing.T) {
 			g := &multipartGuard{source: strings.NewReader(test.wire), boundary: "b", first: true}
 			_, e := io.Copy(io.Discard, g)
@@ -181,7 +186,11 @@ func TestInputCommitBodyLeaseRetainsCancelledQueuedParams(t *testing.T) {
 	waitForCondition(t, time.Second, func() bool { lease.mu.Lock(); defer lease.mu.Unlock(); return lease.refs == 2 }, "commit retained")
 	cancel()
 	select {
-	case <-done:
+	case e := <-done:
+		// The commit never started writing, so nothing can have run.
+		if errors.As(e, new(inputExecutionError)) || inputResult(e).Failure.Outcome != "not_started" {
+			t.Fatal("queued commit cancellation", e)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("cancel blocked")
 	}
@@ -191,6 +200,48 @@ func TestInputCommitBodyLeaseRetainsCancelledQueuedParams(t *testing.T) {
 	}
 	release()
 	waitForCondition(t, time.Second, func() bool { return len(s.bodySlots) == 0 }, "commit payload discarded")
+}
+
+// Once the commit write has started, the Agent may already be executing it:
+// cancellation from then on is reported as an unknown outcome.
+func TestInputCommitCancelAfterWriteStartIsUnknown(t *testing.T) {
+	s := newCancelStateTestServer()
+	s.bodySlots = make(chan struct{}, 1)
+	conn := newDeterministicCancelTransport()
+	unblock := make(chan struct{})
+	conn.blockWrite[0] = unblock
+	ac := newAgentConn(conn)
+	ac.initializeTransfers()
+	go ac.scheduler.Run()
+	defer func() { conn.Close(); ac.disconnectPending() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, lease, ok := s.acquireBody(httptest.NewRequest("POST", "/", nil).WithContext(ctx))
+	if !ok {
+		t.Fatal("body lease")
+	}
+	defer lease.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- ac.frame(r.Context(), protocol.Frame{Type: "request_commit", ID: "test", Params: map[string]any{"x": "y"}})
+	}()
+	select {
+	case <-conn.writeEvents: // the write began and is now held open
+	case <-time.After(time.Second):
+		t.Fatal("commit write did not start")
+	}
+	cancel()
+	var e error
+	select {
+	case e = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancel blocked")
+	}
+	close(unblock)
+	result := inputResult(e)
+	if !errors.As(e, new(inputExecutionError)) || result.Failure.Outcome != "unknown" {
+		t.Fatal("started commit cancellation", e, result)
+	}
 }
 
 func TestMultipartGuardAggregateFramingBoundary(t *testing.T) {

@@ -21,9 +21,18 @@ func TestTransferLateInputControlDiscardAndBoundedRecentExchanges(t *testing.T) 
 	ac.initializeTransfers()
 	defer ac.transferCancel()
 	defer ac.transfers.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, release, e := ac.exchange(deadlineOf(ctx), "completed")
+	// Zero and expired deadlines are refused; only a finite future deadline
+	// opens an exchange.
+	for _, until := range []time.Time{{}, time.Now().Add(-time.Millisecond)} {
+		if _, _, e := ac.exchange(until, "expired"); e == nil || e.Error() != "finite transfer deadline required" {
+			t.Fatal("non-finite or expired transfer deadline accepted", until, e)
+		}
+	}
+	// One fixed deadline for the whole table walk. Expiry is not what this test
+	// measures, so it is far enough away that no host load can reach it; the
+	// expiry of recent entries is driven explicitly below instead.
+	until := time.Now().Add(time.Hour)
+	_, release, e := ac.exchange(until, "completed")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -35,14 +44,36 @@ func TestTransferLateInputControlDiscardAndBoundedRecentExchanges(t *testing.T) 
 		t.Fatal("unknown control accepted", e)
 	}
 	for i := 1; i < 4096; i++ {
-		_, release, e := ac.exchange(deadlineOf(ctx), fmt.Sprintf("id%d", i))
+		_, release, e := ac.exchange(until, fmt.Sprintf("id%d", i))
 		if e != nil {
 			t.Fatal(i, e)
 		}
 		release()
 	}
-	if _, _, e := ac.exchange(deadlineOf(ctx), "overflow"); e == nil || len(ac.transferRecent) != 4096 || len(ac.transferCalls) != 0 {
+	// Every recent entry keeps the fixed late-control expiry of its operation.
+	for id, expiry := range ac.transferRecent {
+		if !expiry.Equal(until.Add(5 * time.Second)) {
+			t.Fatal("recent expiry is not the fixed operation deadline plus discard window", id, expiry)
+		}
+	}
+	if _, _, e := ac.exchange(until, "overflow"); e == nil || len(ac.transferRecent) != 4096 || len(ac.transferCalls) != 0 {
 		t.Fatal("unbounded recent exchange table", e)
+	}
+	// Once one entry's fixed expiry has passed, its slot is reclaimed and the
+	// table admits exactly one new exchange, still bounded at 4096.
+	ac.mu.Lock()
+	ac.transferRecent["id1"] = time.Now().Add(-time.Millisecond)
+	ac.mu.Unlock()
+	_, release, e = ac.exchange(until, "overflow")
+	if e != nil {
+		t.Fatal("expired recent entry was not reclaimed", e)
+	}
+	release()
+	if _, present := ac.transferRecent["id1"]; present || len(ac.transferRecent) != 4096 {
+		t.Fatal("recent table after reclaim", len(ac.transferRecent))
+	}
+	if _, _, e := ac.exchange(until, "overflow2"); e == nil {
+		t.Fatal("recent table accepted a 4097th live entry")
 	}
 }
 

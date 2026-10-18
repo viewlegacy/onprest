@@ -44,7 +44,7 @@ A call with `{"item": "widget-01"}` sends `POST https://inventory.internal.examp
 | `allowed_methods` | Methods capabilities may use with this source, such as `[GET, POST]` |
 | `allowed_cidrs` | Optional list of IP ranges the host name may resolve to |
 | `headers` | Optional fixed headers sent with every request |
-| `credential` or `credential_file` | Optional Bearer token, inline or in a protected file. Give the token only, without `Bearer ` |
+| `credential` or `credential_file` | Optional Bearer token, inline or in a protected file (see [Secret files](/agent/configuration#secret-files)). Give the token only, without `Bearer ` |
 
 Without `allowed_cidrs`, the agent connects to public and private addresses but not to loopback, link-local, or multicast addresses; list those ranges explicitly if the API runs there, for example `[127.0.0.0/8]`. The address is checked on every connection, HTTPS certificates are always verified, and proxy environment variables such as `HTTPS_PROXY` are ignored.
 

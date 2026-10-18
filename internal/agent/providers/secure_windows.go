@@ -32,35 +32,71 @@ func privateHandle(h windows.Handle, private bool) error {
 	if !private {
 		return nil
 	}
-	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.OWNER_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
 	control, _, err := sd.Control()
-	if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
-		return errors.New("configuration path DACL is not protected")
+	if err != nil {
+		return err
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return err
 	}
 	dacl, _, err := sd.DACL()
-	if err != nil || dacl == nil {
+	if err != nil {
 		return errors.New("configuration path has no private DACL")
+	}
+	var aces []privateACE
+	if dacl != nil {
+		for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+			var ace *windows.ACCESS_ALLOWED_ACE
+			if err := windows.GetAce(dacl, i, &ace); err != nil {
+				return err
+			}
+			aces = append(aces, privateACE{Type: ace.Header.AceType, SID: (*windows.SID)(unsafe.Pointer(&ace.SidStart))})
+		}
 	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
 		return err
 	}
-	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return err
-		}
-		if ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
+	return privateSecurity(control&windows.SE_DACL_PROTECTED != 0, owner, dacl != nil, aces, user.User.Sid)
+}
+
+// privateACE is one DACL entry reduced to what the protection check needs.
+type privateACE struct {
+	Type byte
+	SID  *windows.SID
+}
+
+func trustedPrincipal(sid, user *windows.SID) bool {
+	return sid != nil && (sid.Equals(user) || sid.IsWellKnown(windows.WinLocalSystemSid) || sid.IsWellKnown(windows.WinBuiltinAdministratorsSid))
+}
+
+// privateSecurity decides whether a secret, identity or spool object is
+// private: like the Unix owner check, the owner must be the agent user,
+// SYSTEM or Administrators; the DACL must be protected from inheritance and
+// grant access only to those principals (deny entries are allowed).
+func privateSecurity(protected bool, owner *windows.SID, hasDACL bool, aces []privateACE, user *windows.SID) error {
+	if !trustedPrincipal(owner, user) {
+		return errors.New("configuration path is owned by an unprivileged principal")
+	}
+	if !protected {
+		return errors.New("configuration path DACL is not protected")
+	}
+	if !hasDACL {
+		return errors.New("configuration path has no private DACL")
+	}
+	for _, ace := range aces {
+		if ace.Type == windows.ACCESS_DENIED_ACE_TYPE {
 			continue
 		}
-		if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE {
+		if ace.Type != windows.ACCESS_ALLOWED_ACE_TYPE {
 			return errors.New("unsupported configuration DACL ACE")
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if !sid.Equals(user.User.Sid) && !sid.IsWellKnown(windows.WinLocalSystemSid) && !sid.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+		if !trustedPrincipal(ace.SID, user) {
 			return errors.New("configuration path permits an unprivileged principal")
 		}
 	}

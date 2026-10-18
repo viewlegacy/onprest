@@ -117,11 +117,19 @@ echo "==> govulncheck"
 make vulncheck
 echo "PASS: govulncheck"
 
-run_go_json_no_skip "unit" go test -json ./...
+# Public schema checks need the pinned Ajv validator; without the
+# schema_validator tag the response-schema assertions compile to no-ops.
+echo "==> pinned schema validator"
+npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator
+echo "PASS: pinned schema validator"
+
+run_go_json_no_skip "unit" go test -json -timeout 60m ./...
+
+run_go_json_no_skip "unit-schema-validator" go test -json -timeout 60m -tags=schema_validator ./internal/...
 
 run_go_json_no_skip "postgres-ci" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -skip '^TestDocker' -count=3 -args -onprest-it-db=postgres
+	go test -json -timeout 90m -tags=integration,schema_validator ./it/... -skip '^TestDocker' -count=3 -args -onprest-it-db=postgres
 
 run_go_json_no_skip "postgres-db-interruption-stability" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \

@@ -11,11 +11,13 @@ A deployment is the gateway somewhere callers can reach and the agent inside the
 
 | OS | Architectures | Minimum version |
 |---|---|---|
-| Linux | `amd64`, `arm64` | A kernel supported by Go 1.26 |
+| Linux | `amd64`, `arm64` | Kernel 5.6 |
 | Windows | `amd64` | Windows 10 or Windows Server 2016 |
 | macOS | `amd64`, `arm64` | macOS 12 |
 
 Older versions may work but are not covered. Test the exact release on an older legacy host before relying on it.
+
+On Linux, folder sources, file saving, and code filesystem access need kernel 5.6 or later. Saving files also has [filesystem requirements](/capabilities/files#saving-uploaded-files).
 
 ## Install from a release
 

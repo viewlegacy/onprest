@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/viewlegacy/onprest/internal/agent/wasmruntime"
 	"gopkg.in/yaml.v3"
 )
 
@@ -869,7 +870,8 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		}
 	}
 	ciText := readText(t, filepath.Join(workflowDir, "ci.yml"))
-	for _, command := range []string{"go test ./...", "go vet ./..."} {
+	// The Wasm worker package alone runs longer than go test's default 10m.
+	for _, command := range []string{"go test -timeout 60m ./...", "go vet ./..."} {
 		if !strings.Contains(ciText, command) {
 			t.Fatalf("ci workflow missing %q", command)
 		}
@@ -878,10 +880,33 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	release := readWorkflow(t, filepath.Join(workflowDir, "release-gate.yml"))
 	assertMainWorkflowTriggers(t, release)
 	releaseJobs := workflowSection(t, release, "jobs")
-	for _, job := range []string{"package-candidate", "integration-linux", "service-lifecycle", "release-ready"} {
+	for _, job := range []string{"package-candidate", "integration-linux", "service-lifecycle", "native-tests", "release-ready"} {
 		if _, ok := releaseJobs[job]; !ok {
 			t.Fatalf("release gate workflow missing %s job", job)
 		}
+	}
+	// OS-dependent agent tests run natively on every non-amd64-Linux host and
+	// gate release-ready; Linux amd64 runs them inside integration-linux.
+	native := releaseJobs["native-tests"].(map[string]any)
+	matrix, _ := native["strategy"].(map[string]any)["matrix"].(map[string]any)
+	hosts := fmt.Sprint(matrix["os"])
+	for _, host := range []string{"windows-latest", "macos-latest", "ubuntu-24.04-arm"} {
+		if !strings.Contains(hosts, host) {
+			t.Fatalf("native tests do not run on %s: %s", host, hosts)
+		}
+	}
+	if _, ok := native["needs"]; ok {
+		t.Fatal("native tests must not wait for packaging")
+	}
+	nativeText := fmt.Sprint(native["steps"])
+	for _, marker := range []string{"go test -json -count=1 -timeout 80m ./internal/agent/... ./cmd/agent/...", `"Action":"skip".*"Test":"[^"]+"`} {
+		if !strings.Contains(nativeText, marker) {
+			t.Fatalf("native tests missing %q", marker)
+		}
+	}
+	ready := releaseJobs["release-ready"].(map[string]any)
+	if needs := fmt.Sprint(ready["needs"]); !strings.Contains(needs, "native-tests") || !strings.Contains(fmt.Sprint(ready["steps"]), `test "$NATIVE_RESULT" = success`) {
+		t.Fatal("release-ready does not require native tests")
 	}
 	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") ||
 		!strings.Contains(text, "make release-artifacts") ||
@@ -890,7 +915,27 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		!strings.Contains(text, "PACKAGE_RESULT") || !strings.Contains(text, "SERVICE_RESULT") || !strings.Contains(text, "concurrency:") || !strings.Contains(text, "cancel-in-progress: true") {
 		t.Fatal("release gate workflow does not aggregate Linux integration and reusable service lifecycle")
 	}
+	// The candidate archive must be a release version the Agent accepts for
+	// the Wasm modules it builds: below the compatibility version, every
+	// distributed Wasm test would fail on minimum_agent_version.
+	candidate := wasmruntime.CompatibilityVersion
+	releaseGateText := readText(t, filepath.Join(workflowDir, "release-gate.yml"))
+	for _, marker := range []string{"VERSION: " + candidate, "RELEASE_TAG: v" + candidate, candidate + " v" + candidate + ` "$RELEASE_SHA"`, "onprest-" + candidate + "-linux-amd64", "onprest-" + candidate + "-quickstart", "ONPREST_IT_DISTRIBUTION_VERSION=" + candidate, "version: " + candidate, "release-tag: v" + candidate} {
+		if !strings.Contains(releaseGateText, marker) {
+			t.Fatalf("release gate candidate does not use Wasm compatibility version %s: missing %q", candidate, marker)
+		}
+	}
+	if regexp.MustCompile(`(^|[^0-9.])v?0\.0\.0([^0-9.]|$)`).MatchString(releaseGateText) {
+		t.Fatal("release gate candidate still uses placeholder version 0.0.0")
+	}
 	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
+	// Public schema assertions are no-ops without the schema_validator tag, so
+	// the gate installs the pinned Ajv validator and runs both tagged suites.
+	for _, marker := range []string{"npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator", "-tags=schema_validator ./internal/...", "-tags=integration,schema_validator ./it/..."} {
+		if !strings.Contains(releaseScript, marker) {
+			t.Fatalf("release gate script does not run public schema validation: missing %q", marker)
+		}
+	}
 	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "ONPREST_IT_DISTRIBUTION_VERSION", "must be extracted outside the source tree", `cd / && "$absolute" --version`, "scripts/quickstart_smoke.sh"} {
 		if !strings.Contains(releaseScript, marker) {
 			t.Fatalf("release gate script does not validate prebuilt archive binaries: missing %q", marker)

@@ -11,7 +11,6 @@ import (
 	"github.com/viewlegacy/onprest/internal/contract"
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"io"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -773,8 +772,7 @@ func mcpJSONIntegerRawValue(raw json.RawMessage) bool {
 	if !ok {
 		return false
 	}
-	rational, ok := new(big.Rat).SetString(number.String())
-	return ok && rational.IsInt()
+	return contract.JSONNumberIsInteger(number.String())
 }
 
 func mcpNegotiatedProtocolVersion(requested string) string {

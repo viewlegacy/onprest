@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"os"
@@ -23,6 +24,17 @@ const ABI = "onprest_host_v1"
 const CompatibilityVersion = "2.0.0"
 const Chunk = 64 << 10
 const EnvelopeLimit = 32 << 20
+
+// ModuleValidationBudget bounds one module validation: starting the worker
+// process, compiling the module, and checking its metadata, imports, and
+// exports. It is fixed, not configurable; the value and its measurement are
+// recorded in architecture.md. A module that does not validate within it is
+// refused, so the Agent does not start and code build/validate/test fail.
+const ModuleValidationBudget = 60 * time.Second
+
+// validationBudget is ModuleValidationBudget; package tests shorten it to
+// exercise the refusal without a slow host.
+var validationBudget = ModuleValidationBudget
 
 type Limits struct {
 	MemoryBytes                                            int64 `json:"memory_bytes"`
@@ -153,10 +165,13 @@ func (r *Runner) Prepare(ctx context.Context, path, expected string, l Limits) (
 		}
 	}
 	m := &Module{bytes: b, digest: d}
-	validation, cancel := context.WithTimeout(ctx, 5*time.Second)
+	validation, cancel := context.WithTimeout(ctx, validationBudget)
 	defer cancel()
 	metadata, e := r.validate(validation, m, l)
 	if e != nil {
+		if ctx.Err() == nil && errors.Is(validation.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("Wasm module validation did not finish within %s: %w", validationBudget, e)
+		}
 		return nil, e
 	}
 	m.metadata = metadata

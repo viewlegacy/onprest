@@ -1,5 +1,3 @@
-//go:build linux || darwin
-
 package artifacts
 
 import (
@@ -360,7 +358,13 @@ func TestSaveCrashRecoveryRealProcess(t *testing.T) {
 		}
 		t.Fatal("missing save barrier")
 	}
-	for _, mode := range []string{"new", "overwrite"} {
+	modes := []string{"new", "overwrite"}
+	if !filesystem.ReplaceSupported() {
+		// Windows refuses replacement before any temp exists (see
+		// TestSaveRefusesUnsupportedReplacementBeforeAnyWrite).
+		modes = []string{"new"}
+	}
+	for _, mode := range modes {
 		for _, point := range []string{"manifest_before", "manifest_draft", "manifest", "create", "identity", "copy", "rename", "manifest_delete_before", "cleanup"} {
 			t.Run(mode+"/"+point, func(t *testing.T) {
 				base := t.TempDir()
@@ -424,7 +428,14 @@ func TestSaveCrashRecoveryRealProcess(t *testing.T) {
 }
 
 func TestSaveRecoveryRejectsUnknownIdentityProtectionAndBounds(t *testing.T) {
-	for _, attack := range []string{"corrupt", "unknown", "oversize", "count", "directory", "identity", "permission", "link", "missing_directory", "quota", "owner", "agent", "hardlink", "manifest_permission", "duplicate_key", "old_growth"} {
+	attacks := []string{"corrupt", "unknown", "oversize", "count", "directory", "identity", "link", "missing_directory", "quota", "owner", "agent", "hardlink", "duplicate_key"}
+	if runtime.GOOS != "windows" {
+		// Mode bits are the Unix protection; Windows protection is the DACL,
+		// covered by the native Windows artifact tests. Replacement growth needs
+		// overwrite, which Windows refuses before writing.
+		attacks = append(attacks, "permission", "manifest_permission", "old_growth")
+	}
+	for _, attack := range attacks {
 		t.Run(attack, func(t *testing.T) {
 			base := t.TempDir()
 			os.Mkdir(filepath.Join(base, "business"), 0700)
@@ -524,7 +535,47 @@ func TestSaveRecoveryRejectsUnknownIdentityProtectionAndBounds(t *testing.T) {
 	}
 }
 
+// On a platform without atomic replacement, a call that would replace an
+// existing file fails before anything is written: an earlier new destination in
+// the same call is not completed alone, the old file is unchanged and no quota
+// stays reserved. Elsewhere the same call saves both files.
+func TestSaveRefusesUnsupportedReplacementBeforeAnyWrite(t *testing.T) {
+	base := t.TempDir()
+	d := saveDirectory(t, filepath.Join(base, "business"))
+	s, e := Open(saveOptions(base))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	if e = os.WriteFile(filepath.Join(d.Path(), "b"), []byte("old"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	body := []byte("new")
+	v := saveValue(body)
+	installed := 0
+	e = s.Save(context.Background(), "replace", []SaveFile{{Directory: d, Name: "a", Value: v}, {Directory: d, Name: "b", Overwrite: true, Value: v}}, saveOpener(body), func(ok bool) {
+		if ok {
+			installed++
+		}
+	})
+	a, aErr := os.ReadFile(filepath.Join(d.Path(), "a"))
+	b, _ := os.ReadFile(filepath.Join(d.Path(), "b"))
+	if !filesystem.ReplaceSupported() {
+		if !errors.Is(e, errors.ErrUnsupported) || installed != 0 || !os.IsNotExist(aErr) || string(b) != "old" || s.Usage() != 0 {
+			t.Fatal("unsupported replacement was not refused before writing", e, installed, aErr, string(b), s.Usage())
+		}
+		return
+	}
+	if e != nil || installed != 2 || string(a) != "new" || string(b) != "new" || s.Usage() != 0 {
+		t.Fatal(e, installed, string(a), string(b), s.Usage())
+	}
+}
+
 func TestSaveCleanupUnknownGrowthReaccountsAndPoisonsZeroByteAdmission(t *testing.T) {
+	if !filesystem.ReplaceSupported() {
+		// Growth during replacement needs overwrite; see the refusal test above.
+		return
+	}
 	base := t.TempDir()
 	d := saveDirectory(t, filepath.Join(base, "business"))
 	s, e := Open(saveOptions(base))
@@ -613,5 +664,51 @@ func TestSaveMacOSNormalizationCollisionBeforeAnyPublication(t *testing.T) {
 	entries, e := os.ReadDir(d.Path())
 	if e != nil || len(entries) != 0 {
 		t.Fatal("collision published", entries, e)
+	}
+}
+
+// Without directory sync, saving fails closed but leaves nothing behind that
+// would refuse the next start: the probe runs before the cleanup namespace is
+// created, and a namespace whose own sync fails is removed again.
+func TestSaveWithoutDirectorySyncLeavesNoNamespace(t *testing.T) {
+	for _, failing := range []int{1, 2} {
+		t.Run(fmt.Sprint(failing), func(t *testing.T) {
+			base := t.TempDir()
+			d := saveDirectory(t, filepath.Join(base, "business"))
+			s, e := Open(saveOptions(base))
+			if e != nil {
+				t.Fatal(e)
+			}
+			calls := 0
+			s.syncSpool = func() error {
+				calls++
+				if calls == failing {
+					return errors.New("directory sync unsupported")
+				}
+				return nil
+			}
+			if e = s.ProbeDurableSaves(); failing == 1 && e == nil {
+				t.Fatal("probe accepted an unsyncable spool")
+			}
+			calls = 0
+			v := saveValue([]byte("x"))
+			e = s.Save(context.Background(), "request", []SaveFile{{Directory: d, Name: "a", Value: v}}, saveOpener([]byte("x")), nil)
+			var failure *Error
+			if !errors.As(e, &failure) || failure.Code != "DEPENDENCY_UNAVAILABLE" {
+				t.Fatal("unsyncable save", e)
+			}
+			if _, e := os.Stat(filepath.Join(base, "spool", "file-write-cleanup")); !os.IsNotExist(e) {
+				t.Fatal("cleanup namespace left behind", e)
+			}
+			if _, e := os.Stat(filepath.Join(d.Path(), "a")); !os.IsNotExist(e) {
+				t.Fatal("business file written", e)
+			}
+			s.Close()
+			restarted, e := Open(saveOptions(base))
+			if e != nil {
+				t.Fatal("restart refused after a failed probe", e)
+			}
+			restarted.Close()
+		})
 	}
 }

@@ -35,8 +35,12 @@ After extracting the archive for production:
    require a database. Update the API key capability allow-list to match the
    capabilities you added.
 4. Provide private writable spool and persistent identity directories relative
-   to the configuration, or set their runtime paths explicitly. Validate the
-   completed configuration and referenced resources before starting the Agent:
+   to the configuration, or set their runtime paths explicitly. The Agent
+   creates missing directories with the right permissions; on Windows, set the
+   permissions in
+   <https://docs.onprest.viewlegacy.com/agent/configuration#windows-permissions>
+   on directories you create yourself. Validate the completed configuration and
+   referenced resources before starting the Agent:
 
    ```sh
    ./onprest-agent validate --config /absolute/path/capability.yaml

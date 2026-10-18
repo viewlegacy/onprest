@@ -432,6 +432,21 @@ func requireAPIErrorCode(t *testing.T, body []byte, want string) {
 	}
 }
 
+func requireAPIErrorOutcome(t *testing.T, body []byte, want string) {
+	t.Helper()
+	var got struct {
+		Error struct {
+			Outcome string `json:"outcome"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode error body: %v; body=%s", err, string(body))
+	}
+	if got.Error.Outcome != want {
+		t.Fatalf("error outcome = %q, want %q; body=%s", got.Error.Outcome, want, string(body))
+	}
+}
+
 func waitForExit(t *testing.T, cmd *exec.Cmd, timeout time.Duration) error {
 	t.Helper()
 	done := make(chan error, 1)
@@ -514,16 +529,66 @@ func currentDBFixtureResult(id string, data map[string]any) protocol.Response {
 	result.Metrics = &protocol.Metrics{ExecutorKind: "db", ReturnedRows: &count, ResponseBytes: int64(len(raw))}
 	return result
 }
+
+// manualAgentFixtureExecutionTimeout is the policy timeout the manual Agent
+// fixture advertises unless a test needs a different execution window.
+const manualAgentFixtureExecutionTimeout = "5s"
+
+// manualAgentReadTimeout bounds every frame read on a manual Agent connection so
+// a missing Gateway request fails the test instead of blocking until the
+// package timeout.
+const manualAgentReadTimeout = 30 * time.Second
+
+// manualAgentFixtureInputSchema is the closed internal input schema the manual
+// Agent fixture advertises. The Gateway validates business params against it
+// before sending, so it declares every property the manual-agent tests send.
+func manualAgentFixtureInputSchema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"id":     map[string]any{"type": "integer"},
+		"secret": map[string]any{"type": "string"},
+	}}
+}
+
 func currentDBFixtureMetadata(id string, doc map[string]any) protocol.Response {
+	return currentDBFixtureMetadataWithTimeout(id, doc, manualAgentFixtureExecutionTimeout)
+}
+
+func currentDBFixtureMetadataWithTimeout(id string, doc map[string]any, executionTimeout string) protocol.Response {
 	caps := map[string]protocol.CapabilityMetadata{}
 	kinds := map[string]string{}
 	if paths, ok := doc["paths"].(map[string]any); ok {
 		for path := range paths {
 			name := strings.TrimPrefix(path, "/api/v1/capabilities/")
-			caps[name] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: "5s", EffectClass: "none", InputSchema: map[string]any{"type": "object"}, InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
+			caps[name] = protocol.CapabilityMetadata{DefinitionHash: strings.Repeat("a", 64), ExecutorKind: "db", ExecutionTimeout: executionTimeout, EffectClass: "none", InputSchema: manualAgentFixtureInputSchema(), InputLimits: map[string]int64{"max_input_bytes": 1 << 20, "max_json_depth": 32, "max_json_items": 100000}}
 			kinds[name] = "select"
 		}
 	}
 	raw, _ := json.Marshal(protocol.Metadata{Data: doc, Capabilities: caps, ResponseKinds: kinds})
 	return protocol.Response{Type: "metadata", ID: id, Result: raw}
+}
+
+// readManualAgentFrame reads one text frame with a finite deadline. When the
+// read fails, any already finished client results are included so a Gateway
+// rejection that prevented the Agent request is visible in the failure.
+func readManualAgentFrame(t *testing.T, conn *ws.Conn, clientResults ...<-chan []byte) []byte {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(manualAgentReadTimeout)); err != nil {
+		t.Fatalf("set manual agent read deadline: %v", err)
+	}
+	msg, err := conn.ReadText()
+	if resetErr := conn.SetReadDeadline(time.Time{}); err == nil && resetErr != nil {
+		t.Fatalf("reset manual agent read deadline: %v", resetErr)
+	}
+	if err != nil {
+		finished := []string{}
+		for _, results := range clientResults {
+			select {
+			case body := <-results:
+				finished = append(finished, string(body))
+			default:
+			}
+		}
+		t.Fatalf("read manual agent frame: %v; finished client results=%q", err, finished)
+	}
+	return msg
 }

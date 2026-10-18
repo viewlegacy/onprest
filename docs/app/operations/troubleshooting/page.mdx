@@ -15,7 +15,7 @@ Common causes:
 - The database host or port is unreachable, or the credentials are wrong.
 - The database user lacks permission for a statement, or for `EXPLAIN` (on SQL Server, `SHOWPLAN`).
 - The SQL does not suit the configured driver.
-- A secret or certificate file has the wrong owner or permissions, or is a symbolic link.
+- A secret file has the wrong owner or permissions (on Windows, inherited permissions are refused), or a secret or certificate file is a symbolic link. See [Secret files](/agent/configuration#secret-files).
 - A folder root does not exist, or a Wasm module is missing or was not built with `onprest-agent code build`.
 - A PostgreSQL environment variable such as `PGSERVICE` is set in the agent's environment; see [PostgreSQL](/capabilities/databases/postgres#environment-variables).
 

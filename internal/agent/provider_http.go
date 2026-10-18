@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -284,6 +283,18 @@ func (w httpChunkWriter) Write(bytes []byte) (int, error) {
 	}
 	return total, nil
 }
+
+// formDataDisposition writes the multipart/form-data part header the way
+// browsers do (WHATWG HTML, RFC 7578 section 4.2): quoted UTF-8 name and
+// filename with only '"', CR and LF percent-encoded, never RFC 2231 "*=" forms.
+func formDataDisposition(name, filename string, file bool) string {
+	escape := strings.NewReplacer(`"`, "%22", "\r", "%0D", "\n", "%0A")
+	value := `form-data; name="` + escape.Replace(name) + `"`
+	if file {
+		value += `; filename="` + escape.Replace(filename) + `"`
+	}
+	return value
+}
 func httpCopyInput(ctx context.Context, target io.Writer, file contract.FileValue) error {
 	reader, err := OpenInput(ctx, file)
 	if err != nil {
@@ -315,7 +326,7 @@ func (body httpBody) write(ctx context.Context, request *hostservices.Request) e
 					if media == "" {
 						media = file.MIMEType
 					}
-					headers := textproto.MIMEHeader{"Content-Disposition": {mime.FormatMediaType("form-data", map[string]string{"name": part.name, "filename": file.Name})}, "Content-Type": {media}}
+					headers := textproto.MIMEHeader{"Content-Disposition": {formDataDisposition(part.name, file.Name, true)}, "Content-Type": {media}}
 					target, err := multipartWriter.CreatePart(headers)
 					if err != nil {
 						return err
@@ -329,7 +340,7 @@ func (body httpBody) write(ctx context.Context, request *hostservices.Request) e
 				if part.kind == "text" {
 					media = "text/plain; charset=utf-8"
 				}
-				target, err := multipartWriter.CreatePart(textproto.MIMEHeader{"Content-Disposition": {mime.FormatMediaType("form-data", map[string]string{"name": part.name})}, "Content-Type": {media}})
+				target, err := multipartWriter.CreatePart(textproto.MIMEHeader{"Content-Disposition": {formDataDisposition(part.name, "", false)}, "Content-Type": {media}})
 				if err != nil {
 					return err
 				}

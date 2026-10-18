@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"time"
 )
 
 // HostOpen opens an authorized descriptor without following links. Truncation
@@ -150,4 +151,54 @@ func HostDirectoryChild(directory *os.File, name string, strict bool) (*os.File,
 // on every supported OS without resolving the original path again.
 func HostRewindDirectory(directory *os.File, strict bool) (*os.File, error) {
 	return HostDirectoryChild(directory, ".", strict)
+}
+
+// entryInfo is metadata read without opening the entry.
+type entryInfo struct {
+	name     string
+	size     int64
+	mode     fs.FileMode
+	modified time.Time
+	sys      any
+}
+
+func (i entryInfo) Name() string       { return i.name }
+func (i entryInfo) Size() int64        { return i.size }
+func (i entryInfo) Mode() fs.FileMode  { return i.mode }
+func (i entryInfo) ModTime() time.Time { return i.modified }
+func (i entryInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i entryInfo) Sys() any           { return i.sys }
+
+// HostDirectoryEntryInfo describes one entry of a held directory without
+// opening it, so listing never blocks on a FIFO or needs read permission.
+func HostDirectoryEntryInfo(directory *os.File, name string) (fs.FileInfo, error) {
+	if e := relative(name); e != nil {
+		return nil, e
+	}
+	if path.Base(name) != name || name == "." {
+		return nil, fs.ErrInvalid
+	}
+	return hostChildInfo(directory, name)
+}
+
+// HostStat describes an authorized path without opening its final component
+// and without following a final link; "." describes the root itself.
+func (r *Root) HostStat(p string) (fs.FileInfo, error) {
+	if e := relative(p); e != nil {
+		return nil, e
+	}
+	if path.Clean(p) == "." {
+		f, e := r.HostOpen(".", os.O_RDONLY, 0)
+		if e != nil {
+			return nil, e
+		}
+		defer f.Close()
+		return f.Stat()
+	}
+	d, n, e := r.hostParent(p)
+	if e != nil {
+		return nil, e
+	}
+	defer d.Close()
+	return HostDirectoryEntryInfo(d, n)
 }

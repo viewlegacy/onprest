@@ -325,7 +325,9 @@ func TestGatewayProcessShutdownEnforcesTenSecondTimeout(t *testing.T) {
 	waitForHTTP(t, baseURL+"/healthz", "", http.StatusOK)
 	conn := dialManualAgent(t, "ws://"+addr+"/ws/agent", secrets.PrivateKey)
 	defer conn.Close()
-	serveMetaOnce(t, conn, openAPIDocFor("never_finishes"))
+	// The advertised execution window must outlive the fixed 10 second
+	// shutdown timeout so the call is still in flight when it is enforced.
+	serveMetaOnceWithExecutionTimeout(t, conn, openAPIDocFor("never_finishes"), "30s")
 	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
 	clientDone := make(chan error, 1)
 	go func() {

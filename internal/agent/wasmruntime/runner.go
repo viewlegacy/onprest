@@ -108,6 +108,12 @@ func (r *Runner) ExecutePublication(ctx context.Context, m *Module, params map[s
 	if s.resultFailure != nil {
 		return nil, s.resultFailure
 	}
+	// A refused terminal envelope records why it was refused; that decision
+	// wins over the generic invalid-state result even if the worker exits 0.
+	// A committed terminal followed by a protocol violation stays OUTPUT_INVALID.
+	if s.rejectedEnvelope != nil && !s.committed {
+		return nil, s.rejectedEnvelope
+	}
 	if s.failed || s.asyncFailure.Load() {
 		return nil, failure("OUTPUT_INVALID", "invalid result state")
 	}

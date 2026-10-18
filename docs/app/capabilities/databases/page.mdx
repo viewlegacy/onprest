@@ -62,7 +62,7 @@ Each entry under `sources.databases` is a named connection. Several capabilities
 | `password` or `password_file` | none | The password, inline or in a protected file. Use one, not both |
 | `tls` | `{mode: disable}` | Connection encryption; see [TLS](#tls) |
 
-Relative file paths are resolved from the configuration directory. Password files must be regular files readable only by the agent's user, and their bytes are used exactly as written, including any trailing newline. The agent reads secrets and certificates once at startup; restart it after changing them.
+Relative file paths are resolved from the configuration directory. Password files and TLS client keys must be private files, and their bytes are used exactly as written, including any trailing newline; see [Secret files](/agent/configuration#secret-files) for the required permissions on each operating system. The agent reads secrets and certificates once at startup; restart it after changing them.
 
 ## Writing the SQL
 

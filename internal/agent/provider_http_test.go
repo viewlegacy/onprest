@@ -160,9 +160,26 @@ func TestHTTPExecutorMultipartCanonicalFixture(t *testing.T) {
 	f.provider.boundary = "fixture-boundary"
 	httpSuccess(t, f, map[string]any{})
 	r := <-records
-	want := "--fixture-boundary\r\nContent-Disposition: form-data; name=text\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n<&>\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=json\r\nContent-Type: application/json\r\n\r\n\"<&>\"\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=integer\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n9223372036854775807\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=canonical\r\nContent-Type: application/json\r\n\r\n{\"a\":\"<&>\",\"b\":true,\"n\":1e+20,\"z\":9223372036854775807}\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=null_value\r\nContent-Type: application/json\r\n\r\nnull\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=number\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n1e+20\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=flag\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nfalse\r\n--fixture-boundary--\r\n"
+	want := "--fixture-boundary\r\nContent-Disposition: form-data; name=\"text\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n<&>\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=\"json\"\r\nContent-Type: application/json\r\n\r\n\"<&>\"\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=\"integer\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n9223372036854775807\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=\"canonical\"\r\nContent-Type: application/json\r\n\r\n{\"a\":\"<&>\",\"b\":true,\"n\":1e+20,\"z\":9223372036854775807}\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=\"null_value\"\r\nContent-Type: application/json\r\n\r\nnull\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=\"number\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n1e+20\r\n--fixture-boundary\r\nContent-Disposition: form-data; name=\"flag\"\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nfalse\r\n--fixture-boundary--\r\n"
 	if string(r.body) != want {
 		t.Fatalf("byte fixture mismatch: %q", r.body)
+	}
+}
+
+// Part headers follow the browser form-data encoding: quoted names, raw UTF-8,
+// and only '"', CR and LF percent-encoded, never an RFC 2231 filename* form.
+func TestHTTPFormDataDispositionMatchesBrowserEncoding(t *testing.T) {
+	for _, c := range []struct{ name, filename, want string }{
+		{"upload", "報告書 2026.pdf", `form-data; name="upload"; filename="報告書 2026.pdf"`},
+		{"upload", `a"b.bin`, `form-data; name="upload"; filename="a%22b.bin"`},
+		{"x\r\ny", "c\rd\ne", `form-data; name="x%0D%0Ay"; filename="c%0Dd%0Ae"`},
+	} {
+		if got := formDataDisposition(c.name, c.filename, true); got != c.want || strings.Contains(got, "*=") {
+			t.Fatalf("%q", got)
+		}
+	}
+	if got := formDataDisposition("text", "", false); got != `form-data; name="text"` {
+		t.Fatalf("%q", got)
 	}
 }
 func TestHTTPExecutorSendBeforeValidationAndLimits(t *testing.T) {

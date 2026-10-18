@@ -50,8 +50,10 @@ func TestSDKReadDirPartialError(t *testing.T) {
 			if e = os.Symlink("missing", filepath.Join(base, "z")); e != nil {
 				t.Fatal(e)
 			}
+			// A dangling link is listed like a native listing does, from its own
+			// metadata; it is neither followed nor turned into a listing failure.
 			v = sdkData(t, r, m, c, map[string]any{"scenario": "read-dir-partial", "path": "."}, DefaultLimits())
-			if len(v["names"].([]any)) != 1 || v["failed"] != true || (on && v["permission"] != true) || (!on && v["notfound"] != true) {
+			if names := v["names"].([]any); len(names) != 2 || names[0] != "a" || names[1] != "z" || v["failed"] != false {
 				t.Fatal(v)
 			}
 		})

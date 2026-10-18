@@ -299,7 +299,34 @@ func TestSDKRealWasmDenyAllFSAndHTTP(t *testing.T) {
 func TestSDKRealWasmHTTPClientLibraryAndCancellation(t *testing.T) {
 	var calls atomic.Int64
 	var auth atomic.Bool
+	// Named requests (the fixture's X-Onprest-Fixture-Attempt header) let the
+	// guest wait for, and the test check, receipt of an exact request instead of
+	// relying on a short fixed delay before cancelling.
+	var attemptsMu sync.Mutex
+	attempts := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, q *http.Request) {
+		if q.URL.Path == "/wait-state" {
+			attemptsMu.Lock()
+			n := attempts[q.URL.Query().Get("attempt")]
+			attemptsMu.Unlock()
+			fmt.Fprint(w, n)
+			return
+		}
+		if attempt := q.Header.Get("X-Onprest-Fixture-Attempt"); attempt != "" {
+			// Consume the body first: net/http only watches for the client
+			// disconnect that ends the wait below once the body is read.
+			if b, _ := io.ReadAll(q.Body); string(b) != "payload" {
+				t.Errorf("aborted request body %q", b)
+			}
+			attemptsMu.Lock()
+			attempts[attempt]++
+			attemptsMu.Unlock()
+			// Aborted attempts are checked through attempts, not the scenario
+			// counter: one that the host sent just as it was aborted can reach
+			// the server after the guest has moved on.
+			<-q.Context().Done()
+			return
+		}
 		calls.Add(1)
 		if q.Header.Get("Authorization") == "Bearer fixture-token" {
 			auth.Store(true)
@@ -356,11 +383,21 @@ func TestSDKRealWasmHTTPClientLibraryAndCancellation(t *testing.T) {
 					if v["failed"] != true || v["closes"] != int64(1) {
 						t.Fatal(v)
 					}
-				case "deadline":
-					if v["deadline"] != true {
-						t.Fatal(v)
+				case "deadline", "cancel":
+					// The reported attempt reached the server exactly once and the
+					// in-flight deadline or cancellation was classified as such; no
+					// attempt was ever sent twice.
+					other := map[string]string{"deadline": "cancel", "cancel": "deadline"}[scenario]
+					attemptsMu.Lock()
+					received, duplicate := attempts[fmt.Sprint(v["attempt"])], false
+					for _, n := range attempts {
+						duplicate = duplicate || n > 1
 					}
-				case "cancel", "response-cancel":
+					attemptsMu.Unlock()
+					if v[scenario] != true || v[other] != false || !strings.HasPrefix(fmt.Sprint(v["attempt"]), scenario+"-") || received != 1 || duplicate {
+						t.Fatal(v, received, duplicate)
+					}
+				case "response-cancel":
 					if v["cancel"] != true {
 						t.Fatal(v)
 					}
@@ -370,7 +407,7 @@ func TestSDKRealWasmHTTPClientLibraryAndCancellation(t *testing.T) {
 					}
 				}
 				want := int64(1)
-				if scenario == "request-read-error" || scenario == "request-upload-cancel" {
+				if scenario == "request-read-error" || scenario == "request-upload-cancel" || scenario == "deadline" || scenario == "cancel" {
 					want = 0
 				}
 				if scenario == "redirect" {

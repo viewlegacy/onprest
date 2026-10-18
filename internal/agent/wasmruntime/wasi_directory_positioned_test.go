@@ -387,8 +387,13 @@ func TestWasmPositionedReadQuotaAndFailureRefund(t *testing.T) {
 	s.close(id)
 }
 
-func TestWasmDescriptorEnumerationPartialSecurityError(t *testing.T) {
-	s, base := directSession(t, DefaultLimits())
+// A descriptor listing stopped part way (here by the operation budget) keeps
+// the valid leading entries and reports the error; links are listed, not
+// treated as errors.
+func TestWasmDescriptorEnumerationPartialError(t *testing.T) {
+	l := DefaultLimits()
+	l.FileOperations = 3
+	s, base := directSession(t, l)
 	s.bridge.Sandbox = map[string]any{"enabled": true, "permissions": map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read"}}}}
 	os.Mkdir(filepath.Join(base, "d"), 0700)
 	os.WriteFile(filepath.Join(base, "d", "a"), []byte("x"), 0600)
@@ -400,7 +405,7 @@ func TestWasmDescriptorEnumerationPartialSecurityError(t *testing.T) {
 	var errorCode, metaID int64
 	json.Unmarshal(out["error"], &errorCode)
 	json.Unmarshal(out["body_handle"], &metaID)
-	if c != 0 || errorCode != int64(-denied) || s.operations != 4 {
+	if c != 0 || errorCode != int64(-limit) || s.operations != 3 {
 		t.Fatal(out, c, s.operations)
 	}
 	raw, n := s.read(metaID, 4096)

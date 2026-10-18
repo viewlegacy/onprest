@@ -37,7 +37,7 @@ sources:
 | `root` | required | Directory path, absolute or relative to the configuration directory. It must exist |
 | `access` | required | `read`, or `read_write` to allow saving files |
 
-The agent's operating-system user also needs the matching permissions on the directory. Symbolic links, hard links, special files, and paths that cross into another filesystem are not followed. Names starting with `.onprest-` are reserved for the agent's temporary files.
+The agent's operating-system user also needs the matching permissions on the directory. Symbolic links, hard links, special files, and paths that cross into another filesystem are refused. A selection checks every entry it scans, not only the matching ones, so one such entry or one invalid file name in a scanned directory fails the whole call; keep them out of folders that capabilities read. Names starting with `.onprest-` are reserved for the agent's temporary files.
 
 Producers that write into a folder should create each file under a temporary name and rename it into place when it is complete. A rename is atomic, so the agent sees either the old file or the finished new one.
 
@@ -105,7 +105,11 @@ Each entry in `write` takes:
 
 Set exactly one of `name` and `name_from`. With `name_from: input`, callers choose the file name, so the capability saves whatever name they send (path separators and reserved names are refused).
 
-All files in a call are checked first (names, sizes, free quota) and then saved. `overwrite: true` works on Linux and macOS; on Windows, or on a filesystem that cannot replace files atomically, the call fails instead.
+All files in a call are checked first (names, sizes, free quota) and then saved.
+
+- Saved files, including ones that replace an existing file, are private to the agent: mode `0600` on Linux and macOS, and on Windows an ACL that grants access only to the agent's user, `SYSTEM`, and `Administrators`. The agent does not change these permissions afterwards; if other users need the files, grant them access after saving.
+- `overwrite: true` works on Linux and macOS. On Windows, a call that would replace an existing file fails before anything is saved.
+- The destination folders and the agent's `spool_dir` must be on a filesystem that supports atomic renames and can flush directory entries to disk. On Linux and macOS, saving on a filesystem without atomic renames fails instead of falling back to a copy; a filesystem that cannot flush directory entries makes the agent refuse to start with a capability that saves files.
 
 Choose what the call returns:
 

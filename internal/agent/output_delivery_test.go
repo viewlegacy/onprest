@@ -57,7 +57,12 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	defer cancel()
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.ListenAndServeContext(ctx) }()
-	yaml := fmt.Sprintf("schema_version: 1\nruntime: {transfer_timeout: 10s}\ngateway: {url: ws://%s/ws/agent, agent_private_key: %s}\nsources: {folders: {reports: {root: ./reports, access: read}}}\ncapabilities:\n", addr, testAgentPrivateKey)
+	// The fixed transfer budget covers Agent collection through the final HTTP
+	// flush of four concurrent 4MiB inline responses. Under the race detector
+	// that CPU work takes about 8s even on an idle host (under 1s without it),
+	// so the budget leaves room for a loaded race run. The test proceeds on
+	// response headers and explicit closes, never by waiting for this budget.
+	yaml := fmt.Sprintf("schema_version: 1\nruntime: {transfer_timeout: 60s}\ngateway: {url: ws://%s/ws/agent, agent_private_key: %s}\nsources: {folders: {reports: {root: ./reports, access: read}}}\ncapabilities:\n", addr, testAgentPrivateKey)
 	for name, setting := range map[string]string{"reference": "", "direct": ", delivery: {rest: direct}", "inline": ", delivery: {mcp: inline}", "too_small": ", delivery: {mcp: inline}", "empty": ", delivery: {rest: direct, mcp: inline}", "text": ", delivery: {mcp: inline}", "expires": "", "slow": ", delivery: {mcp: inline}"} {
 		filename := "report.bin"
 		if name == "empty" {
@@ -347,7 +352,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 		defer conn.Close()
 		conn.(*net.TCPConn).SetReadBuffer(1024)
 		fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer output-key\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
-		conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		slowReaders = append(slowReaders, bufio.NewReader(conn))
 	}
 	for _, reader := range slowReaders {
@@ -395,7 +400,7 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	}
 	// Ready metadata takes one read token. Unknown canonical lookups consume
 	// the remaining fixed Agent tokens even without Gateway source-IP limits.
-	yaml = strings.Replace(yaml, "runtime: {transfer_timeout: 10s}", "runtime: {transfer_timeout: 10s, control_limits: {read: {requests: 1, per: 1h, burst: 4}}}", 1)
+	yaml = strings.Replace(yaml, "runtime: {transfer_timeout: 60s}", "runtime: {transfer_timeout: 60s, control_limits: {read: {requests: 1, per: 1h, burst: 4}}}", 1)
 	if e = os.WriteFile(path, []byte(yaml), 0600); e != nil {
 		t.Fatal(e)
 	}

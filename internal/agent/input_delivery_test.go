@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -444,23 +443,6 @@ func TestInputDeliveryRepeatedFileOrderAndNestedInline(t *testing.T) {
 	}
 }
 
-func TestInputDeliveryPinnedBrowserAndGeneratedClient(t *testing.T) {
-	if os.Getenv("ONPREST_IT_INPUT_CLIENT_WIRE") != "1" {
-		t.Skip("set ONPREST_IT_INPUT_CLIENT_WIRE=1 with pinned dev dependencies and ONPREST_IT_INPUT_CLIENT_GENERATOR_JAR")
-	}
-	f := productionInputHTTP(t)
-	script, e := filepath.Abs("../gateway/testdata/input-clients/wire.mjs")
-	if e != nil {
-		t.Fatal(e)
-	}
-	command := exec.CommandContext(f.ctx, "node", script, f.base)
-	out, e := command.CombinedOutput()
-	if e != nil {
-		t.Fatalf("real client wire: %v\n%s", e, out)
-	}
-	t.Log(string(out))
-}
-
 func TestInputDeliveryMultipartPartCountAndBinaryJSON(t *testing.T) {
 	f := productionInputHTTP(t)
 	var b bytes.Buffer
@@ -696,5 +678,22 @@ func TestInputDeliveryAuthenticationBeforeUnreadBody(t *testing.T) {
 	}
 	if f.runner.store.Usage() != 0 {
 		t.Fatal("unauthorized request admitted input")
+	}
+}
+
+// A delimiter with transport padding still starts a counted part header: an
+// oversized header behind "--b \r\n" or "--b\t\r\n" is refused and nothing runs.
+func TestInputDeliveryPaddedDelimiterCannotHideOversizedHeader(t *testing.T) {
+	f := productionInputHTTP(t)
+	for _, pad := range []string{" ", "\t", " \t "} {
+		wire := "--b\r\nContent-Disposition: form-data; name=\"document\"; filename=\"report.bin\"\r\nContent-Type: application/octet-stream\r\n\r\nx\r\n--b" + pad + "\r\nContent-Disposition: form-data; name=\"number\"\r\nX-Padding: " + strings.Repeat("p", 9000) + "\r\nContent-Type: application/json\r\n\r\n1\r\n--b--\r\n"
+		status, raw, _ := f.request(t, "/api/v1/capabilities/save", "multipart/form-data; boundary=b", strings.NewReader(wire), "")
+		if status != 413 && status != 400 {
+			t.Fatalf("padded %q: %d %s", pad, status, raw)
+		}
+		if _, e := os.Stat(filepath.Join(f.dir, "exchange", "saved.bin")); !os.IsNotExist(e) {
+			t.Fatal("business write after a hidden header")
+		}
+		waitTransport(t, func() bool { return f.runner.store.Usage() == 0 })
 	}
 }

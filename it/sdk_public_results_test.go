@@ -47,7 +47,7 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
       type: wasm
       module: ./sdk.wasm
       limits: {memory_bytes: 512MiB, max_file_read_bytes: 4, max_total_file_read_bytes: 8}
-      sandbox: {enabled: true, permissions: {filesystem: [{root: ., access: read_write}]}}
+      sandbox: {enabled: true, permissions: {filesystem: [{root: ./data, access: read_write}]}}
     input:
       properties:
         scenario: {type: string}
@@ -63,7 +63,10 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 `
 	path := filepath.Join(tmp, "agent.yaml")
 	writeFile(t, path, strings.ReplaceAll(config, "127.0.0.1:8080", address))
-	writeFile(t, filepath.Join(tmp, "large"), "12345")
+	if e := os.Mkdir(filepath.Join(tmp, "data"), 0o700); e != nil {
+		t.Fatal(e)
+	}
+	writeFile(t, filepath.Join(tmp, "data", "large"), "12345")
 	env := filepath.Join(tmp, "gateway.env")
 	writeFile(t, env, strings.ReplaceAll(strings.ReplaceAll(read("gateway.env"), "wasm_copy", "sdk"), "127.0.0.1:8080", address))
 	gateway, _ := startShellProcessWithOutput(t, tmp, "set -a; . "+shellQuote(env)+"; set +a; exec "+shellQuote(gatewayBin))
@@ -141,7 +144,7 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 	}
 	for index, test := range []struct{ scenario, code, message, want, outcome string }{{"public", "APP_DECLINED", "説明", "APP_DECLINED", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1024), "APP_A", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1025), "EXECUTION_FAILED", "no_change"}, {"public", "LIMIT_EXCEEDED", "private detail", "EXECUTION_FAILED", "no_change"}, {"public", "APP_A", "private\ncontrol", "EXECUTION_FAILED", "no_change"}, {"general", "", "", "EXECUTION_FAILED", "no_change"}, {"limit", "", "", "LIMIT_EXCEEDED", "no_change"}, {"joined", "", "", "LIMIT_EXCEEDED", "no_change"}, {"envelope-boundary", "", "", "LIMIT_EXCEEDED", "no_change"}, {"side-effect", "", "", "APP_AFTER_WRITE", "committed"}, {"decode", "", "", "EXECUTION_FAILED", "no_change"}} {
 		t.Run(fmt.Sprintf("%02d_%s_%s", index, test.scenario, test.want), func(t *testing.T) {
-			args := map[string]any{"scenario": test.scenario, "code": test.code, "message": test.message, "path": "large"}
+			args := map[string]any{"scenario": test.scenario, "code": test.code, "message": test.message, "path": "data/large"}
 			if test.scenario == "envelope-boundary" {
 				args["i64"] = int64(32<<20) + 1
 			}
@@ -210,7 +213,7 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 	}
 	// Each request must begin with the same immutable read-limit fixture.
 	// side-effect changes its target; restore it before later scenarios.
-	writeFile(t, filepath.Join(tmp, "large"), "12345")
+	writeFile(t, filepath.Join(tmp, "data", "large"), "12345")
 	for _, scenario := range []string{"mixed", "input", "decode"} {
 		t.Run(scenario, func(t *testing.T) {
 			args := map[string]any{"scenario": scenario}

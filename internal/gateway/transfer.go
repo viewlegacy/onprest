@@ -8,6 +8,7 @@ import (
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -95,16 +96,36 @@ func (ac *agentConn) handleTransfer(raw []byte) error {
 	}
 }
 func (ac *agentConn) frame(ctx context.Context, f protocol.Frame) error {
+	// A commit whose write has started may already be executing at the Agent;
+	// cancellation after that point is an unknown outcome, never not_started.
+	var startMu sync.Mutex
+	started, abandoned := false, false
 	write := func() error {
 		return ac.conn.WriteTextWithDeadlineStart(protocol.MustJSON(f), 5*time.Second, func() error {
+			startMu.Lock()
+			defer startMu.Unlock()
+			if abandoned {
+				return context.Canceled
+			}
 			if e := ctx.Err(); e != nil {
 				return e
 			}
 			if f.Type == "transfer_open" {
 				return ac.transfers.Grant(f.TransferID)
 			}
+			started = true
 			return nil
 		})
+	}
+	abandon := func(cause error) error {
+		startMu.Lock()
+		abandoned = true
+		written := started
+		startMu.Unlock()
+		if written {
+			return inputExecutionError{cause}
+		}
+		return cause
 	}
 	lease, _ := ctx.Value(bodyLeaseKey{}).(*bodyLease)
 	if f.Type != "request_commit" || lease == nil {
@@ -127,11 +148,18 @@ func (ac *agentConn) frame(ctx context.Context, f protocol.Frame) error {
 	}()
 	select {
 	case e := <-finished:
-		return e
+		if e != nil {
+			return abandon(e)
+		}
+		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return abandon(ctx.Err())
 	case <-ac.transferCtx.Done():
-		return ac.transferCtx.Err()
+		if e := abandon(ac.transferCtx.Err()); errors.As(e, new(inputExecutionError)) {
+			return inputExecutionError{errors.New("agent disconnected")}
+		} else {
+			return e
+		}
 	}
 }
 func (ac *agentConn) exchange(until time.Time, id string) (*inputExchange, func(), error) {
@@ -343,11 +371,18 @@ func (s *Server) transferInput(ctx context.Context, begin protocol.Frame, produc
 	if e != nil {
 		return protocol.Response{}, e
 	}
-	if e = ac.frame(inputCtx, protocol.Frame{Type: "request_commit", ID: begin.ID, Params: params, Files: bindings}); e != nil {
+	commit := protocol.Frame{Type: "request_commit", ID: begin.ID, Params: params, Files: bindings}
+	if int64(len(protocol.MustJSON(commit))) > protocol.CommitBytes {
+		// The Agent would have to drop the whole connection for an oversized
+		// frame; refuse only this request before anything executes.
+		return protocol.Response{}, &ingressError{status: http.StatusUnprocessableEntity, code: "LIMIT_EXCEEDED"}
+	}
+	if e = ac.frame(inputCtx, commit); e != nil {
 		return protocol.Response{}, e
 	}
 	params = nil
 	bindings = nil
+	commit = protocol.Frame{}
 	if committed != nil {
 		committed(ac)
 		committed = nil

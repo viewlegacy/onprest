@@ -72,7 +72,7 @@ func httpInlineParams(files bool) string {
 	input := map[string]any{"payload": map[string]any{"text": "<&> 日本語", "count": int64(9223372036854775807)}}
 	if files {
 		a := map[string]any{"name": "a.bin", "mime_type": "application/octet-stream", "data": base64.StdEncoding.EncodeToString([]byte{0, 255, 1})}
-		b := map[string]any{"name": "b.json", "mime_type": "application/json", "data": base64.StdEncoding.EncodeToString([]byte(`{"x":1}`))}
+		b := map[string]any{"name": "報告書.json", "mime_type": "application/json", "data": base64.StdEncoding.EncodeToString([]byte(`{"x":1}`))}
 		input["document"] = a
 		input["documents"] = []any{a, b}
 	}
@@ -134,7 +134,11 @@ func assertHTTPUpstream(t *testing.T, kind string, record httpRecorded, files bo
 			names = append(names, "upload", "upload", "omitted")
 			want = append(want, []byte{0, 255, 1}, []byte(`{"x":1}`), []byte{0, 255, 1})
 			mimes = append(mimes, "application/custom", "application/custom", "application/octet-stream")
-			filenames = append(filenames, "a.bin", "b.json", "a.bin")
+			filenames = append(filenames, "a.bin", "報告書.json", "a.bin")
+			// The upstream receives raw UTF-8 in a quoted filename, never filename*.
+			if !bytes.Contains(record.body, []byte("Content-Disposition: form-data; name=\"upload\"; filename=\"報告書.json\"\r\n")) || bytes.Contains(record.body, []byte("filename*")) {
+				t.Fatal(string(record.body))
+			}
 		}
 		for i, name := range names {
 			part, e := reader.NextPart()

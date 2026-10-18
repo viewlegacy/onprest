@@ -54,6 +54,80 @@ type Input struct {
 		Document *onprest.InputFile `json:"document"`
 	} `json:"nested"`
 }
+
+// httpAttemptHeader names one fixture request so the test server can report
+// whether that exact request reached it (GET <url>-state?attempt=<id>).
+const httpAttemptHeader = "X-Onprest-Fixture-Attempt"
+
+// httpReceipts asks the test server how many requests named attempt reached
+// it (GET <url>-state?attempt=<id>). It runs only after the named request has
+// finished: the host serializes one execution's HTTP operations, so it cannot
+// observe a request that is still in flight.
+func httpReceipts(ctx context.Context, client *http.Client, url, attempt string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url+"-state?attempt="+attempt, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	b, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(b)))
+}
+
+// httpAbortInFlight proves that a request deadline ("deadline") or an explicit
+// cancellation ("cancel") that happens while the request is in flight ends it
+// with context.DeadlineExceeded or context.Canceled. Under host load the
+// trigger can fire before the host has sent the request; that attempt is not
+// the condition under test, so the next attempt doubles the delay. Whether an
+// attempt reached the server is read back from the server, not inferred from
+// timing, and every attempt is named so the test can check that none was sent
+// more than once.
+func httpAbortInFlight(ctx context.Context, client *http.Client, url, kind string) (onprest.Result, error) {
+	delay := 25 * time.Millisecond
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 36)
+	for attempt := 1; attempt <= 12; attempt++ {
+		id := kind + "-" + nonce + "-" + strconv.Itoa(attempt)
+		var requestCtx context.Context
+		var cancel context.CancelFunc
+		if kind == "deadline" {
+			requestCtx, cancel = context.WithTimeout(ctx, delay)
+		} else {
+			requestCtx, cancel = context.WithCancel(ctx)
+			time.AfterFunc(delay, cancel)
+		}
+		req, err := http.NewRequestWithContext(requestCtx, "POST", url, strings.NewReader("payload"))
+		if err != nil {
+			cancel()
+			return onprest.Result{}, err
+		}
+		req.Header.Set(httpAttemptHeader, id)
+		resp, doErr := client.Do(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		cancel()
+		data := map[string]any{"deadline": errors.Is(doErr, context.DeadlineExceeded), "cancel": errors.Is(doErr, context.Canceled), "attempt": id}
+		if data[kind] != true {
+			return onprest.Result{Data: data}, nil
+		}
+		received, err := httpReceipts(ctx, client, url, id)
+		if err != nil {
+			return onprest.Result{}, err
+		}
+		if received > 0 {
+			return onprest.Result{Data: data}, nil
+		}
+		delay *= 2
+	}
+	return onprest.Result{}, errors.New("no aborted request reached the server")
+}
+
 type externalReader struct {
 	reader     io.Reader
 	closeError bool
@@ -254,6 +328,12 @@ func main() {
 				return fail(err)
 			}
 			return onprest.Result{Data: map[string]any{"bytes": len(b), "equal": bytes.Equal(b, payload)}}, nil
+		case "stat-path":
+			info, err := onprest.Files.Stat(ctx, in.Path)
+			if err != nil {
+				return onprest.Result{Data: map[string]any{"failed": true, "permission": errors.Is(err, fs.ErrPermission)}}, nil
+			}
+			return onprest.Result{Data: map[string]any{"failed": false, "mode": info.Mode().String(), "size": info.Size()}}, nil
 		case "read-dir-partial":
 			entries, err := onprest.Files.ReadDir(ctx, in.Path)
 			names := []string{}
@@ -364,15 +444,13 @@ func main() {
 			if in.Scenario == "redirect" || in.Scenario == "redirect-denied" {
 				client.CheckRedirect = nil
 			}
+			if in.Scenario == "deadline" || in.Scenario == "cancel" {
+				return httpAbortInFlight(ctx, client, in.URL, in.Scenario)
+			}
 			requestCtx := ctx
 			var cancel context.CancelFunc
-			if in.Scenario == "deadline" {
-				requestCtx, cancel = context.WithTimeout(ctx, 25*time.Millisecond)
-				defer cancel()
-			}
-			if in.Scenario == "cancel" || in.Scenario == "response-cancel" {
+			if in.Scenario == "response-cancel" {
 				requestCtx, cancel = context.WithCancel(ctx)
-				go func() { time.Sleep(25 * time.Millisecond); cancel() }()
 				defer cancel()
 			}
 			req, err := http.NewRequestWithContext(requestCtx, "POST", in.URL, strings.NewReader("payload"))
@@ -380,8 +458,10 @@ func main() {
 				return fail(err)
 			}
 			resp, err := client.Do(req)
-			if in.Scenario == "deadline" || in.Scenario == "cancel" {
-				return onprest.Result{Data: map[string]any{"deadline": errors.Is(err, context.DeadlineExceeded), "cancel": errors.Is(err, context.Canceled)}}, nil
+			if in.Scenario == "response-cancel" && err == nil {
+				// The server sent headers and never sends the body, so cancelling
+				// at any point from here is a cancellation of the body read.
+				go func() { time.Sleep(25 * time.Millisecond); cancel() }()
 			}
 			if in.Scenario == "http-denied" || in.Scenario == "redirect-denied" {
 				return onprest.Result{Data: map[string]any{"permission": errors.Is(err, fs.ErrPermission)}}, nil

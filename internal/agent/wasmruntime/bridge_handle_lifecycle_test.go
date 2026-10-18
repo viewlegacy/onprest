@@ -115,7 +115,8 @@ func TestWasmReadDirEntryInfoBudget(t *testing.T) {
 			})
 		}
 	}
-	// Failed entry inspection also consumes exactly one operation.
+	// A dangling link is described from its own metadata, without being opened,
+	// and its inspection still consumes exactly one operation.
 	s, base := directSession(t, DefaultLimits())
 	s.bridge.Sandbox = map[string]any{"enabled": true, "permissions": map[string]any{"filesystem": []any{map[string]any{"root": base, "access": "read"}}}}
 	if e := os.Symlink("missing", filepath.Join(base, "entry")); e != nil {
@@ -127,7 +128,7 @@ func TestWasmReadDirEntryInfoBudget(t *testing.T) {
 	}
 	var code int32
 	json.Unmarshal(v["error"], &code)
-	if code != 2 || s.operations != 2 {
+	if code != 0 || s.operations != 2 {
 		t.Fatal(code, s.operations)
 	}
 }

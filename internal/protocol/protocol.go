@@ -93,9 +93,16 @@ func ResultResponse(id string, result any) Response {
 	return Response{Type: "result", ID: id, Result: b}
 }
 
+// MustJSON encodes internal frames without HTML escaping, so "<", ">" and
+// "&" keep their one-byte UTF-8 form and the wire size stays the input size.
 func MustJSON(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
+	var b bytes.Buffer
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	if encoder.Encode(v) != nil {
+		return nil
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
 // JSON frames are explicit about their kind and carry data/files at the top

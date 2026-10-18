@@ -357,7 +357,10 @@ func TestWasmBridgePreparedEnvironmentBaseAndImmutableSnapshot(t *testing.T) {
 	for _, mode := range []string{"off", "denyall", "read", "environment"} {
 		t.Run(mode, func(t *testing.T) {
 			r, m, c, base := bridgeSetup(t, false, "")
-			os.WriteFile(filepath.Join(base, "ok"), []byte("base-owned"), 0600)
+			// Grants may not cover the configuration directory, which holds the
+			// private spool and identity, so the read grant is a subdirectory.
+			os.Mkdir(filepath.Join(base, "grant"), 0700)
+			os.WriteFile(filepath.Join(base, "grant", "ok"), []byte("base-owned"), 0600)
 			sandbox := "{enabled: false}"
 			if mode != "off" {
 				sandbox = "{enabled: true, permissions: {filesystem: [], environment: []}}"
@@ -367,7 +370,7 @@ func TestWasmBridgePreparedEnvironmentBaseAndImmutableSnapshot(t *testing.T) {
 				if mode == "environment" {
 					names = "[WASM_TEST_SECRET]"
 				}
-				sandbox = "{enabled: true, permissions: {filesystem: [{root: ., access: read}], environment: " + names + "}}"
+				sandbox = "{enabled: true, permissions: {filesystem: [{root: ./grant, access: read}], environment: " + names + "}}"
 			}
 			cfg, e := contract.Compile([]byte("schema_version: 1\ngateway: {url: ws://localhost/ws/agent, agent_private_key_file: ./key}\ncapabilities:\n  run:\n    executor: {type: wasm, module: ./module.wasm, sandbox: " + sandbox + "}\n    output: {data: {}, files: {}}\n"))
 			if e != nil {
@@ -390,7 +393,7 @@ func TestWasmBridgePreparedEnvironmentBaseAndImmutableSnapshot(t *testing.T) {
 			r.Bridge.Base = snapshot.BaseDirectory()
 			r.Bridge.Environment = snapshot.Environment()
 			r.Bridge.Sandbox = snapshot.Definition().Executor.Settings["sandbox"].(map[string]any)
-			v := bridgeRun(t, r, m, c, map[string]any{"scenario": "rawfs", "path": "ok"}, DefaultLimits()).(map[string]any)
+			v := bridgeRun(t, r, m, c, map[string]any{"scenario": "rawfs", "path": "grant/ok"}, DefaultLimits()).(map[string]any)
 			if v["pwd"] != filesystem.WASIPath(base) {
 				t.Fatal(v)
 			}

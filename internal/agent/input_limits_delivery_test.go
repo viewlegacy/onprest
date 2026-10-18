@@ -30,8 +30,12 @@ const wideInputCapability = `
 `
 
 func TestInputDeliveryConfiguredStructuralAndEncodedWireLimits(t *testing.T) {
+	// The input budget must cover decoding and transferring a 16MiB encoded MCP
+	// body. That CPU work takes under 2s normally but 15-20s under the race
+	// detector on an idle host, so the budget leaves room for a loaded race run.
+	// Every request still completes on its own response, not on this budget.
 	f := productionInputHTTPAdjusted(t, nil, func(yaml string) string {
-		return strings.Replace(yaml, "transfer_timeout: 2s", "transfer_timeout: 20s", 1) + wideInputCapability
+		return strings.Replace(yaml, "transfer_timeout: 2s", "transfer_timeout: 120s", 1) + wideInputCapability
 	}, gateway.Config{MaxRequestBodyBytes: 25 << 20})
 	for _, test := range []struct {
 		name, value string
