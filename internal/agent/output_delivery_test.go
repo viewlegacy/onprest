@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -336,6 +337,13 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	// while authenticated HTTP receivers keep their sockets open without reading.
 	var slowClients []net.Conn
 	var slowReaders []*bufio.Reader
+	slowDialer := net.Dialer{Control: func(_, _ string, c syscall.RawConn) error {
+		var setErr error
+		if e := c.Control(func(fd uintptr) { setErr = setReceiveBuffer(fd, 1024) }); e != nil {
+			return e
+		}
+		return setErr
+	}}
 	for i := 0; i < 4; i++ {
 		method, params := "tools/call", `{"name":"slow","arguments":{}}`
 		if i < 2 {
@@ -344,13 +352,12 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 			params = `{"uri":"` + retained.Result.Files[0].URI + `"}`
 		}
 		body := `{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":` + params + `}`
-		conn, e := net.Dial("tcp", addr)
+		conn, e := slowDialer.Dial("tcp", addr)
 		if e != nil {
 			t.Fatal(e)
 		}
 		slowClients = append(slowClients, conn)
 		defer conn.Close()
-		conn.(*net.TCPConn).SetReadBuffer(1024)
 		fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer output-key\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		slowReaders = append(slowReaders, bufio.NewReader(conn))
