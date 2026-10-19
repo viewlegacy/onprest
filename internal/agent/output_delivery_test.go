@@ -367,6 +367,9 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 		if e != nil || response.StatusCode != 200 {
 			t.Fatal("slow real MCP response", e)
 		}
+		if prefix, e := reader.Peek(2048); e != nil || !bytes.Contains(prefix, []byte(strings.Repeat("\x5cu003c", 4))) {
+			t.Fatalf("slow real MCP response is not the large file payload: %v %q", e, prefix)
+		}
 	}
 	runner.controls.mu.Lock()
 	activeTransfers := runner.controls.transfers
