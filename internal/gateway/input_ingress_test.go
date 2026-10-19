@@ -107,7 +107,17 @@ func TestInputBodyLeaseJSONAndMCPRetainedUntilWriterReleases(t *testing.T) {
 			}
 			waitForCondition(t, 2*time.Second, func() bool { return len(s.bodySlots) == 2 }, "body slots occupied")
 			waitForCondition(t, 2*time.Second, func() bool { ac.mu.Lock(); defer ac.mu.Unlock(); return len(ac.pending) == 2 }, "JSON parsed and requests retained")
-			waitForCondition(t, 2*time.Second, func() bool { return len(ac.send) == 1 }, "both serialized requests queued")
+			waitForCondition(t, 2*time.Second, func() bool {
+				ac.mu.Lock()
+				defer ac.mu.Unlock()
+				sending := 0
+				for _, state := range ac.sendStates {
+					if state.phase == "sending" {
+						sending++
+					}
+				}
+				return sending == 1 && len(ac.send) == 1
+			}, "one request held by the blocked writer and one queued behind it")
 			req := httptest.NewRequest("POST", "/api/v1/capabilities/get_customer", strings.NewReader(`{}`))
 			req.Header.Set("Authorization", "Bearer dev-key")
 			req.Header.Set("Content-Type", "application/json")

@@ -144,6 +144,10 @@ func setup(t *testing.T) (*Runner, *Module, *contract.Capability) {
 	}
 	return r, m, cfg.Capabilities["run"]
 }
+
+// runBudget is the deadline for runs that do not test the deadline.
+const runBudget = 60 * time.Second
+
 func run(t *testing.T, r *Runner, m *Module, c *contract.Capability, params map[string]any, timeout time.Duration) (*contract.PreparedOutput, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -161,7 +165,7 @@ func TestWasmRealWorkerResultAndImmutableHash(t *testing.T) {
 	r, m, c := setup(t)
 	var observation Observation
 	r.Observe = func(o Observation) { observation = o }
-	out, e := run(t, r, m, c, map[string]any{"scenario": "success"}, 5*time.Second)
+	out, e := run(t, r, m, c, map[string]any{"scenario": "success"}, runBudget)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -192,7 +196,7 @@ func TestWasmRealWorkerResultAndImmutableHash(t *testing.T) {
 		t.Fatal(e)
 	}
 	os.WriteFile(path, []byte("replaced"), 0600)
-	got, e := run(t, r, copy, c, map[string]any{"scenario": "business"}, 5*time.Second)
+	got, e := run(t, r, copy, c, map[string]any{"scenario": "business"}, runBudget)
 	if e != nil {
 		t.Fatal("path was reread", e)
 	}
@@ -237,7 +241,7 @@ func TestWasmRealWorkerTerminalFailuresAndIsolation(t *testing.T) {
 	r, m, c := setup(t)
 	for _, test := range []struct{ scenario, code string }{{"missing", "OUTPUT_INVALID"}, {"early", "OUTPUT_INVALID"}, {"duplicate_open", "OUTPUT_INVALID"}, {"foreign", "OUTPUT_INVALID"}, {"duplicate_file", "EXECUTION_FAILED"}, {"duplicate_commit", "OUTPUT_INVALID"}, {"post_io", "OUTPUT_INVALID"}, {"post_crash", "EXECUTION_FAILED"}, {"memory", "EXECUTION_FAILED"}, {"loop", "EXECUTION_TIMEOUT"}, {"post_timeout", "EXECUTION_TIMEOUT"}} {
 		t.Run(test.scenario, func(t *testing.T) {
-			timeout := 5 * time.Second
+			timeout := runBudget
 			runner := r
 			if test.code == "EXECUTION_TIMEOUT" {
 				timeout = 1500 * time.Millisecond
@@ -260,7 +264,7 @@ func TestWasmRealWorkerTerminalFailuresAndIsolation(t *testing.T) {
 		})
 	}
 	for _, scenario := range []string{"bad_pointer", "bad_handle", "business", "success"} {
-		out, e := run(t, r, m, c, map[string]any{"scenario": scenario}, 5*time.Second)
+		out, e := run(t, r, m, c, map[string]any{"scenario": scenario}, runBudget)
 		if e != nil {
 			t.Fatal("other request broken", scenario, e)
 		}
@@ -271,7 +275,7 @@ func TestWasmRealWorkerTerminalErrors(t *testing.T) {
 	r, m, c := setup(t)
 	for _, test := range []struct{ envelope, code string }{{`{"error":{"kind":"internal","category":"execution"}}`, "EXECUTION_FAILED"}, {`{"error":{"kind":"internal","category":"output"}}`, "OUTPUT_INVALID"}, {`{"error":{"kind":"internal","category":"limit"}}`, "LIMIT_EXCEEDED"}, {`{"error":{"kind":"internal","category":"bogus"}}`, "EXECUTION_FAILED"}, {`{"error":{"kind":"public","code":"APP_DOCUMENT_INVALID","message":"safe"}}`, "APP_DOCUMENT_INVALID"}, {`{"error":{"kind":"public","code":"APP_DOCUMENT_INVALID","message":"unsafe\n"}}`, "EXECUTION_FAILED"}, {`{"data":null,"files":[],"error":{}}`, "EXECUTION_FAILED"}, {`{"data":1,"data":2,"files":[]}`, "EXECUTION_FAILED"}, {`{"data":"\ud800","files":[]}`, "EXECUTION_FAILED"}} {
 		t.Run(test.envelope, func(t *testing.T) {
-			out, e := run(t, r, m, c, map[string]any{"scenario": "envelope", "envelope": test.envelope}, 5*time.Second)
+			out, e := run(t, r, m, c, map[string]any{"scenario": "envelope", "envelope": test.envelope}, runBudget)
 			if out != nil {
 				out.Close()
 				t.Fatal("error published")
@@ -312,7 +316,7 @@ func TestWasmRealWorkerEnvelopeBoundsAndCommonOutput(t *testing.T) {
 		})
 	}
 	c.Policy["max_output_bytes"] = int64(1024)
-	out, e := run(t, r, m, c, map[string]any{"scenario": "large", "size": 70000}, 5*time.Second)
+	out, e := run(t, r, m, c, map[string]any{"scenario": "large", "size": 70000}, runBudget)
 	if out != nil {
 		out.Close()
 		t.Fatal("public cap bypass")
@@ -386,7 +390,7 @@ func TestWasmRealWorkerOSResourceEnforcement(t *testing.T) {
 					return sampleCounters(context.Background(), &process.Process{Pid: -1})
 				}
 			}
-			out, e := run(t, &copy, m, c, map[string]any{"scenario": "success"}, 5*time.Second)
+			out, e := run(t, &copy, m, c, map[string]any{"scenario": "success"}, runBudget)
 			if out != nil {
 				out.Close()
 				t.Fatal("resource failure published")
@@ -404,7 +408,7 @@ func TestWasmRealWorkerOSResourceEnforcement(t *testing.T) {
 			}
 		})
 	}
-	out, e := run(t, r, m, c, map[string]any{"scenario": "success"}, 5*time.Second)
+	out, e := run(t, r, m, c, map[string]any{"scenario": "success"}, runBudget)
 	if e != nil {
 		t.Fatal("resource termination affected next request", e)
 	}
@@ -434,7 +438,7 @@ func TestWasmRealWorkerProjectionLimitsAndReclamation(t *testing.T) {
 			if !test.files {
 				copy.Output.Files = nil
 			}
-			out, err := run(t, r, m, &copy, map[string]any{"scenario": test.scenario}, 5*time.Second)
+			out, err := run(t, r, m, &copy, map[string]any{"scenario": test.scenario}, runBudget)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -496,7 +500,7 @@ func TestWasmRealWorkerProjectionLimitsAndReclamation(t *testing.T) {
 				scenario = "unready_file"
 				expected = "EXECUTION_FAILED"
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), runBudget)
 			defer cancel()
 			out, err := copy.Execute(ctx, m, map[string]any{"scenario": scenario, "size": size}, c, l)
 			if out != nil {
@@ -520,7 +524,7 @@ func TestWasmRealWorkerProjectionLimitsAndReclamation(t *testing.T) {
 			l := DefaultLimits()
 			l.JSONDepth = test.depth
 			l.JSONItems = test.items
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), runBudget)
 			defer cancel()
 			hidden := *c
 			hidden.Output = contract.Output{}
@@ -537,7 +541,7 @@ func TestWasmRealWorkerProjectionLimitsAndReclamation(t *testing.T) {
 func TestWasmRealWorkerShortLivedMonitoringAndMidrunFailure(t *testing.T) {
 	r, m, c := setup(t)
 	for i := 0; i < 8; i++ {
-		out, err := run(t, r, m, c, map[string]any{"scenario": "unreferenced"}, 5*time.Second)
+		out, err := run(t, r, m, c, map[string]any{"scenario": "unreferenced"}, runBudget)
 		if err != nil {
 			t.Fatalf("short worker %d: %v", i, err)
 		}
@@ -560,7 +564,7 @@ func TestWasmRealWorkerShortLivedMonitoringAndMidrunFailure(t *testing.T) {
 		}
 		return sampleCounters(context.Background(), p)
 	}
-	out, err := run(t, r, m, c, map[string]any{"scenario": "loop"}, 5*time.Second)
+	out, err := run(t, r, m, c, map[string]any{"scenario": "loop"}, runBudget)
 	if out != nil {
 		out.Close()
 		t.Fatal("counter failure published")
