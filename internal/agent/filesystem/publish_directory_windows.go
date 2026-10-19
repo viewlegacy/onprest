@@ -22,24 +22,10 @@ func renameDirectoryExclusive(d *os.File, a, b string) error {
 		return e
 	}
 	defer windows.CloseHandle(h)
-	chars, e := windows.UTF16FromString(b)
+	buf, e := renameInformation(d, b)
 	if e != nil {
 		return e
 	}
-	chars = chars[:len(chars)-1]
-	type info struct {
-		Replace byte
-		_       [7]byte
-		Root    windows.Handle
-		Length  uint32
-		Name    uint16
-	}
-	off := int(unsafe.Offsetof(info{}.Name))
-	buf := make([]byte, off+2*len(chars))
-	v := (*info)(unsafe.Pointer(&buf[0]))
-	v.Root = windows.Handle(d.Fd())
-	v.Length = uint32(2 * len(chars))
-	copy(unsafe.Slice((*uint16)(unsafe.Pointer(&buf[off])), len(chars)), chars)
 	return windows.NtSetInformationFile(h, &ios, &buf[0], uint32(len(buf)), windows.FileRenameInformation)
 }
 

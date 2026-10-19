@@ -54,7 +54,8 @@ func workerPipes(args []string) (*os.File, *os.File, error) {
 	valid = true
 	return handles[0], handles[1], nil
 }
-func setCPU(context.Context) error { return nil }
+func setCPU(context.Context) error                  { return nil }
+func cpuLimitKilled(*os.ProcessState, float64) bool { return false }
 func restrictProcess(cmd *exec.Cmd, memory uint64, budget time.Duration) (func(), error) {
 	if budget <= 0 || uint64(uintptr(memory)) != memory {
 		return nil, errors.New("invalid Windows worker resource limits")

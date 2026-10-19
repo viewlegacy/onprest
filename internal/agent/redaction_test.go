@@ -31,14 +31,14 @@ func TestVersionedPrivateConfigurationIsRedactedFromAllDiagnosticLogs(t *testing
 					executablePath = func() (string, error) { return filepath.Join(dir, "onprest-agent"), nil }
 					ca, cert, key, _ := writeDatabaseTLSFixture(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), "db.internal")
 					privateKey, _ := os.ReadFile(key)
+					key = filepath.Join(dir, "client.key")
+					writeProtectedTestFile(t, key, privateKey)
 					password, query := "PASSWORD_PRIVATE_SENTINEL + / @\n", "select :id as SQL_PRIVATE_SENTINEL"
 					convertedQuery := "select $1 as SQL_PRIVATE_SENTINEL"
 					passwordPath := filepath.Join(dir, "password")
 					secret := "password: " + string(protocol.MustJSON(password))
 					if secretMode == "file" {
-						if err := os.WriteFile(passwordPath, []byte(password), 0600); err != nil {
-							t.Fatal(err)
-						}
+						writeProtectedTestFile(t, passwordPath, []byte(password))
 						secret = "password_file: " + string(protocol.MustJSON(passwordPath))
 					}
 					data := versionedFixture("    executor: {type: db, source: primary, sql: " + string(protocol.MustJSON(query)) + "}\n    input: {properties: {id: {type: integer, default: 7}}}\n")
@@ -116,6 +116,9 @@ func TestVersionedPrivateConfigurationIsRedactedFromAllDiagnosticLogs(t *testing
 						if detail, ok := record["detail"].(string); ok {
 							details.WriteString(detail)
 						}
+					}
+					if capturedDSN == "" {
+						t.Fatal("database preparation was not reached")
 					}
 					combined := stdout.String() + stderr.String() + details.String()
 					for _, value := range []string{password, strings.Trim(strconv.Quote(password), `"`), capturedDSN, query, convertedQuery, string(privateKey), strings.Trim(strconv.Quote(string(privateKey)), `"`), testAgentPrivateKey} {

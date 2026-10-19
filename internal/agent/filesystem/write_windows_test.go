@@ -3,6 +3,7 @@
 package filesystem
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -49,5 +50,45 @@ func TestFilesystemWriteWindowsExclusiveRenameAndReplaceFailsClosed(t *testing.T
 		if SaveName(name) == nil {
 			t.Fatal("unsafe name", name)
 		}
+	}
+}
+
+func TestFilesystemWriteWindowsOneCharacterPublication(t *testing.T) {
+	dir := t.TempDir()
+	d, e := OpenDirectory(dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer d.Close()
+	temp := ".onprest-00000000000000000000000000000001.tmp"
+	f, id, e := d.CreateTemp(temp)
+	if e != nil {
+		t.Fatal(e)
+	}
+	_, e = f.Write([]byte("x"))
+	e = errors.Join(e, f.Close())
+	if e != nil {
+		t.Fatal(e)
+	}
+	id.Size = 1
+	if installed, e := d.Publish(context.Background(), temp, "a", false, id, nil); !installed || e != nil {
+		t.Fatal(installed, e)
+	}
+	if b, e := os.ReadFile(filepath.Join(dir, "a")); e != nil || string(b) != "x" {
+		t.Fatal("published file", e)
+	}
+	child, e := d.CreatePrivateDirectory(".onprest-run")
+	if e != nil {
+		t.Fatal(e)
+	}
+	identity := child.Identity()
+	if e = child.Close(); e != nil {
+		t.Fatal(e)
+	}
+	if moved, e := d.PublishDirectory(context.Background(), ".onprest-run", "b", identity); !moved || e != nil {
+		t.Fatal(moved, e)
+	}
+	if info, e := os.Stat(filepath.Join(dir, "b")); e != nil || !info.IsDir() {
+		t.Fatal("published directory", e)
 	}
 }

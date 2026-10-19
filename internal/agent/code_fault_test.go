@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -112,6 +114,7 @@ func TestCodeOutputPublicationFaults(t *testing.T) {
 			defer out.Close()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			refused := false
 			switch mode {
 			case "digest":
 				out.Files[0].SHA256 = strings.Repeat("a", 64)
@@ -125,7 +128,16 @@ func TestCodeOutputPublicationFaults(t *testing.T) {
 			case "existing-file":
 				os.WriteFile(filepath.Join(path, s.id), []byte("old"), 0600)
 			case "parent-replaced":
-				if e := os.Rename(path, path+"-old"); e != nil {
+				e := os.Rename(path, path+"-old")
+				// NTFS refuses to rename a directory while the held run temp is open below it.
+				if runtime.GOOS == "windows" {
+					if !errors.Is(e, fs.ErrPermission) {
+						t.Fatal("held run temp allowed parent rename", e)
+					}
+					refused = true
+					break
+				}
+				if e != nil {
 					t.Fatal(e)
 				}
 				if e := os.Mkdir(path, 0700); e != nil {
@@ -142,7 +154,7 @@ func TestCodeOutputPublicationFaults(t *testing.T) {
 				out.Files = nil
 			}
 			files, e := s.save(ctx, out)
-			want := mode == "success" || mode == "zero"
+			want := mode == "success" || mode == "zero" || refused
 			if (e == nil) != want {
 				t.Fatalf("accepted=%v error=%v", want, e)
 			}
@@ -154,7 +166,7 @@ func TestCodeOutputPublicationFaults(t *testing.T) {
 			} else if closeErr != nil {
 				t.Fatal(closeErr)
 			}
-			if mode == "success" {
+			if mode == "success" || refused {
 				if len(files) != 1 || !s.committed {
 					t.Fatal(files)
 				}
@@ -178,7 +190,11 @@ func TestCodeOutputPublicationFaults(t *testing.T) {
 					t.Fatal("existing directory replaced")
 				}
 			}
-			if mode != "success" && mode != "existing-dir" && mode != "existing-file" {
+			if refused {
+				if _, e := os.Lstat(path + "-old"); !os.IsNotExist(e) {
+					t.Fatal("refused parent rename left a replacement", e)
+				}
+			} else if mode != "success" && mode != "existing-dir" && mode != "existing-file" {
 				if _, e := os.Stat(filepath.Join(path, s.id)); !os.IsNotExist(e) {
 					t.Fatal("failed or zero output published", e)
 				}

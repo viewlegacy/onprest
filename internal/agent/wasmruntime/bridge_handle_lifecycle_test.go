@@ -399,8 +399,8 @@ func TestWasmRawCloseLifetime(t *testing.T) {
 		t.Fatal(len(s.handles))
 	}
 	r, m, c, _ := bridgeSetup(t, false, "")
-	for _, path := range []string{base, filepath.Join(base, "x"), "."} {
-		v := entries(bridgeRun(t, r, m, c, map[string]any{"scenario": "raw_close", "path": filesystem.WASIPath(path)}, DefaultLimits()))
+	for _, path := range []string{filesystem.WASIPath(base), filesystem.WASIPath(filepath.Join(base, "x")), "."} {
+		v := entries(bridgeRun(t, r, m, c, map[string]any{"scenario": "raw_close", "path": path}, DefaultLimits()))
 		for _, n := range v {
 			if n != int64(8) {
 				t.Fatal(v)

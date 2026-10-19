@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"sync"
@@ -238,6 +239,8 @@ func (r *Runner) process(ctx context.Context, m *Module, params []byte, l Limits
 	if e = receive(parentIn, &ready); e != nil || ready.Op != "ready" || ready.Token != token {
 		return nil, failure("EXECUTION_FAILED", "worker bootstrap failed")
 	}
+	// At most the worker's CPU rlimit, which it set from the remaining time before ready.
+	cpuLimit := math.Min(cpuBudget, math.Max(1, math.Ceil(time.Until(deadline).Seconds())))
 	p, e := process.NewProcess(int32(cmd.Process.Pid))
 	if e != nil {
 		return nil, failure("DEPENDENCY_UNAVAILABLE", e.Error())
@@ -371,6 +374,9 @@ func (r *Runner) process(ctx context.Context, m *Module, params []byte, l Limits
 	}
 	if resultError == nil && ctx.Err() != nil {
 		resultError = failure("EXECUTION_TIMEOUT", ctx.Err().Error())
+	}
+	if resultError == nil && waitError != nil && cpuLimitKilled(cmd.ProcessState, cpuLimit) {
+		resultError = failure("LIMIT_EXCEEDED", "worker OS resource budget exceeded")
 	}
 	if resultError == nil && waitError != nil {
 		resultError = failure("EXECUTION_FAILED", waitError.Error())

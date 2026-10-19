@@ -158,6 +158,13 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 		return v, out.String(), err.String()
 	}
+	restoreConfig := func(t *testing.T) {
+		t.Cleanup(func() {
+			if e := os.WriteFile(config, []byte(codeConfig), 0600); e != nil {
+				t.Error(e)
+			}
+		})
+	}
 	test := func(want int, params string, extras ...string) (map[string]any, string, string) {
 		args := []string{"test", "--config", config, "--capability", "run", "--format", "json"}
 		if params != "" {
@@ -210,6 +217,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		os.Remove(filepath.Join(source, "broken.go"))
 	})
 	t.Run("expected-sha-keeps-pair-and-config", func(t *testing.T) {
+		restoreConfig(t)
 		bad := strings.Replace(codeConfig, "module: ./module.wasm", "module: ./module.wasm, sha256: "+strings.Repeat("a", 64), 1)
 		write(config, bad)
 		run(1, source, "build", "--config", config, "--capability", "run", "--force", "--offline", "--format", "json")
@@ -218,7 +226,6 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		if string(after) != bad {
 			t.Fatal("expected digest changed")
 		}
-		write(config, codeConfig)
 	})
 	t.Run("optional-and-mismatching-manifest", func(t *testing.T) {
 		write(manifest, `{"sha256":"bad","abi":"bad","compiler_version":"go1.26.9","dependency_hash":"bad","required_imports":[]}`)
@@ -360,6 +367,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 	})
 	t.Run("same-name-files-generated-names-all-delivery", func(t *testing.T) {
+		restoreConfig(t)
 		for _, delivery := range []string{"reference", "inline"} {
 			write(config, strings.Replace(codeConfig, "files: {}", "files: {delivery: {rest: reference, mcp: "+delivery+"}}", 1))
 			v, _, _ := test(0, `{}`, "--output-dir", outDir)
@@ -380,10 +388,10 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		if len(v["files"].([]any)) != 0 {
 			t.Fatal(v)
 		}
-		write(config, codeConfig)
 	})
 
 	t.Run("generated-csv-and-reader-tail-failure", func(t *testing.T) {
+		restoreConfig(t)
 		csv := strings.Replace(codeConfig, "output: {data: {}, files: {}}", "output: {items: {properties: {label: {type: string}, n: {type: integer}}}, data: {}, files: {format: csv, filename: report.csv}}", 1)
 		write(config, csv)
 		v, _, _ := test(0, `{"scenario":"rows"}`, "--output-dir", outDir)
@@ -421,6 +429,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		pairUnchanged()
 	})
 	t.Run("required-extension-mime-empty-byte-count-boundaries", func(t *testing.T) {
+		restoreConfig(t)
 		required := strings.Replace(codeConfig, "scenario: {type: string, default: files}", "scenario: {type: string}", 1)
 		required = strings.Replace(required, "    output:", "      required: [scenario]\n    output:", 1)
 		write(config, required)
@@ -439,10 +448,11 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 60s, max_input_files: 1}", 1))
 		test(1, `{"scenario":"input","documents":[{"name":"a","mime_type":"text/plain","data":"Zg=="},{"name":"b","mime_type":"text/plain","data":"Zg=="}]}`)
-		write(config, codeConfig)
 	})
 	t.Run("timeout-and-output-limit", func(t *testing.T) {
-		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 2s}", 1))
+		restoreConfig(t)
+		// The CPU budget equals the timeout, so it must cover the per-request compile.
+		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 20s}", 1))
 		v, _, _ := test(1, `{"scenario":"timeout"}`)
 		if v["error"].(map[string]any)["code"] != "EXECUTION_TIMEOUT" {
 			t.Fatal(v)
@@ -452,7 +462,6 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		if v["error"].(map[string]any)["code"] != "LIMIT_EXCEEDED" {
 			t.Fatal(v)
 		}
-		write(config, codeConfig)
 	})
 	t.Run("stdout-failure-preserves-completed-output", func(t *testing.T) {
 		before, _ := os.ReadDir(outDir)

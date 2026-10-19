@@ -229,7 +229,8 @@ func testCode(ctx context.Context, o codeOptions, cfg *contract.Config, cap *con
 	if e != nil {
 		return failure("EXECUTION_FAILED", "not_started", e)
 	}
-	options, e := runtimeArtifactOptions(cfg.Runtime, spool)
+	// The store must create its root itself to give it the protected private ACL.
+	options, e := runtimeArtifactOptions(cfg.Runtime, filepath.Join(spool, "spool"))
 	if e != nil {
 		os.RemoveAll(spool)
 		return failure("EXECUTION_FAILED", "not_started", e)

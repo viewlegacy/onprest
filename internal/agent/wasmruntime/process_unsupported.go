@@ -13,6 +13,7 @@ import (
 func attachPipes(*exec.Cmd, *os.File, *os.File) error  { return errors.ErrUnsupported }
 func workerPipes([]string) (*os.File, *os.File, error) { return nil, nil, errors.ErrUnsupported }
 func setCPU(context.Context) error                     { return errors.ErrUnsupported }
+func cpuLimitKilled(*os.ProcessState, float64) bool    { return false }
 func restrictProcess(*exec.Cmd, uint64, time.Duration) (func(), error) {
 	return nil, errors.ErrUnsupported
 }

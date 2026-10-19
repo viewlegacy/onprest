@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -47,3 +48,15 @@ func setCPU(ctx context.Context) error {
 	return unix.Setrlimit(unix.RLIMIT_CPU, &unix.Rlimit{Cur: secs, Max: secs})
 }
 func restrictProcess(*exec.Cmd, uint64, time.Duration) (func(), error) { return func() {}, nil }
+
+func cpuLimitKilled(state *os.ProcessState, limit float64) bool {
+	if state == nil {
+		return false
+	}
+	status, ok := state.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || (status.Signal() != unix.SIGKILL && status.Signal() != unix.SIGXCPU) {
+		return false
+	}
+	// wait4 rusage can trail the kernel's RLIMIT_CPU clock by a few milliseconds.
+	return (state.UserTime() + state.SystemTime()).Seconds() >= limit-0.05
+}

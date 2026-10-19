@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -41,11 +42,19 @@ func TestWasmDirectoryDescriptorAndRewind(t *testing.T) {
 					}
 				}
 				moved := filepath.Join(base, "old")
-				if e := os.Rename(dir, moved); e != nil {
-					t.Fatal(e)
+				pinned := heldDirectoryPinsPath(on)
+				if pinned {
+					if os.Rename(dir, moved) == nil {
+						t.Fatal("held directory was renamed")
+					}
+					moved = dir
+				} else {
+					if e := os.Rename(dir, moved); e != nil {
+						t.Fatal(e)
+					}
+					os.Mkdir(dir, 0700)
+					os.WriteFile(filepath.Join(dir, "replacement"), nil, 0600)
 				}
-				os.Mkdir(dir, 0700)
-				os.WriteFile(filepath.Join(dir, "replacement"), nil, 0600)
 				entries, e := f.Readdir(-1)
 				if e != 0 || len(entries) != 1 || entries[0].Name != "original" {
 					t.Fatal(entries, e)
@@ -66,6 +75,11 @@ func TestWasmDirectoryDescriptorAndRewind(t *testing.T) {
 				}
 				if len(s.handles) != 0 {
 					t.Fatal(len(s.handles))
+				}
+				if pinned {
+					if e := os.Rename(dir, filepath.Join(base, "old")); e != nil {
+						t.Fatal(e)
+					}
 				}
 			})
 		}
@@ -89,16 +103,23 @@ func TestWasmRealDirectoryPathReplacement(t *testing.T) {
 				os.WriteFile(filepath.Join(dir, "original"), []byte("x"), 0600)
 				moved := dir + ".old"
 				t.Cleanup(func() { os.RemoveAll(moved) })
+				pinned, refused := heldDirectoryPinsPath(on), false
 				r.Bridge.Input = map[string]contract.FileValue{"swap": {ID: "swap"}, "rewind": {ID: "rewind"}}
 				r.Bridge.OpenInput = func(ctx context.Context, v contract.FileValue) (io.ReadCloser, error) {
 					if v.ID == "swap" {
 						if e := os.Rename(dir, moved); e != nil {
-							return nil, e
+							if !pinned {
+								return nil, e
+							}
+							refused = true
+						} else {
+							if e := os.Mkdir(dir, 0700); e != nil {
+								return nil, e
+							}
+							os.WriteFile(filepath.Join(dir, "replacement"), nil, 0600)
 						}
-						if e := os.Mkdir(dir, 0700); e != nil {
-							return nil, e
-						}
-						os.WriteFile(filepath.Join(dir, "replacement"), nil, 0600)
+					} else if refused {
+						os.WriteFile(filepath.Join(dir, "second"), nil, 0600)
 					} else {
 						os.WriteFile(filepath.Join(moved, "second"), nil, 0600)
 					}
@@ -108,6 +129,14 @@ func TestWasmRealDirectoryPathReplacement(t *testing.T) {
 				first, last := out["first"].([]any), out["last"].([]any)
 				if len(first) != 1 || first[0] != "original" || len(last) != 2 || last[0] != "original" || last[1] != "second" {
 					t.Fatal(out)
+				}
+				if pinned != refused {
+					t.Fatal("held directory rename", pinned, refused)
+				}
+				if refused {
+					if e := os.Rename(dir, moved); e != nil {
+						t.Fatal(e)
+					}
 				}
 			})
 		}
@@ -318,8 +347,9 @@ func TestWasmReadOnlySyncAndRealPositioned(t *testing.T) {
 		path := filepath.Join(base, "x")
 		os.WriteFile(path, []byte("abcd"), 0600)
 		v := bridgeRun(t, r, m, c, map[string]any{"scenario": "positioned_io", "path": filesystem.WASIPath(path)}, DefaultLimits()).(map[string]any)
-		if v["read"] != "bc" || v["written"] != int64(2) || v["before"] != v["after"] || v["sync"] != int64(0) || v["datasync"] != int64(0) || v["closed_sync"] != int64(8) {
-			t.Fatal(v)
+		want := nativeReadOnlySync(t, path)
+		if v["read"] != "bc" || v["written"] != int64(2) || v["before"] != v["after"] || v["sync"] != want || v["datasync"] != want || v["closed_sync"] != int64(8) {
+			t.Fatal(v, want)
 		}
 		bytes, _ := os.ReadFile(path)
 		if string(bytes) != "aXYd" {
@@ -337,18 +367,9 @@ func TestWasmRealReadOnlySyncDirectories(t *testing.T) {
 			if path == "." {
 				nativePath = base
 			}
-			f, e := os.Open(nativePath)
-			if e != nil {
-				t.Fatal(e)
-			}
-			nativeErr := f.Sync()
-			f.Close()
-			want := errno(codeFor(nativeErr))
-			if nativeErr == nil {
-				want = 0
-			}
+			want := nativeReadOnlySync(t, nativePath)
 			v := bridgeRun(t, r, m, c, map[string]any{"scenario": "readonly_sync", "path": path}, DefaultLimits()).(map[string]any)
-			if v["sync"] != int64(want) || v["datasync"] != int64(want) || v["closed_sync"] != int64(8) || v["closed_datasync"] != int64(8) {
+			if v["sync"] != want || v["datasync"] != want || v["closed_sync"] != int64(8) || v["closed_datasync"] != int64(8) {
 				t.Fatal(path, v, want)
 			}
 			if r.Bridge.Effects.Outcome() == "committed" {
@@ -357,6 +378,25 @@ func TestWasmRealReadOnlySyncDirectories(t *testing.T) {
 		}
 	}
 }
+
+// nativeReadOnlySync is the WASI errno a guest sees for Sync on a read-only
+// native descriptor of p.
+func nativeReadOnlySync(t *testing.T, p string) int64 {
+	t.Helper()
+	f, e := os.Open(p)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer f.Close()
+	if e = f.Sync(); e != nil {
+		return int64(wasiErrno(codeFor(e)))
+	}
+	return 0
+}
+
+// heldDirectoryPinsPath reports whether a held directory descriptor refuses a
+// rename of its path: Windows OFF uses ordinary opens without delete sharing.
+func heldDirectoryPinsPath(on bool) bool { return !on && runtime.GOOS == "windows" }
 
 func TestWasmPositionedReadQuotaAndFailureRefund(t *testing.T) {
 	for _, quota := range []int64{1, 2, 3} {

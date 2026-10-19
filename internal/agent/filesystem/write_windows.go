@@ -138,6 +138,31 @@ func mutationHandle(dir *os.File, name string) (windows.Handle, error) {
 	e = windows.NtCreateFile(&h, windows.GENERIC_READ|windows.DELETE|windows.SYNCHRONIZE, &oa, &ios, nil, 0, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, windows.FILE_OPEN_REPARSE_POINT|windows.FILE_NON_DIRECTORY_FILE|windows.FILE_SYNCHRONOUS_IO_NONALERT, 0, 0)
 	return h, e
 }
+
+// renameInformation builds a no-replace FILE_RENAME_INFORMATION relative to
+// dir. The kernel rejects a buffer shorter than the fixed structure, which a
+// one-character name would otherwise produce.
+func renameInformation(dir *os.File, name string) ([]byte, error) {
+	chars, e := windows.UTF16FromString(name)
+	if e != nil {
+		return nil, e
+	}
+	chars = chars[:len(chars)-1]
+	type renameInfo struct {
+		Replace byte
+		_       [7]byte
+		Root    windows.Handle
+		Length  uint32
+		Name    uint16
+	}
+	off := int(unsafe.Offsetof(renameInfo{}.Name))
+	buffer := make([]byte, max(off+2*len(chars), int(unsafe.Sizeof(renameInfo{}))))
+	v := (*renameInfo)(unsafe.Pointer(&buffer[0]))
+	v.Root = windows.Handle(dir.Fd())
+	v.Length = uint32(len(chars) * 2)
+	copy(unsafe.Slice((*uint16)(unsafe.Pointer(&buffer[off])), len(chars)), chars)
+	return buffer, nil
+}
 func publishBelow(dir *os.File, temp, name string, overwrite bool, expected *FileIdentity) (bool, error) {
 	// Windows has no atomic exchange/CAS of a verified destination. Refuse
 	// replacement of an existing destination rather than weakening the race
@@ -150,25 +175,10 @@ func publishBelow(dir *os.File, temp, name string, overwrite bool, expected *Fil
 		return false, e
 	}
 	defer windows.CloseHandle(h)
-	chars, e := windows.UTF16FromString(name)
+	buffer, e := renameInformation(dir, name)
 	if e != nil {
 		return false, e
 	}
-	chars = chars[:len(chars)-1]
-	type renameInfo struct {
-		Replace byte
-		_       [7]byte
-		Root    windows.Handle
-		Length  uint32
-		Name    uint16
-	}
-	off := int(unsafe.Offsetof(renameInfo{}.Name))
-	buffer := make([]byte, off+2*len(chars))
-	v := (*renameInfo)(unsafe.Pointer(&buffer[0]))
-	v.Root = windows.Handle(dir.Fd())
-	v.Length = uint32(len(chars) * 2)
-	dst := unsafe.Slice((*uint16)(unsafe.Pointer(&buffer[off])), len(chars))
-	copy(dst, chars)
 	var ios windows.IO_STATUS_BLOCK
 	e = windows.NtSetInformationFile(h, &ios, &buffer[0], uint32(len(buffer)), windows.FileRenameInformation)
 	if e == windows.STATUS_OBJECT_NAME_COLLISION {

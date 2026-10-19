@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -112,6 +113,25 @@ func TestObservedCreateRealDisappearanceKeepsDescriptor(t *testing.T) {
 	}
 	defer f.Close()
 	old := p + ".old"
+	if runtime.GOOS == "windows" {
+		// Ordinary Windows opens deny delete sharing, so the held name cannot move.
+		if e := os.Rename(p, old); e == nil {
+			t.Fatal("held ordinary descriptor allowed rename")
+		}
+		if e := os.Remove(p); e == nil {
+			t.Fatal("held ordinary descriptor allowed removal")
+		}
+		if _, e := f.Write([]byte("owned")); e != nil {
+			t.Fatal(e)
+		}
+		if b, e := os.ReadFile(p); e != nil || string(b) != "owned" {
+			t.Fatal(e, string(b))
+		}
+		if _, e := os.Lstat(old); !errors.Is(e, fs.ErrNotExist) {
+			t.Fatal(e)
+		}
+		return
+	}
 	if e := os.Rename(p, old); e != nil {
 		t.Fatal(e)
 	}

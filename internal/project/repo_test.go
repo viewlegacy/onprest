@@ -1174,6 +1174,51 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	}
 }
 
+func TestGoTestJSONFailureSummaryPrintsEveryFailedTestLeafFirst(t *testing.T) {
+	root := repoRoot(t)
+	var log strings.Builder
+	record := func(action, pkg, test, output string) {
+		fmt.Fprintf(&log, `{"Action":%q,"Package":%q,"Test":%q`, action, pkg, test)
+		if output != "" {
+			fmt.Fprintf(&log, `,"Output":%q`, output)
+		}
+		log.WriteString("}\n")
+	}
+	var leaves []string
+	for i := 0; i < 50; i++ {
+		pkg := fmt.Sprintf("example/p%d", i%3)
+		parent := fmt.Sprintf("TestParent%d", i%5)
+		leaf := fmt.Sprintf("%s/case_%02d", parent, i)
+		if i == 49 {
+			leaf = parent + `/{"quoted":true}`
+		}
+		leaves = append(leaves, pkg+" "+leaf)
+		record("output", pkg, leaf, fmt.Sprintf("    x_test.go:1: body of %s\n", leaf))
+		record("fail", pkg, leaf, "")
+	}
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 5; j++ {
+			record("fail", fmt.Sprintf("example/p%d", i), fmt.Sprintf("TestParent%d", j), "")
+		}
+	}
+	path := filepath.Join(t.TempDir(), "tests.jsonl")
+	if err := os.WriteFile(path, []byte(log.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := runRepoCommand(t, root, nil, "bash", "scripts/go_test_json_failures.sh", path)
+	firstParent := strings.Index(out, "=== output: example/p0 TestParent0\n")
+	if firstParent < 0 {
+		t.Fatalf("parent output missing:\n%s", out)
+	}
+	for _, leaf := range leaves {
+		header := strings.Index(out, "=== output: "+leaf+"\n")
+		name := leaf[strings.Index(leaf, " ")+1:]
+		if header < 0 || header > firstParent || !strings.Contains(out, "body of "+name) {
+			t.Fatalf("failed leaf %q is missing or after a parent:\n%s", leaf, out)
+		}
+	}
+}
+
 func TestTagReleaseWorkflowRequiresExactSuccessfulGateAndLeastPrivilege(t *testing.T) {
 	root := repoRoot(t)
 	path := filepath.Join(root, ".github", "workflows", "release.yml")

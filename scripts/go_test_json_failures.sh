@@ -3,8 +3,7 @@
 set -euo pipefail
 
 log=${1:?go test -json log is required}
-max_tests=${2:-40}
-max_lines=${3:-60}
+max_lines=${2:-60}
 
 failed_packages=$(grep -E '"Action":"fail"' "$log" | grep -v '"Test":' || true)
 failed_tests=$(grep -E '"Action":"fail".*"Test":"[^"]+"' "$log" || true)
@@ -15,13 +14,22 @@ if [[ -z $failed_tests ]]; then
 	fi
 	exit 0
 fi
-count=$(printf '%s\n' "$failed_tests" | wc -l | tr -d ' ')
-echo "failed tests ($count, showing at most $max_tests with $max_lines output lines each):" >&2
-printf '%s\n' "$failed_tests" | sed -E 's/.*"Package":"([^"]*)".*"Test":"([^"]*)".*/--- FAIL: \1 \2/' >&2
-printf '%s\n' "$failed_tests" | sed -n "1,${max_tests}p" | while IFS= read -r record; do
-	package=$(sed -E 's/.*"Package":"([^"]*)".*/\1/' <<<"$record")
-	test=$(sed -E 's/.*"Test":"([^"]*)".*/\1/' <<<"$record")
-	echo "=== output: $package $test" >&2
+names=$(printf '%s\n' "$failed_tests" | sed -E 's/.*"Package":"([^"]*)".*"Test":"(([^"\\]|\\.)*)".*/\1	\2/')
+count=$(printf '%s\n' "$names" | wc -l | tr -d ' ')
+echo "failed tests ($count, each with at most $max_lines output lines, subtests before their parents):" >&2
+printf '%s\n' "$names" | sed -E 's/^([^	]*)	(.*)$/--- FAIL: \1 \2/; s/\\"/"/g' >&2
+printf '%s\n' "$names" | awk -F'\t' '
+	{ line[NR] = $0; pkg[NR] = $1; name[NR] = $2 }
+	END {
+		for (pass = 0; pass < 2; pass++)
+			for (i = 1; i <= NR; i++) {
+				parent = 0
+				for (j = 1; j <= NR; j++)
+					if (j != i && pkg[j] == pkg[i] && index(name[j], name[i] "/") == 1) { parent = 1; break }
+				if (parent == pass) print line[i]
+			}
+	}' | while IFS=$'\t' read -r package test; do
+	echo "=== output: $package ${test//\\\"/\"}" >&2
 	grep -F "\"Package\":\"$package\",\"Test\":\"$test\",\"Output\":" "$log" |
 		sed -E 's/.*"Output":"(.*)"}$/\1/; s/\\n$//; s/\\"/"/g' |
 		head -n "$max_lines" >&2 || true

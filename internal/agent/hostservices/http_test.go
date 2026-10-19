@@ -421,9 +421,7 @@ func TestHTTPFixedSecretsSnapshotAndTLS(t *testing.T) {
 	s, store := fixture(t, 1<<20)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "token")
-	if e := os.WriteFile(path, []byte("private-token"), 0600); e != nil {
-		t.Fatal(e)
-	}
+	writeProtectedTestFile(t, path, []byte("private-token"))
 	inline := preparedSource(t, server.URL, "allowed_cidrs: [127.0.0.0/8], credential: private-token", dir)
 	file := preparedSource(t, server.URL, "allowed_cidrs: [127.0.0.0/8], credential_file: ./token", dir)
 	if inline.DefinitionHash() != file.DefinitionHash() {

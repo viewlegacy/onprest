@@ -97,9 +97,7 @@ func TestVersionedLoaderCompilerContracts(t *testing.T) {
 func TestVersionedSigningKeyFileAndReleaseTemplate(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "key")
-	if e := os.WriteFile(keyPath, []byte(testAgentPrivateKey), 0600); e != nil {
-		t.Fatal(e)
-	}
+	writeProtectedTestFile(t, keyPath, []byte(testAgentPrivateKey))
 	body := `    executor: {type: db, source: primary, sql: select 1}
 `
 	data := strings.Replace(versionedFixture(body), "agent_private_key: "+testAgentPrivateKey, "agent_private_key_file: ./key", 1)
@@ -113,8 +111,8 @@ func TestVersionedSigningKeyFileAndReleaseTemplate(t *testing.T) {
 	if e := os.WriteFile(keyPath, []byte(testAgentPrivateKey+"\n"), 0600); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := LoadCapabilityFile(path); e == nil {
-		t.Fatal("key bytes silently trimmed")
+	if _, e := LoadCapabilityFile(path); e == nil || e.Error() != "agent private key is invalid" {
+		t.Fatal("key bytes silently trimmed", e)
 	}
 	template, e := os.ReadFile(filepath.Join("..", "..", "release", "capability.yaml.example"))
 	if e != nil {

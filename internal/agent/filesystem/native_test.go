@@ -4,9 +4,13 @@ package filesystem
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync/atomic"
 	"testing"
 )
 
@@ -79,12 +83,46 @@ func TestFilesystemNativeDirectoryAndSymlinkReplacementDuringSnapshot(t *testing
 	outside := t.TempDir()
 	put(t, outside, "data", []byte("outside-secret"))
 	selected := choose(t, r, selector(t, "{path: sub, name: data}", ""))
-	store := stager(t)
-	store.onBegin = func(int) {
+	replace := func() error {
 		if e := os.Rename(filepath.Join(p, "sub"), filepath.Join(p, "old")); e != nil {
+			return e
+		}
+		return os.Symlink(outside, filepath.Join(p, "sub"))
+	}
+	store := stager(t)
+	if runtime.GOOS == "windows" {
+		// NTFS refuses to rename a directory while a descendant is open.
+		var refused error
+		store.onBegin = func(int) { refused = os.Rename(filepath.Join(p, "sub"), filepath.Join(p, "old")) }
+		snap, e := SnapshotFiles(context.Background(), selected, SnapshotLimits{32, 32, 1}, "application/octet-stream", store)
+		if !errors.Is(refused, fs.ErrPermission) {
+			t.Fatal("open descendant allowed directory rename", refused)
+		}
+		if e != nil {
 			t.Fatal(e)
 		}
-		if e := os.Symlink(outside, filepath.Join(p, "sub")); e != nil {
+		b, e := io.ReadAll(snap.Files[0].Reader)
+		if e != nil || string(b) != "inside" {
+			t.Fatalf("%q %v", b, e)
+		}
+		if e := snap.Close(); e != nil {
+			t.Fatal(e)
+		}
+		assertClean(t, store)
+		if e := replace(); e != nil {
+			t.Fatal(e)
+		}
+		store = stager(t)
+		snap, e = SnapshotFiles(context.Background(), selected, SnapshotLimits{32, 32, 1}, "application/octet-stream", store)
+		code(t, e, "SOURCE_CHANGED")
+		if snap != nil {
+			t.Fatal("snapshot escaped root")
+		}
+		assertClean(t, store)
+		return
+	}
+	store.onBegin = func(int) {
+		if e := replace(); e != nil {
 			t.Fatal(e)
 		}
 	}
@@ -112,6 +150,22 @@ func TestFilesystemNativeAtomicProducerAndReplacementRace(t *testing.T) {
 	done := make(chan struct{})
 	stop := make(chan struct{})
 	actorError := make(chan error, 1)
+	var swaps atomic.Int64
+	stopped := errors.New("stopped")
+	replace := func(from string) error {
+		for {
+			e := os.Rename(from, filepath.Join(p, "entry"))
+			// Windows refuses to replace a name while a reader holds it open.
+			if e == nil || runtime.GOOS != "windows" || !errors.Is(e, fs.ErrPermission) {
+				return e
+			}
+			select {
+			case <-stop:
+				return stopped
+			default:
+			}
+		}
+	}
 	go func() {
 		defer close(done)
 		for {
@@ -124,21 +178,31 @@ func TestFilesystemNativeAtomicProducerAndReplacementRace(t *testing.T) {
 				actorError <- e
 				return
 			}
-			if e := os.Rename(link, filepath.Join(p, "entry")); e != nil {
-				actorError <- e
+			if e := replace(link); e != nil {
+				if e != stopped {
+					actorError <- e
+				}
 				return
 			}
+			swaps.Add(1)
 			if e := os.WriteFile(filepath.Join(p, ".onprest-complete"), []byte("inside"), 0600); e != nil {
 				actorError <- e
 				return
 			}
-			if e := os.Rename(filepath.Join(p, ".onprest-complete"), filepath.Join(p, "entry")); e != nil {
-				actorError <- e
+			if e := replace(filepath.Join(p, ".onprest-complete")); e != nil {
+				if e != stopped {
+					actorError <- e
+				}
 				return
 			}
 		}
 	}()
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 200 || swaps.Load() == 0; i++ {
+		select {
+		case <-done:
+			t.Fatal(<-actorError)
+		default:
+		}
 		f, e := r.Open(context.Background(), "entry")
 		if e != nil {
 			continue
