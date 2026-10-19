@@ -931,7 +931,7 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
 	// Public schema assertions are no-ops without the schema_validator tag, so
 	// the gate installs the pinned Ajv validator and runs both tagged suites.
-	for _, marker := range []string{"npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator", "-tags=schema_validator ./internal/...", "-tags=integration,schema_validator ./it/..."} {
+	for _, marker := range []string{"npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator", `-tags=schema_validator "${schema_packages[@]}"`, "-tags=integration,schema_validator ./it/..."} {
 		if !strings.Contains(releaseScript, marker) {
 			t.Fatalf("release gate script does not run public schema validation: missing %q", marker)
 		}

@@ -127,7 +127,33 @@ echo "PASS: pinned schema validator"
 
 run_go_json_no_skip "unit" go test -json -timeout 60m ./...
 
-run_go_json_no_skip "unit-schema-validator" go test -json -timeout 60m -tags=schema_validator ./internal/...
+# Only tests whose own files or dependencies change under the tag are rerun.
+schema_validator_packages() {
+	local lib own
+	changed() {
+		diff <(go list -f "{{.ImportPath}} $1" ./internal/...) <(go list -tags=schema_validator -f "{{.ImportPath}} $1" ./internal/...) |
+			sed -n 's/^> \([^ ]*\) .*/\1/p' || true
+	}
+	lib=$(changed '{{.GoFiles}}' | paste -sd'|' -)
+	own=$(changed '{{.TestGoFiles}} {{.XTestGoFiles}}')
+	{
+		printf '%s\n' "$own"
+		if [[ -n $lib ]]; then
+			go list -tags=schema_validator -test -f '{{.ImportPath}}{{range .Deps}}|{{.}}{{end}}' ./internal/... |
+				grep -E "^[^|]+\.test\|" | grep -E "\|($lib)( \[|\||$)" | sed -E 's/\.test\|.*//' || true
+		fi
+	} | sed '/^$/d' | sort -u
+}
+schema_packages=()
+while IFS= read -r package; do
+	schema_packages+=("$package")
+done < <(schema_validator_packages)
+if [[ ${#schema_packages[@]} -eq 0 ]]; then
+	echo "no packages change under the schema_validator tag" >&2
+	exit 1
+fi
+echo "schema_validator packages: ${schema_packages[*]}"
+run_go_json_no_skip "unit-schema-validator" go test -json -timeout 60m -tags=schema_validator "${schema_packages[@]}"
 
 run_go_json_no_skip "postgres-ci" \
 	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
