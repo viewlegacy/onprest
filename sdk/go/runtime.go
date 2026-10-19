@@ -113,10 +113,7 @@ func hostError(code int64, ctx context.Context) error {
 	case -4:
 		return ErrLimitExceeded
 	case -5:
-		if ctx != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return context.Canceled
+		return canceledError(ctx)
 	case -7:
 		return errors.ErrUnsupported
 	case -8:
@@ -170,6 +167,19 @@ func (e *execution) call(method string, args any) (map[string]any, error) {
 	var out map[string]any
 	err = d.Decode(&out)
 	return out, err
+}
+
+// canceledError returns DeadlineExceeded once the deadline passes, even before Go WASI runs ctx's timer.
+func canceledError(ctx context.Context) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d, ok := ctx.Deadline(); ok && !time.Now().Before(d) {
+			return context.DeadlineExceeded
+		}
+	}
+	return context.Canceled
 }
 func hostErrorIf(c int32, ctx context.Context) error {
 	if c < 0 {

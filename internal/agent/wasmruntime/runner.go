@@ -131,10 +131,12 @@ func (r *Runner) process(ctx context.Context, m *Module, params []byte, l Limits
 			resultErr = failure("EXECUTION_TIMEOUT", ctx.Err().Error())
 		}
 	}()
-	rssLimit, e := l.rssLimit()
+	productRSSLimit, e := l.rssLimit()
 	if e != nil {
 		return nil, e
 	}
+	// The test probe lowers only the sampled RSS threshold; OS restrictions keep the product ceiling.
+	rssLimit := productRSSLimit
 	if r.rssOverride > 0 {
 		rssLimit = r.rssOverride
 	}
@@ -213,7 +215,7 @@ func (r *Runner) process(ctx context.Context, m *Module, params []byte, l Limits
 			<-finished
 		}
 	}()
-	closeRestriction, e := restrictProcess(cmd, rssLimit, time.Until(deadline))
+	closeRestriction, e := restrictProcess(cmd, productRSSLimit, time.Until(deadline))
 	if e != nil {
 		return nil, failure("DEPENDENCY_UNAVAILABLE", e.Error())
 	}

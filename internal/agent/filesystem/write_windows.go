@@ -12,6 +12,9 @@ import (
 )
 
 func directoryCollisionKey(_ Identity, s string) string { return strings.ToLower(s) }
+
+// NTFS file IDs carry a reuse sequence, and an extra handle would change rename sharing.
+func pinTemp(*os.File, string, *os.File) (*os.File, error) { return nil, nil }
 func fileOwner(f *os.File) (string, error) {
 	sd, e := windows.GetSecurityInfo(windows.Handle(f.Fd()), windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
 	if e != nil {

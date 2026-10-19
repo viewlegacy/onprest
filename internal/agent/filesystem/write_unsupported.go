@@ -15,4 +15,5 @@ func unlinkBelow(*os.File, string, *os.File) error   { return errors.ErrUnsuppor
 func publishBelow(*os.File, string, string, bool, *FileIdentity) (bool, error) {
 	return false, errors.ErrUnsupported
 }
-func directoryCollisionKey(_ Identity, s string) string { return s }
+func directoryCollisionKey(_ Identity, s string) string    { return s }
+func pinTemp(*os.File, string, *os.File) (*os.File, error) { return nil, errors.ErrUnsupported }

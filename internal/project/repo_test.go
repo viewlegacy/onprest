@@ -899,7 +899,7 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		t.Fatal("native tests must not wait for packaging")
 	}
 	nativeText := fmt.Sprint(native["steps"])
-	for _, marker := range []string{"go test -json -count=1 -timeout 80m ./internal/agent/... ./cmd/agent/...", `"Action":"skip".*"Test":"[^"]+"`} {
+	for _, marker := range []string{"go test -json -count=1 -timeout 80m ./internal/agent/... ./cmd/agent/...", `"Action":"skip".*"Test":"[^"]+"`, "bash scripts/go_test_json_failures.sh native-tests.jsonl"} {
 		if !strings.Contains(nativeText, marker) {
 			t.Fatalf("native tests missing %q", marker)
 		}
@@ -935,6 +935,11 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		if !strings.Contains(releaseScript, marker) {
 			t.Fatalf("release gate script does not run public schema validation: missing %q", marker)
 		}
+	}
+	failureSummary := readText(t, filepath.Join(root, "scripts", "go_test_json_failures.sh"))
+	if !strings.Contains(releaseScript, `bash "$ROOT_DIR/scripts/go_test_json_failures.sh" "$log"`) ||
+		!strings.Contains(failureSummary, `"Action":"fail".*"Test":"[^"]+"`) || !strings.Contains(failureSummary, `"Output":`) {
+		t.Fatal("release gate failures do not list failed tests before the log tail")
 	}
 	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "ONPREST_IT_DISTRIBUTION_VERSION", "must be extracted outside the source tree", `cd / && "$absolute" --version`, "scripts/quickstart_smoke.sh"} {
 		if !strings.Contains(releaseScript, marker) {
@@ -1046,6 +1051,23 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	}
 	unixLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_unix.sh"))
 	windowsLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_windows.ps1"))
+	for path, markers := range map[string][]string{
+		"Unix lifecycle":    {`\\u0000`, "$status != 502", "set -Eeuo pipefail", `trap 'echo "service lifecycle failed at line $LINENO: $BASH_COMMAND" >&2' ERR`},
+		"Windows lifecycle": {`":"\u0000"}'`, "$status -ne 502", "${function:Invoke-RuntimeMarker}", "$_.ScriptStackTrace"},
+	} {
+		text := unixLifecycle
+		if path == "Windows lifecycle" {
+			text = windowsLifecycle
+		}
+		for _, marker := range markers {
+			if !strings.Contains(text, marker) {
+				t.Fatalf("%s does not drive Agent-side runtime records or name its failing step: missing %q", path, marker)
+			}
+		}
+		if strings.Contains(text, `-d '{}' "http://127.0.0.1:18080/api/v1/capabilities/$1"`) || strings.Contains(text, "-ne 400") {
+			t.Fatalf("%s still expects Gateway-rejected input to reach the Agent runtime log", path)
+		}
+	}
 	if strings.Contains(windowsLifecycle, "OnprestValidateReader") {
 		t.Fatal("Windows lifecycle uses a local account name longer than the Windows 20-character limit")
 	}

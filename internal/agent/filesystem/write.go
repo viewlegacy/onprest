@@ -29,6 +29,8 @@ type Directory struct {
 	file     *os.File
 	id       Identity
 	absolute string
+	// pins keeps Unix temps open until install or removal so their inodes cannot be reused.
+	pins map[string]*os.File
 }
 
 func (r *Root) Directory(relativePath, absoluteRoot string) (*Directory, error) {
@@ -68,9 +70,37 @@ func (d *Directory) Close() error {
 	if d.file == nil {
 		return nil
 	}
-	e := d.file.Close()
+	var e error
+	for name, pin := range d.pins {
+		e = errors.Join(e, pin.Close())
+		delete(d.pins, name)
+	}
+	e = errors.Join(e, d.file.Close())
 	d.file = nil
 	return e
+}
+
+// releasePinLocked closes the read-only pin of a temp. Caller holds d.mu.
+func (d *Directory) releasePinLocked(name string) error {
+	pin := d.pins[name]
+	if pin == nil {
+		return nil
+	}
+	delete(d.pins, name)
+	return pin.Close()
+}
+
+// pinnedLocked verifies that name still refers to the pinned temp. Caller holds d.mu.
+func (d *Directory) pinnedLocked(name string, actual FileIdentity) error {
+	pin := d.pins[name]
+	if pin == nil {
+		return nil
+	}
+	held, e := inspectRegular(pin, true)
+	if e != nil || held.Identity != actual.Identity {
+		return changed(errors.Join(e, fs.ErrPermission))
+	}
+	return nil
 }
 func (d *Directory) Sync() error {
 	d.mu.Lock()
@@ -175,6 +205,20 @@ func (d *Directory) CreateTemp(name string) (*os.File, FileIdentity, error) {
 		f.Close()
 		return nil, FileIdentity{}, e
 	}
+	pin, e := pinTemp(d.file, name, f)
+	if e != nil {
+		f.Close()
+		return nil, FileIdentity{}, e
+	}
+	if pin != nil {
+		if d.pins == nil {
+			d.pins = map[string]*os.File{}
+		}
+		if previous := d.pins[name]; previous != nil {
+			previous.Close()
+		}
+		d.pins[name] = pin
+	}
 	return f, v, nil
 }
 func validTempName(s string) bool {
@@ -193,7 +237,7 @@ func ValidTempName(s string) bool { return validTempName(s) }
 // Publish returns whether the new business file was atomically installed. On
 // exchange, the prior verified regular file remains under the recorded temp
 // name until cleanup. A changed displaced identity is never automatically rolled back.
-func (d *Directory) Publish(ctx context.Context, temp, name string, overwrite bool, temporary FileIdentity, expected *FileIdentity) (bool, error) {
+func (d *Directory) Publish(ctx context.Context, temp, name string, overwrite bool, temporary FileIdentity, expected *FileIdentity) (installed bool, err error) {
 	if e := ctx.Err(); e != nil {
 		return false, e
 	}
@@ -217,7 +261,15 @@ func (d *Directory) Publish(ctx context.Context, temp, name string, overwrite bo
 	if e != nil || actual.Identity != temporary.Identity || actual.Owner != temporary.Owner || actual.Size != temporary.Size {
 		return false, changed(errors.Join(e, fs.ErrPermission))
 	}
-	installed, e := publishBelow(d.file, temp, name, overwrite, expected)
+	if e = d.pinnedLocked(temp, actual); e != nil {
+		return false, e
+	}
+	defer func() {
+		if installed {
+			err = errors.Join(err, d.releasePinLocked(temp))
+		}
+	}()
+	installed, e = publishBelow(d.file, temp, name, overwrite, expected)
 	if e != nil {
 		return installed, e
 	}
@@ -249,7 +301,7 @@ func (d *Directory) RemoveTemp(name string, identities []FileIdentity, emptyOnly
 	}
 	f, e := openBelow(d.file, name)
 	if errors.Is(e, fs.ErrNotExist) {
-		return nil
+		return d.releasePinLocked(name)
 	}
 	if e != nil {
 		return e
@@ -257,6 +309,9 @@ func (d *Directory) RemoveTemp(name string, identities []FileIdentity, emptyOnly
 	v, e := inspectRegular(f, emptyOnly || len(identities) == 0)
 	if e == nil && emptyOnly && v.Size != 0 {
 		e = fs.ErrPermission
+	}
+	if e == nil && d.pins[name] != nil {
+		e = d.pinnedLocked(name, v)
 	}
 	if e == nil && len(identities) > 0 {
 		match := false
@@ -276,6 +331,9 @@ func (d *Directory) RemoveTemp(name string, identities []FileIdentity, emptyOnly
 	}
 	if e == nil {
 		e = unlinkBelow(d.file, name, f)
+	}
+	if e == nil {
+		e = d.releasePinLocked(name)
 	}
 	return errors.Join(e, f.Close())
 }

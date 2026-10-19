@@ -17,6 +17,19 @@ func createBelow(dir *os.File, name string) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(fd), name), nil
 }
+
+func pinTemp(dir *os.File, name string, created *os.File) (*os.File, error) {
+	pin, e := openBelow(dir, name)
+	if e != nil {
+		return nil, e
+	}
+	a, e := inspect(created)
+	b, other := inspect(pin)
+	if e != nil || other != nil || a.identity != b.identity {
+		return nil, errors.Join(e, other, fs.ErrPermission, pin.Close())
+	}
+	return pin, nil
+}
 func privateTemp(f *os.File) error {
 	var s unix.Stat_t
 	if e := unix.Fstat(int(f.Fd()), &s); e != nil {

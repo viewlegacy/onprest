@@ -60,6 +60,10 @@ func main(){onprest.Run(func(ctx context.Context,in Input)(onprest.Result,error)
  return onprest.Result{Data:data,Files:files},nil
 })}
 `
+
+// The fixture's per-request compile can exceed the 5s default timeout under load.
+const codeRunPolicy = "    policy: {timeout: 60s}"
+
 const codeConfig = `schema_version: 1
 service: {title: Author CLI, version: 1.0.0}
 gateway: {url: ws://127.0.0.1:1/ws/agent, agent_private_key_file: ./unavailable.key}
@@ -74,6 +78,7 @@ capabilities:
         nullable: {type: [integer, 'null']}
         documents: {items: {type: file, max_bytes: 8}}
     output: {data: {}, files: {}}
+` + codeRunPolicy + `
   unrelated:
     executor: {type: wasm, module: ./missing.wasm, sandbox: {enabled: true}}
     output: {data: {}}
@@ -369,7 +374,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			}
 		}
 		direct := strings.Replace(codeConfig, "data: {}, files: {}", "files: {delivery: {rest: direct, mcp: inline}}", 1)
-		direct = strings.Replace(direct, "  unrelated:", "    policy: {max_output_files: 1}\n  unrelated:", 1)
+		direct = strings.Replace(direct, codeRunPolicy, "    policy: {timeout: 60s, max_output_files: 1}", 1)
 		write(config, direct)
 		v, _, _ := test(0, `{"scenario":"zero"}`, "--output-dir", outDir)
 		if len(v["files"].([]any)) != 0 {
@@ -432,17 +437,17 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 				t.Fatal(diag)
 			}
 		}
-		write(config, strings.Replace(codeConfig, "  unrelated:", "    policy: {max_input_files: 1}\n  unrelated:", 1))
+		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 60s, max_input_files: 1}", 1))
 		test(1, `{"scenario":"input","documents":[{"name":"a","mime_type":"text/plain","data":"Zg=="},{"name":"b","mime_type":"text/plain","data":"Zg=="}]}`)
 		write(config, codeConfig)
 	})
 	t.Run("timeout-and-output-limit", func(t *testing.T) {
-		write(config, strings.Replace(codeConfig, "  unrelated:", "    policy: {timeout: 2s}\n  unrelated:", 1))
+		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 2s}", 1))
 		v, _, _ := test(1, `{"scenario":"timeout"}`)
 		if v["error"].(map[string]any)["code"] != "EXECUTION_TIMEOUT" {
 			t.Fatal(v)
 		}
-		write(config, strings.Replace(codeConfig, "  unrelated:", "    policy: {max_output_file_bytes: 4}\n  unrelated:", 1))
+		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 60s, max_output_file_bytes: 4}", 1))
 		v, _, _ = test(1, `{}`)
 		if v["error"].(map[string]any)["code"] != "LIMIT_EXCEEDED" {
 			t.Fatal(v)

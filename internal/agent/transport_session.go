@@ -300,17 +300,42 @@ func (s *transportSession) sendTransferFrame(ctx context.Context, f protocol.Fra
 	})
 }
 func (s *transportSession) sendFrame(ctx context.Context, f protocol.Frame, priority bool, transfer string) error {
+	return s.send(ctx, f, priority, transfer)
+}
+
+// inputControlWaitHook lets tests act between posting a frame and observing its result.
+var inputControlWaitHook = func(context.Context, string) func(error) { return func(error) {} }
+
+// sendInputControl must not wait on ctx: the commit this frame enables also ends ctx.
+func (s *transportSession) sendInputControl(ctx context.Context, f protocol.Frame) error {
+	run := func() error {
+		if e := ctx.Err(); e != nil {
+			return e
+		}
+		return s.conn.WriteTextWithDeadline(protocol.MustJSON(f), agentResponseWriteTimeout)
+	}
 	if f.Type == "input_accept" {
-		return s.scheduler.Submit(ctx, true, "", func() error {
+		run = func() error {
 			return s.conn.WriteTextWithDeadlineStart(protocol.MustJSON(f), agentResponseWriteTimeout, func() error {
 				if e := ctx.Err(); e != nil {
 					return e
 				}
 				return s.transfers.Grant(f.TransferID)
 			})
-		})
+		}
 	}
-	return s.send(ctx, f, priority, transfer)
+	done, e := s.scheduler.Post(ctx, true, "", run)
+	if e != nil {
+		return e
+	}
+	observed := inputControlWaitHook(ctx, f.Type)
+	select {
+	case e = <-done:
+	case <-s.ctx.Done():
+		e = s.ctx.Err()
+	}
+	observed(e)
+	return e
 }
 func (s *transportSession) respond(ctx context.Context, response protocol.Response) {
 	payload := protocol.MustJSON(response)
@@ -644,12 +669,12 @@ func (s *transportSession) openInput(f protocol.Frame, release, opened func()) {
 		e := <-done
 		slot()
 		release()
-		if e == nil && s.sendFrame(ctx, ready, true, "") != nil {
+		if e == nil && s.sendInputControl(ctx, ready) != nil {
 			s.abort(c, "EXECUTION_TIMEOUT", true)
 		}
 	}()
 	opened()
-	if s.sendFrame(ctx, protocol.Frame{Type: "input_accept", ID: f.ID, TransferID: f.TransferID}, true, "") != nil {
+	if s.sendInputControl(ctx, protocol.Frame{Type: "input_accept", ID: f.ID, TransferID: f.TransferID}) != nil {
 		s.abort(c, "EXECUTION_TIMEOUT", true)
 	}
 }

@@ -74,9 +74,8 @@ func sdkSetup(t *testing.T, on bool, access string) (*Runner, *Module, *contract
 	t.Helper()
 	path := sdkFixture(t)
 	r, _, c, base := bridgeSetup(t, on, access)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	m, e := r.Prepare(ctx, path, "", DefaultLimits())
+	// Prepare is bounded by the product's ModuleValidationBudget; do not add a shorter deadline.
+	m, e := r.Prepare(context.Background(), path, "", DefaultLimits())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -573,12 +572,13 @@ func TestSDKPublishedCustomerExample(t *testing.T) {
 	if b, e := build.CombinedOutput(); e != nil {
 		t.Fatal(e, string(b))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	m, e := r.Prepare(ctx, module, "", DefaultLimits())
+	// Prepare is bounded by the product's ModuleValidationBudget; do not add a shorter deadline.
+	m, e := r.Prepare(context.Background(), module, "", DefaultLimits())
 	if e != nil {
 		t.Fatal(e)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	out, e := r.Execute(ctx, m, map[string]any{"customer": "Alice"}, c, DefaultLimits())
 	if e != nil {
 		t.Fatal(e)

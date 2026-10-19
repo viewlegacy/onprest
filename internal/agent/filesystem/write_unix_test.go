@@ -161,6 +161,45 @@ func TestFilesystemWriteRejectsTargetTempLinksAndChangedIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestFilesystemWriteTempPinLifetimeAndReplacedCleanup(t *testing.T) {
+	pins := func(d *Directory) int { d.mu.Lock(); defer d.mu.Unlock(); return len(d.pins) }
+	base := t.TempDir()
+	dir := filepath.Join(base, "business")
+	os.Mkdir(dir, 0700)
+	d, e := OpenDirectory(dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer d.Close()
+	temp, id := mutationTemp(t, d)
+	if pins(d) != 1 {
+		t.Fatal("created temp is not pinned")
+	}
+	if yes, e := d.Publish(context.Background(), temp, "installed", false, id, nil); !yes || e != nil || pins(d) != 0 {
+		t.Fatal("install did not release the pin", yes, e, pins(d))
+	}
+	temp, id = mutationTemp(t, d)
+	if e = d.RemoveTemp(temp, []FileIdentity{id}, false); e != nil || pins(d) != 0 {
+		t.Fatal("removal did not release the pin", e, pins(d))
+	}
+	temp, id = mutationTemp(t, d)
+	path := filepath.Join(dir, temp)
+	os.Remove(path)
+	os.WriteFile(path, []byte("new bytes"), 0600)
+	if e = d.RemoveTemp(temp, []FileIdentity{id}, false); e == nil {
+		t.Fatal("cleanup removed a replaced temp")
+	}
+	if b, e := os.ReadFile(path); e != nil || string(b) != "new bytes" {
+		t.Fatal("replaced temp changed", e)
+	}
+	if pins(d) != 1 {
+		t.Fatal("refused cleanup released the pin")
+	}
+	if e = d.Close(); e != nil || pins(d) != 0 {
+		t.Fatal("close kept pins", e)
+	}
+}
 func TestFilesystemWriteSourceDestinationDirectoryLinkRefused(t *testing.T) {
 	base := t.TempDir()
 	outside := t.TempDir()

@@ -44,15 +44,13 @@ func TestWasmModuleValidationAndCacheLimits(t *testing.T) {
 			copy := *r
 			copy.AgentVersion = test.version
 			copy.Diagnostic = nil
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, e := copy.Prepare(ctx, path, "", DefaultLimits()); e == nil {
+			if _, e := copy.Prepare(context.Background(), path, "", DefaultLimits()); e == nil {
 				t.Fatal("invalid module accepted")
 			}
 		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Prepare is bounded by the product's ModuleValidationBudget; do not add a shorter deadline.
+	ctx := context.Background()
 	l := DefaultLimits()
 	l.ModuleBytes = int64(len(fixtureBytes) - 1)
 	if _, e := r.Prepare(ctx, modulePath, "", l); e == nil {

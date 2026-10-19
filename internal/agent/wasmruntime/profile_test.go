@@ -56,9 +56,8 @@ func TestWasmNonexecutingStartAndImportSignatures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "module.wasm")
 			os.WriteFile(path, tinyModule(test.module, test.function, test.start), 0600)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			m, err := r.Prepare(ctx, path, "", DefaultLimits())
+			// Prepare is bounded by the product's ModuleValidationBudget; do not add a shorter deadline.
+			m, err := r.Prepare(context.Background(), path, "", DefaultLimits())
 			if !test.valid {
 				if err == nil {
 					t.Fatal("invalid actual import accepted")
@@ -68,6 +67,8 @@ func TestWasmNonexecutingStartAndImportSignatures(t *testing.T) {
 			if err != nil {
 				t.Fatal("validation executed trapping start section", err)
 			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 			out, err := r.Execute(ctx, m, map[string]any{}, c, DefaultLimits())
 			if out != nil {
 				out.Close()
@@ -90,9 +91,7 @@ func TestWasmMetadataTypesAndRawDataStructure(t *testing.T) {
 			raw[key] = int64(1)
 			path := filepath.Join(t.TempDir(), "module.wasm")
 			os.WriteFile(path, addMetadata(base, raw), 0600)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if _, err := r.Prepare(ctx, path, "", DefaultLimits()); err == nil {
+			if _, err := r.Prepare(context.Background(), path, "", DefaultLimits()); err == nil {
 				t.Fatal("metadata type accepted")
 			}
 		})

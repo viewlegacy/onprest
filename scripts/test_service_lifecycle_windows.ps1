@@ -63,14 +63,19 @@ function Remove-AgentServiceIfPresent {
   Invoke-AgentService @('uninstall') | Out-Null
 }
 
-function Invoke-RuntimeMarker([string]$Capability) {
+# U+0000 passes the Gateway's schema check and fails inside the Agent at PostgreSQL.
+function Invoke-RuntimeMarker([string]$Capability, [string]$Key = $apiSecret.api_key) {
+  $status = 0
   try {
-    Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18080/api/v1/capabilities/$Capability" -Method Post `
-      -Headers @{Authorization="Bearer $($apiSecret.api_key)"} -ContentType 'application/json' -Body '{}' | Out-Null
+    $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18080/api/v1/capabilities/$Capability" -Method Post `
+      -Headers @{Authorization="Bearer $Key"} -ContentType 'application/json' -Body ('{"' + $Capability + '":"\u0000"}')
+    $status = [int]$response.StatusCode
   }
   catch {
-    if ($_.Exception.Response.StatusCode.value__ -ne 400) { throw }
+    if ($null -eq $_.Exception.Response) { throw }
+    $status = [int]$_.Exception.Response.StatusCode.value__
   }
+  if ($status -ne 502) { throw "runtime marker $Capability did not fail inside the Agent: HTTP $status" }
 }
 
 function Invoke-MCP([string]$Body) {
@@ -288,18 +293,14 @@ function Assert-NewCapabilityAbsent {
     throw 'runtime marker records were not preserved across rotation generations'
   }
   $runtimeWriter = Start-Job -ScriptBlock {
-    param($Key)
+    param($Key, $MarkerFunction)
+    Set-Item -Path Function:Invoke-RuntimeMarker -Value $MarkerFunction
     for ($i = 0; $i -lt 10; $i++) {
       foreach ($capability in @('runtime_marker_a', 'runtime_marker_b')) {
-        try {
-          Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18080/api/v1/capabilities/$capability" -Method Post `
-            -Headers @{Authorization="Bearer $Key"} -ContentType 'application/json' -Body '{}' | Out-Null
-        } catch {
-          if ($_.Exception.Response.StatusCode.value__ -ne 400) { throw }
-        }
+        Invoke-RuntimeMarker $capability $Key
       }
     }
-  } -ArgumentList $apiSecret.api_key
+  } -ArgumentList $apiSecret.api_key, ${function:Invoke-RuntimeMarker}.ToString()
   $overlapValidation = & $AgentBin validate --config $DefaultConfig --format json
   if ($LASTEXITCODE -ne 0 -or ($overlapValidation -join "`n") -notmatch '"valid":true') { throw "overlap validate failed: $overlapValidation" }
   Receive-Job -Job (Wait-Job $runtimeWriter) | Out-Null
@@ -444,6 +445,8 @@ function Assert-NewCapabilityAbsent {
 }
 catch {
   $primaryFailure = $_
+  Write-Host "service lifecycle failed: $($_.Exception.Message)"
+  Write-Host $_.ScriptStackTrace
 }
 finally {
   try {

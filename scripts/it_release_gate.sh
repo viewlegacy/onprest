@@ -67,6 +67,8 @@ run_go_json_no_skip() {
 	fi
 	if [[ "$status" -ne 0 ]]; then
 		echo "$label failed with exit status $status; full log: $log" >&2
+		bash "$ROOT_DIR/scripts/go_test_json_failures.sh" "$log" || true
+		echo "--- last 200 log lines of $label ---" >&2
 		tail -n 200 "$log" >&2 || true
 		exit "$status"
 	fi

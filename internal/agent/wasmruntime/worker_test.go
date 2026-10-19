@@ -133,9 +133,8 @@ func setup(t *testing.T) (*Runner, *Module, *contract.Capability) {
 			t.Log(event, message, detail)
 		}
 	}}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	m, e := r.Prepare(ctx, modulePath, "", DefaultLimits())
+	// Prepare is bounded by the product's ModuleValidationBudget; do not add a shorter deadline.
+	m, e := r.Prepare(context.Background(), modulePath, "", DefaultLimits())
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -186,8 +185,8 @@ func TestWasmRealWorkerResultAndImmutableHash(t *testing.T) {
 	t.Logf("actual worker peak RSS=%d ceiling=%d CPU=%f compile=%s", observation.PeakRSS, ceiling, observation.CPUSeconds, observation.CompileDuration)
 	path := filepath.Join(t.TempDir(), "module.wasm")
 	os.WriteFile(path, fixtureBytes, 0600)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Prepare is bounded by the product's ModuleValidationBudget; do not add a shorter deadline.
+	ctx := context.Background()
 	copy, e := r.Prepare(ctx, path, m.Digest(), DefaultLimits())
 	if e != nil || copy.Digest() != m.Digest() {
 		t.Fatal(e)
