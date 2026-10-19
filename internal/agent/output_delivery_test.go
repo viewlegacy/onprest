@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -53,7 +54,17 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 	hash, _ := bcrypt.GenerateFromPassword([]byte("output-key"), bcrypt.MinCost)
 	other, _ := bcrypt.GenerateFromPassword([]byte("output-other-key"), bcrypt.MinCost)
 	var logs transportLogBuffer
-	server := gateway.NewServer(gateway.Config{Addr: addr, PublicBaseURL: base, AgentPublicKey: base64.RawURLEncoding.EncodeToString(public), APIKeys: []gateway.APIKey{{Name: "caller", KeyHash: string(hash), Capabilities: []string{"*"}}, {Name: "same-name", KeyHash: string(other), Capabilities: []string{"*"}}}, AgentPingInterval: 20 * time.Millisecond, AgentPongTimeout: time.Second}, &logs)
+	var acceptedMu sync.Mutex
+	accepted := map[string]*net.TCPConn{}
+	acceptConn := func(ctx context.Context, c net.Conn) context.Context {
+		if tcp, ok := c.(*net.TCPConn); ok {
+			acceptedMu.Lock()
+			accepted[tcp.RemoteAddr().String()] = tcp
+			acceptedMu.Unlock()
+		}
+		return ctx
+	}
+	server := gateway.NewServer(gateway.Config{ConnContext: acceptConn, Addr: addr, PublicBaseURL: base, AgentPublicKey: base64.RawURLEncoding.EncodeToString(public), APIKeys: []gateway.APIKey{{Name: "caller", KeyHash: string(hash), Capabilities: []string{"*"}}, {Name: "same-name", KeyHash: string(other), Capabilities: []string{"*"}}}, AgentPingInterval: 20 * time.Millisecond, AgentPongTimeout: time.Second}, &logs)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serverDone := make(chan error, 1)
@@ -352,12 +363,25 @@ func TestOutputDeliveryProductionFileRESTAndMCP(t *testing.T) {
 			params = `{"uri":"` + retained.Result.Files[0].URI + `"}`
 		}
 		body := `{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":` + params + `}`
+		acceptedMu.Lock()
+		clear(accepted)
+		acceptedMu.Unlock()
 		conn, e := slowDialer.Dial("tcp", addr)
 		if e != nil {
 			t.Fatal(e)
 		}
 		slowClients = append(slowClients, conn)
 		defer conn.Close()
+		var serverSide *net.TCPConn
+		waitTransport(t, func() bool {
+			acceptedMu.Lock()
+			defer acceptedMu.Unlock()
+			serverSide = accepted[conn.LocalAddr().String()]
+			return serverSide != nil
+		})
+		if e := serverSide.SetWriteBuffer(slowSendBuffer); e != nil {
+			t.Fatal(e)
+		}
 		fmt.Fprintf(conn, "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer output-key\r\nMCP-Protocol-Version: 2025-11-25\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(body), body)
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		slowReaders = append(slowReaders, bufio.NewReader(conn))

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -35,6 +36,8 @@ type Config struct {
 	MaxFileRequestBodyBytes  int64
 	MaxConcurrentBodyReaders int
 	EmitOpenAPISnapshot      bool
+	// ConnContext is passed to http.Server.ConnContext.
+	ConnContext func(context.Context, net.Conn) context.Context
 }
 
 type APIKey struct {

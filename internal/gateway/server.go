@@ -143,7 +143,7 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	mux.HandleFunc("/api/v1/files/", s.handleFile)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/mcp", s.handleMCP)
-	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withRequestIdentity(s.withRecovery(s.withAccess(mux))), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withRequestIdentity(s.withRecovery(s.withAccess(mux))), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, ConnContext: cfg.ConnContext}
 	return s
 }
 
