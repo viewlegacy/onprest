@@ -1,0 +1,26 @@
+# SQL Server
+
+Set `driver: sqlserver`. Named parameters such as `:customer_id` become SQL Server placeholders (`@p1`, `@p2`, ...).
+
+```yaml
+sources:
+  databases:
+    primary:
+      driver: sqlserver
+      host: sql.internal.example.com
+      port: 1433
+      name: legacy
+      user: onprest_reader
+      password_file: C:\ProgramData\Onprest\secrets\sql-password
+      tls:
+        mode: verify-full
+        ca_file: C:\ProgramData\Onprest\db-ca.pem
+```
+
+## Statements
+
+Startup and `validate` check each statement with `SET SHOWPLAN_TEXT`, which needs the `SHOWPLAN` permission in addition to the permissions the statements themselves need. Mutations are checked on a dedicated connection. `OUTPUT` clauses are not supported.
+
+## TLS
+
+`tls.mode` accepts `disable` (default), `require`, and `verify-full`. `require` encrypts the connection but trusts whatever certificate the server presents; use it only when that is a deliberate choice. Client certificates and `verify-ca` are not available for SQL Server.

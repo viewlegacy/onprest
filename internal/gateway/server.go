@@ -5,51 +5,68 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"math/big"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/viewlegacy/onprest/internal/protocol"
+	"github.com/viewlegacy/onprest/internal/ws"
 )
 
 type Server struct {
-	cfg             Config
-	logOut          io.Writer
-	logMu           sync.Mutex
-	agentMu         sync.RWMutex
-	agent           *agentConn
-	authMu          sync.Mutex
-	nonces          map[string]time.Time
-	agentChallenges map[string]time.Time
-	apiKeyCache     map[[sha256.Size]byte]cachedAPIKey
-	apiKeyAuthSlots chan struct{}
-	openapi         map[string]any
-	responseKinds   map[string]responseKind
-	rateMu          sync.Mutex
-	rate            map[string]*bucket
-	rateLastCleanup time.Time
-	httpSrv         *http.Server
+	agentWire        func(*ws.Conn) textConn
+	cfg              Config
+	bodySlots        chan struct{}
+	logOut           io.Writer
+	logMu            sync.Mutex
+	agentMu          sync.RWMutex
+	agent            *agentConn
+	authMu           sync.Mutex
+	nonces           map[string]time.Time
+	agentChallenges  map[string]time.Time
+	apiKeyCache      map[[sha256.Size]byte]cachedAPIKey
+	apiKeyAuthSlots  chan struct{}
+	openapi          map[string]any
+	responseKinds    map[string]responseKind
+	capabilities     map[string]protocol.CapabilityMetadata
+	references       map[string]fileReference
+	metadataError    string
+	mcpResponseMu    sync.Mutex
+	mcpResponseCount int
+	mcpResponseBytes big.Int
+	rateMu           sync.Mutex
+	rate             map[string]*bucket
+	rateLastCleanup  time.Time
+	httpSrv          *http.Server
 }
 
 type agentConn struct {
-	conn       textConn
-	pending    map[string]chan protocol.Response
-	mu         sync.Mutex
-	closed     bool
-	send       chan agentWrite
-	control    chan agentWrite
-	sendStates map[string]*requestSendState
-	done       chan struct{}
-	doneOnce   sync.Once
+	scheduler      *ws.Scheduler
+	transfers      *ws.Transfers
+	transferCalls  map[string]*inputExchange
+	transferRecent map[string]time.Time
+	transferCtx    context.Context
+	transferCancel context.CancelFunc
+	conn           textConn
+	pending        map[string]chan protocol.Response
+	mu             sync.Mutex
+	closed         bool
+	send           chan agentWrite
+	control        chan agentWrite
+	sendStates     map[string]*requestSendState
+	done           chan struct{}
+	doneOnce       sync.Once
 }
 
 type agentWrite struct {
-	id      string
-	payload []byte
-	result  chan error
-	ctx     context.Context
-	control bool
-	cancel  context.CancelFunc
+	id           string
+	payload      []byte
+	result       chan error
+	ctx          context.Context
+	control      bool
+	releaseInput func()
+	cancel       context.CancelFunc
 }
 
 type requestSendState struct {
@@ -75,6 +92,7 @@ type textConn interface {
 	ReadText() ([]byte, error)
 	WriteText([]byte) error
 	WriteTextWithDeadline([]byte, time.Duration) error
+	WriteTextWithDeadlineStart([]byte, time.Duration, func() error) error
 	Close() error
 }
 
@@ -109,16 +127,23 @@ func NewServer(cfg Config, logOut io.Writer) *Server {
 	if cfg.MaxRequestBodyBytes <= 0 {
 		cfg.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
 	}
-	s := &Server{cfg: cfg, logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, agentChallenges: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}, apiKeyAuthSlots: make(chan struct{}, maxConcurrentAPIKeyAuthentications)}
+	if cfg.MaxFileRequestBodyBytes <= 0 {
+		cfg.MaxFileRequestBodyBytes = 100 << 20
+	}
+	if cfg.MaxConcurrentBodyReaders <= 0 {
+		cfg.MaxConcurrentBodyReaders = 16
+	}
+	s := &Server{cfg: cfg, bodySlots: make(chan struct{}, cfg.MaxConcurrentBodyReaders), logOut: logOut, rate: map[string]*bucket{}, nonces: map[string]time.Time{}, agentChallenges: map[string]time.Time{}, apiKeyCache: map[[sha256.Size]byte]cachedAPIKey{}, apiKeyAuthSlots: make(chan struct{}, maxConcurrentAPIKeyAuthentications)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/ws/agent", s.handleAgentWS)
 	mux.HandleFunc("/ws/agent/challenge", s.handleAgentChallenge)
 	mux.HandleFunc("/ws/agent/verify", s.handleAgentVerify)
 	mux.HandleFunc("/api/v1/capabilities/", s.handleCapability)
+	mux.HandleFunc("/api/v1/files/", s.handleFile)
 	mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 	mux.HandleFunc("/mcp", s.handleMCP)
-	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withRecovery(s.withAccess(mux)), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	s.httpSrv = &http.Server{Addr: cfg.Addr, Handler: s.withRequestIdentity(s.withRecovery(s.withAccess(mux))), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second, ConnContext: cfg.ConnContext}
 	return s
 }
 

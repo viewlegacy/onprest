@@ -2,7 +2,7 @@ export default {
   index: 'Overview',
   deployment: 'Deployment',
   'capability-changes': 'Capability Changes',
-  'mutation-reconciliation': 'Mutation Reconciliation',
-  'release-gate': 'Release Gate',
-  troubleshooting: 'Troubleshooting'
+  'uncertain-outcomes': 'Uncertain Outcomes',
+  troubleshooting: 'Troubleshooting',
+  'release-gate': 'Release Gate'
 }

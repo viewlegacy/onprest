@@ -4,6 +4,7 @@ package it
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/viewlegacy/onprest/internal/agent/providers"
+	"github.com/viewlegacy/onprest/internal/contract"
 )
 
 func TestDockerTargetsBuildWhenDockerIntegrationEnabled(t *testing.T) {
@@ -109,23 +113,56 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
 		Name:     itDBName,
 		User:     itDBUser,
 		Password: itDBPassword,
-	}, "ws://gateway:8080/ws/agent", secrets.AgentPrivateKey, `  get_customer:
+	}, "ws://gateway:8080/ws/agent", secrets.AgentPrivateKey, `get_customer:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select :id::int as id
-    params:
+  input:
+    properties:
       id:
         type: integer
-        required: true
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer
+    required:
+      - id
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
 `)
 	if err := os.Chmod(capabilityFile, 0o644); err != nil {
 		t.Fatalf("chmod compose capability file: %v", err)
+	}
+	file, err := os.OpenFile(capabilityFile, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString("runtime: {identity_dir: /var/lib/onprest/identity, spool_dir: /var/lib/onprest/spool}\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatal("write protected runtime settings")
+	}
+	identityVolume := fmt.Sprintf("onprest-it-identity-%x", time.Now().UnixNano())
+	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=compose-identity", identityVolume).Run(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", identityVolume).Run() })
+	spoolVolume := fmt.Sprintf("onprest-it-spool-%x", time.Now().UnixNano())
+	if err := exec.Command("docker", "volume", "create", "--label", "onprest.it=compose-spool", spoolVolume).Run(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", spoolVolume).Run() })
+
+	// Operator preparation uses the already-required DB image. The Agent itself
+	// continues to run as the image's nonroot user with a private writable mount.
+	if out, err := exec.Command("docker", "run", "--rm", "--network", "none", "--user", "0", "--entrypoint", "sh", "-v", identityVolume+":/identity", "-v", spoolVolume+":/spool", "postgres:16-alpine", "-c", "chown 65532:65532 /identity /spool && chmod 700 /identity /spool").CombinedOutput(); err != nil {
+		t.Fatalf("prepare protected runtime volumes: %v %s", err, out)
 	}
 	composeFile := filepath.Join(tmp, "compose.yaml")
 	writeFile(t, composeFile, `services:
@@ -159,6 +196,15 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
       AGENT_CAPABILITY_FILE: /config/capability.yaml
     volumes:
       - ./`+filepath.Base(capabilityFile)+`:/config/capability.yaml:ro
+      - identity:/var/lib/onprest/identity
+      - spool:/var/lib/onprest/spool
+volumes:
+  identity:
+    external: true
+    name: `+identityVolume+`
+  spool:
+    external: true
+    name: `+spoolVolume+`
 `)
 	configFile := filepath.Join(tmp, "compose-config.yaml")
 	writeFile(t, configFile, `services:
@@ -183,27 +229,105 @@ func TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON(t *testing.T) {
 	output.Reset()
 	up.Stdout = &output
 	up.Stderr = &output
-	if err := up.Run(); err != nil {
-		t.Fatalf("docker compose up failed: %v\n%s", err, output.String())
-	}
 	t.Cleanup(func() {
 		down := exec.Command("docker", "compose", "-f", composeFile, "down", "-v", "--remove-orphans")
 		down.Dir = tmp
 		_ = down.Run()
 	})
+	if err := up.Run(); err != nil {
+		t.Fatalf("docker compose up failed: %v\n%s", err, output.String())
+	}
 	baseURL := "http://" + composeServicePort(t, tmp, composeFile, "gateway", "8080")
 	waitForComposeOpenAPI(t, tmp, composeFile, baseURL, secrets.APIKey, 45*time.Second)
-	status, body := postCapability(t, baseURL, secrets.APIKey, "get_customer", `{"id":7}`)
-	if status != http.StatusOK || !strings.Contains(string(body), `"id":7`) {
-		t.Fatalf("compose REST status=%d body=%s", status, string(body))
+	checkCalls := func() {
+		t.Helper()
+		status, body := postCapability(t, baseURL, secrets.APIKey, "get_customer", `{"id":7}`)
+		if status != http.StatusOK || !strings.Contains(string(body), `"id":7`) {
+			t.Fatalf("compose REST status=%d body=%s", status, string(body))
+		}
+		mcpBody := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":8}}}`)
+		response := requireMCPToolCallResponse(t, mcpBody, "1", false)
+		var textResult mcpRowsResult
+		decodeMCPJSON(t, []byte(response.Result.Content[0].Text), &textResult)
+		if textResult.Count.String() != "1" || len(textResult.Rows) != 1 || textResult.Rows[0].ID.String() != "8" {
+			t.Fatalf("compose MCP tools/call text result=%#v", textResult)
+		}
 	}
-	mcpBody := postMCPPayload(t, baseURL, secrets.APIKey, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":8}}}`)
-	response := requireMCPToolCallResponse(t, mcpBody, "1", false)
-	var textResult mcpRowsResult
-	decodeMCPJSON(t, []byte(response.Result.Content[0].Text), &textResult)
-	if textResult.Count.String() != "1" || len(textResult.Rows) != 1 || textResult.Rows[0].ID.String() != "8" {
-		t.Fatalf("compose MCP tools/call text result=%#v", textResult)
+	checkCalls()
+	assertComposeSpoolProtected(t, spoolVolume)
+	beforeHash := composeIdentityDefinitionHash(t, identityVolume, capabilityFile)
+	oldID := composeAgentID(t, tmp, composeFile)
+	recreate := exec.Command("docker", "compose", "-f", composeFile, "up", "-d", "--no-deps", "--force-recreate", "agent")
+	recreate.Dir = tmp
+	if out, err := recreate.CombinedOutput(); err != nil {
+		t.Fatalf("recreate agent: %v %s", err, out)
 	}
+	if composeAgentID(t, tmp, composeFile) == oldID {
+		t.Fatal("Agent container was not recreated")
+	}
+	waitForComposeOpenAPI(t, tmp, composeFile, baseURL, secrets.APIKey, 45*time.Second)
+	checkCalls()
+	assertComposeSpoolProtected(t, spoolVolume)
+	if composeIdentityDefinitionHash(t, identityVolume, capabilityFile) != beforeHash {
+		t.Fatal("persistent identity lost the prepared definition binding")
+	}
+}
+
+func assertComposeSpoolProtected(t *testing.T, volume string) {
+	t.Helper()
+	cmd := exec.Command("docker", "run", "--rm", "--network", "none", "--user", "65532:65532", "--entrypoint", "sh", "-v", volume+":/spool:ro", "postgres:16-alpine", "-c", "stat -c '%u:%g:%a' /spool /spool/objects /spool/.lock")
+	out, e := cmd.Output()
+	if e != nil || string(out) != "65532:65532:700\n65532:65532:700\n65532:65532:600\n" {
+		t.Fatal("runtime spool ownership or protection is invalid", e)
+	}
+}
+
+func composeAgentID(t *testing.T, dir, composeFile string) string {
+	t.Helper()
+	cmd := exec.Command("docker", "compose", "-f", composeFile, "ps", "-q", "agent")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil || len(bytes.TrimSpace(out)) == 0 {
+		t.Fatal("read Agent container identity")
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// Inspect the protected persistent key without logging its bytes, then use the
+// production snapshot resolver to compare the definition binding across recreate.
+func composeIdentityDefinitionHash(t *testing.T, volume, configFile string) string {
+	t.Helper()
+	cmd := exec.Command("docker", "run", "--rm", "--network", "none", "--user", "65532:65532", "--entrypoint", "sh", "-v", volume+":/identity:ro", "postgres:16-alpine", "-c", "stat -c '%u:%g:%a' /identity /identity/config-hmac.key && cat /identity/config-hmac.key")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal("inspect protected persistent identity")
+	}
+	defer clear(out)
+	parts := bytes.SplitN(out, []byte{'\n'}, 3)
+	if len(parts) != 3 || string(parts[0]) != "65532:65532:700" || string(parts[1]) != "65532:65532:600" || len(parts[2]) != 32 {
+		t.Fatal("identity directory/key ownership, permissions or size is invalid")
+	}
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := contract.Compile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := t.TempDir()
+	if err := os.Chmod(identity, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(identity, "config-hmac.key"), parts[2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Runtime["identity_dir"] = identity
+	snapshot, err := providers.Resolve(context.Background(), cfg, configFile, "get_customer", providers.ResolveOptions{Environment: providers.ProcessEnvironment()})
+	if err != nil {
+		t.Fatal("resolve persistent definition binding")
+	}
+	return snapshot.DefinitionHash()
 }
 
 func composeServicePort(t *testing.T, dir, composeFile, service, port string) string {

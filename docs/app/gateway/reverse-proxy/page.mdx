@@ -1,53 +1,32 @@
 # Reverse Proxy
 
-A reverse proxy or load balancer is optional. Use this configuration when TLS or the public network edge is handled outside `onprest-gateway`; no specific proxy product is required.
+The gateway serves plain HTTP. When agents on other hosts connect over `wss://` or download links use `https`, terminate TLS in front of the gateway with a reverse proxy, load balancer, or your platform; any product that supports WebSocket works.
 
-## Required Routes
+## Routes
 
-Route these paths to the gateway process.
+Forward these paths to the gateway:
 
-| Path | Protocol | Purpose |
-|---|---|---|
-| `/ws/agent` | WebSocket | outbound agent connection |
-| `/ws/agent/challenge` | HTTP POST | one-time challenge shared by normal Agent authentication and `doctor` |
-| `/ws/agent/verify` | HTTP POST | `doctor` signature verification |
-| `/api/v1/capabilities/*` | HTTP | REST capability calls |
-| `/mcp` | HTTP | MCP JSON-RPC endpoint |
-| `/openapi.json` | HTTP | OpenAPI spec filtered by API key |
-| `/healthz` | HTTP | gateway health and agent connection status |
+| Path | Used for |
+|---|---|
+| `/ws/agent` | The agent's WebSocket connection. Must allow WebSocket upgrade |
+| `/ws/agent/challenge`, `/ws/agent/verify` | Agent authentication and `onprest-agent doctor` (plain HTTP POST) |
+| `/api/v1/capabilities/*` | REST calls |
+| `/api/v1/files/*` | File downloads |
+| `/mcp` | MCP |
+| `/openapi.json` | OpenAPI |
+| `/healthz` | Health checks |
 
-The `/ws/agent` route must support WebSocket upgrade. The challenge and verify routes are ordinary POST requests and do not use API-key authentication or WebSocket upgrade. Challenge issuance requires no Agent signature; verify requires the Agent's Ed25519 signature.
+Set `GATEWAY_PUBLIC_URL` and, if capabilities return files, `ONPREST_PUBLIC_BASE_URL` to the public address; see [Gateway configuration](/gateway/configuration#public-urls). Allow request bodies and timeouts large enough for uploads; see [Deployment](/operations/deployment#timeouts-and-uploads).
 
-`/healthz` returns HTTP 200 while gateway is healthy and includes `agent_connected`. See [Healthz](/api/healthz).
+## Client IP detection
 
-## Source IP Detection
+The IP allow list and per-IP rate limit use the client's address. Without a proxy, the gateway uses the TCP peer address, and you should leave `GATEWAY_TRUSTED_PROXY_CIDRS` empty.
 
-By default, gateway uses the TCP connection source address, `RemoteAddr`, as the client IP.
-
-If `GATEWAY_TRUSTED_PROXY_CIDRS` is configured and the direct peer is inside those CIDRs, gateway uses `X-Forwarded-For` first and falls back to `X-Real-IP`:
-
-- `X-Forwarded-For`
-- `X-Real-IP`
-
-Forwarded headers from untrusted peers are ignored because they are spoofable.
-
-The trusted proxy must remove caller-supplied values and overwrite both headers from its authenticated connection metadata. Do not append to an inbound `X-Forwarded-For`: gateway intentionally selects its first valid address, so preserving a caller-controlled first value would turn proxy trust into an allow-list/rate-limit bypass.
-
-## IP Allow List
-
-`GATEWAY_IP_ALLOW_LIST` applies after source IP detection to REST, MCP, OpenAPI, `/healthz`, the agent WebSocket route, and the Agent diagnostic routes. Per-source rate limiting applies to the same routes. `/healthz` and Agent diagnostics are API-key-free, not exempt from these network controls.
+Behind a proxy, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy's own addresses only. For requests from those addresses, the gateway takes the client IP from the first entry of `X-Forwarded-For`, or from `X-Real-IP`. Configure the proxy to **replace** both headers with the address it saw, never to append to a value the client sent; otherwise a client could choose its own IP and bypass the allow list and rate limit.
 
 ```env
-GATEWAY_IP_ALLOW_LIST=203.0.113.0/24,198.51.100.10
 GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12
+GATEWAY_IP_ALLOW_LIST=203.0.113.0/24,198.51.100.10
 ```
 
-Single IP values are accepted and treated as host routes.
-
-## Direct Exposure
-
-If no reverse proxy is used, leave `GATEWAY_TRUSTED_PROXY_CIDRS` empty. In that mode, forwarded headers are ignored and `RemoteAddr` is authoritative.
-
-## Proxy Exposure
-
-When running behind a proxy, include only the proxy or load balancer source CIDRs in `GATEWAY_TRUSTED_PROXY_CIDRS`. Do not include broad public ranges unless those ranges are truly controlled proxy peers.
+The allow list and rate limit apply to every route, including `/healthz` and the agent routes.

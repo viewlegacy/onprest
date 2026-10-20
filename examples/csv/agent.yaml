@@ -1,0 +1,62 @@
+schema_version: 1
+
+service: {title: Sales CSV, version: 1.0.0}
+
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+
+sources:
+  folders:
+    reports: {root: ./reports, access: read}
+
+capabilities:
+  summarize_sales:
+    executor:
+      type: csv
+      read:
+        source: reports
+        selector: {name: sales.csv}
+      csv:
+        columns:
+          amount: {type: integer}
+      where: [{column: month, op: eq, input: /month}]
+    input:
+      properties:
+        month: {type: string}
+      required: [month]
+    output:
+      items:
+        properties:
+          id: {type: string}
+          amount: {type: integer}
+      files:
+        format: csv
+        filename: selected-sales.csv
+        delivery: {rest: direct}
+
+  convert_upload:
+    executor:
+      type: csv
+      read: {input: /documents}
+      csv:
+        columns:
+          amount: {type: integer}
+      where: [{column: month, op: eq, input: /month}]
+    input:
+      properties:
+        month: {type: string}
+        documents:
+          items: {type: file, extensions: [csv]}
+          minItems: 1
+      required: [month, documents]
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: string}
+          amount: {type: integer}
+      files:
+        format: csv
+        filename: selected-sales.csv
+        delivery: {mcp: inline}

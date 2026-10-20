@@ -1,0 +1,172 @@
+# Inputs and Outputs
+
+Every capability declares what callers may send (`input`) and what may come back (`output`). The agent validates input before anything runs and builds the response only from the declared output. The same declarations generate the OpenAPI and MCP schemas callers see.
+
+## Input
+
+`input` is a JSON Schema for the request object. The REST body or the MCP `arguments` object is validated against it:
+
+```yaml
+input:
+  properties:
+    customer_id: {type: integer, minimum: 1, description: Customer ID.}
+    status: {type: string, enum: [open, closed], default: open}
+    tags: {items: {type: string, maxLength: 32}, maxItems: 10}
+    note: {type: [string, 'null']}
+  required: [customer_id]
+```
+
+Supported keywords:
+
+| Keyword | Default | Meaning |
+|---|---|---|
+| `type` | any | `string`, `integer`, `number`, `boolean`, `object`, `array`, `null`, or a list such as `[string, 'null']`. `number` also accepts integers. `file` declares a [file input](#file-inputs) |
+| `properties` | none | Schema for each property of an object. Implies `type: object` |
+| `required` | none | Declared properties the caller must send |
+| `additionalProperties` | `false` | Whether an object accepts undeclared properties: `true`, `false`, or a schema their values must match |
+| `items` | none | Schema every array element must match. Implies `type: array` |
+| `minItems`, `maxItems` | no limit | Number of array elements |
+| `minLength`, `maxLength` | no limit | String length in characters, not bytes |
+| `pattern` | none | Regular expression the string must contain a match for |
+| `format` | none | `email`, `uuid`, `date`, `date-time`, or `uri` |
+| `minimum`, `maximum` | no limit | Inclusive bounds for a number |
+| `exclusiveMinimum`, `exclusiveMaximum` | no limit | Exclusive bounds for a number |
+| `enum` | none | List of allowed values |
+| `const` | none | The only allowed value |
+| `default` | none | Value used when the caller leaves the property out. It must match the schema |
+| `description` | none | Text shown in OpenAPI and the MCP tool list |
+
+For example:
+
+```yaml
+input:
+  properties:
+    priority: {type: [integer, 'null'], enum: [1, 2, 3, null]}
+    order_id: {type: string, pattern: '^ORD-[0-9]{6}$'}
+    contact: {type: string, format: email}
+    labels: {type: object, additionalProperties: {type: string, maxLength: 64}}
+```
+
+A few rules that are easy to miss:
+
+- Because `additionalProperties` defaults to `false`, `{type: object}` alone accepts only `{}`. A property with no type, such as `{}`, accepts any value.
+- `enum` and `const` need an explicit `type` unless the schema has `properties` or `items`, and every listed value must match the schema. To accept `null`, include `'null'` in `type`, and in `enum` if there is one.
+- A missing property gets its `default`; an explicit `null` is not missing.
+- Integers keep full 64-bit precision.
+- `pattern` supports the common regular-expression subset (classes, groups, alternation, repetition, anchors). Lookaround, backreferences, and a few ambiguous forms such as `[]` are refused; `validate` reports them. `\d` and `\w` match ASCII only. Anchor the pattern with `^` and `$` when it must match the whole value.
+- `date` is `YYYY-MM-DD` and `date-time` is RFC 3339, such as `2026-10-13T09:00:00Z`. `uuid` accepts versions 1 to 5, not version 7. `uri` requires a scheme.
+
+Request size and nesting are bounded by [policy](/capabilities/policy-and-limits).
+
+### File inputs
+
+Declare a file with `type: file`. It can appear at the top level, inside objects, or in arrays:
+
+```yaml
+input:
+  properties:
+    document: {type: file, extensions: [pdf], mime_types: [application/pdf], max_bytes: 8MiB}
+    attachments: {items: {type: file}, maxItems: 4}
+  required: [document]
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `extensions` | any | Allowed file name extensions, without the dot |
+| `mime_types` | any | Allowed MIME types. Applies together with `extensions` |
+| `max_bytes` | policy limit | Maximum size of this file |
+| `allow_empty` | `true` | Whether a zero-byte file is accepted |
+
+Callers send files as inline Base64 in JSON or MCP, or as multipart form data; see [API: Files](/api/files#sending-files). CSV, file, HTTP, and Wasm capabilities accept file inputs. DB capabilities do not.
+
+## Output
+
+Without an `output` section a capability still runs, but returns `data: null` and no files. Add `data: {}` to publish data, and describe the shape you want to publish next to it:
+
+```yaml
+output:
+  data: {}
+  items:
+    properties:
+      id: {type: integer}
+      name: {type: string}
+```
+
+In an object with `properties`, only the listed fields are returned; extra fields from the query or API are dropped. Declared fields are also type-checked, and a mismatch fails the call with `OUTPUT_INVALID` instead of returning something unexpected. Values are never converted: a string stays a string even if it looks like a number.
+
+What `data` looks like depends on the executor:
+
+| Executor | `data` | Describe it with |
+|---|---|---|
+| DB `SELECT`, CSV | `{"rows": [...], "count": n}` | `items.properties` for each row |
+| DB `INSERT` / `UPDATE` / `DELETE` | `{"count": n}`, the affected row count | Usually nothing; `data: {}` is enough |
+| HTTP, Wasm | The JSON value itself: object, array, or scalar | `properties`, `items`, or `type` |
+| File | Nothing; files are returned in `files` | — |
+
+Output schemas use the same keywords as input, without `default`. The differences:
+
+- Fields are nullable by default. Set `nullable: false` on a field that must never be null. Requiring a field to be present (`required`) is a separate rule.
+- An object without `properties`, such as `{type: object}` or a field with no type (`{}`), is returned as it is. To return only fields that are safe to expose, declare `properties` for every object. On an object with `properties`, `additionalProperties: true` keeps the undeclared fields, and a schema keeps them after checking them against it.
+- To publish everything the executor returns, leave the schema out (`data: {}` alone), or set `mode: passthrough` to keep undeclared fields everywhere while still checking the declared ones. Use either only when every returned field is safe to expose.
+
+### File outputs
+
+Add `files` to return files. For executors that produce files (file reads, HTTP responses with `response.kind: file`, and Wasm modules), `files: {}` publishes them as they are. `mime_type` overrides the type reported to the caller:
+
+```yaml
+output:
+  files:
+    mime_type: application/pdf
+```
+
+DB `SELECT`, CSV, HTTP, and Wasm capabilities can instead generate a CSV file from the same rows they publish as JSON:
+
+```yaml
+output:
+  data: {}
+  items:
+    properties:
+      id: {type: integer}
+      name: {type: string}
+  files:
+    format: csv
+    filename: customers.csv
+    columns: [id, name]
+```
+
+Leave out `data: {}` to return only the file. Fields excluded from the output are never written to the generated CSV, and an empty result still produces the header row.
+
+| `files` key | Default | Meaning |
+|---|---|---|
+| `format` | none | `csv` generates a CSV file. Omit it to return original files |
+| `filename` | required for CSV | Name of the generated file |
+| `columns` | declared field order | Columns to write, in order. DB and CSV fall back to the result's column order; HTTP and Wasm output needs either declared fields or `columns` |
+| `from` | the rows | For HTTP and Wasm output, a JSON Pointer such as `/items` that selects the array of objects to write |
+| `formula_escape` | `true` | Escape cells that a spreadsheet could interpret as formulas |
+| `mime_type` | `text/csv` for CSV | MIME type reported to the caller |
+| `delivery.rest` | `reference` | `reference` returns a download link; `direct` returns the file as the response body |
+| `delivery.mcp` | `reference` | `reference` returns a resource link; `inline` embeds the file in the tool result |
+
+`delivery.rest: direct` requires exactly one file and no `data`. Download links need the gateway's `ONPREST_PUBLIC_BASE_URL`; see [File reference origin](/gateway/configuration#file-reference-origin). How callers receive each form is described in [API: Files](/api/files#receiving-files), and the size and lifetime limits are in [Policy and limits](/capabilities/policy-and-limits#file-limits).
+
+## Descriptions and metadata
+
+These keys document a capability for callers. They appear in OpenAPI and the MCP tool list and do not change how it runs.
+
+```yaml
+get_customer:
+  description: Fetch one customer by ID.
+  annotations:
+    read_only: true
+    destructive: false
+    idempotent: true
+    open_world: false
+  examples:
+    - params: {customer_id: 1}
+```
+
+- `description` on the capability and on each input or output field becomes the schema description.
+- `annotations` become MCP tool hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). Only the hints you set are sent.
+- `examples` are validated against the input schema and appear in OpenAPI only.
+
+To keep a capability callable but out of OpenAPI and MCP discovery, set `policy.expose_in_openapi: false`. This metadata is public, so keep secrets out of it.

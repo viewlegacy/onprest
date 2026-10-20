@@ -63,14 +63,19 @@ function Remove-AgentServiceIfPresent {
   Invoke-AgentService @('uninstall') | Out-Null
 }
 
-function Invoke-RuntimeMarker([string]$Capability) {
+# U+0000 passes the Gateway's schema check and fails inside the Agent at PostgreSQL.
+function Invoke-RuntimeMarker([string]$Capability, [string]$Key = $apiSecret.api_key) {
+  $status = 0
   try {
-    Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18080/api/v1/capabilities/$Capability" -Method Post `
-      -Headers @{Authorization="Bearer $($apiSecret.api_key)"} -ContentType 'application/json' -Body '{}' | Out-Null
+    $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18080/api/v1/capabilities/$Capability" -Method Post `
+      -Headers @{Authorization="Bearer $Key"} -ContentType 'application/json' -Body ('{"' + $Capability + '":"\u0000"}')
+    $status = [int]$response.StatusCode
   }
   catch {
-    if ($_.Exception.Response.StatusCode.value__ -ne 400) { throw }
+    if ($null -eq $_.Exception.Response) { throw }
+    $status = [int]$_.Exception.Response.StatusCode.value__
   }
+  if ($status -ne 502) { throw "runtime marker $Capability did not fail inside the Agent: HTTP $status" }
 }
 
 function Invoke-MCP([string]$Body) {
@@ -111,9 +116,9 @@ function Get-SharedFileHash([string]$Path) {
 function Assert-OldPublicContract {
   $rest = Invoke-RestMethod -Uri http://127.0.0.1:18080/api/v1/capabilities/runtime_marker_a -Method Post `
     -Headers @{Authorization="Bearer $($apiSecret.api_key)"} -ContentType 'application/json' -Body '{"runtime_marker_a":"service-old"}'
-  if ($rest.count -ne 1 -or $rest.rows[0].value -ne 'service-old') { throw "old REST contract changed: $($rest | ConvertTo-Json -Compress -Depth 10)" }
+  if ($rest.result.data.count -ne 1 -or $rest.result.data.rows[0].value -ne 'service-old') { throw "old REST contract changed: $($rest | ConvertTo-Json -Compress -Depth 10)" }
   $mcp = Invoke-MCP '{"jsonrpc":"2.0","id":"old-call","method":"tools/call","params":{"name":"runtime_marker_a","arguments":{"runtime_marker_a":"service-old"}}}'
-  if ($mcp.result.isError -eq $true -or $mcp.result.structuredContent.count -ne 1 -or $mcp.result.structuredContent.rows[0].value -ne 'service-old') {
+  if ($mcp.result.isError -eq $true -or $mcp.result.structuredContent.result.data.count -ne 1 -or $mcp.result.structuredContent.result.data.rows[0].value -ne 'service-old') {
     throw "old MCP contract changed: $($mcp | ConvertTo-Json -Compress -Depth 10)"
   }
   $tools = Invoke-MCP '{"jsonrpc":"2.0","id":"old-list","method":"tools/list"}'
@@ -198,12 +203,18 @@ function Assert-NewCapabilityAbsent {
   $newCapability = @'
 
   rollout_marker_new:
-    sql: select 'rollout-v2' as value
+    executor:
+      type: db
+      source: primary
+      sql: select 'rollout-v2' as value
     policy:
       readonly: true
-    result:
-      value:
-        type: string
+    output:
+      data: {}
+      items:
+        properties:
+          value:
+            type: string
 '@
   [System.IO.File]::WriteAllText($DefaultConfig, $initialConfigContent + $newCapability)
   $validValidation = & $AgentBin validate --config $DefaultConfig --format json
@@ -230,11 +241,11 @@ function Assert-NewCapabilityAbsent {
   if ($newOpenAPI -notmatch [regex]::Escape('/api/v1/capabilities/rollout_marker_new')) { throw 'new OpenAPI path did not appear after service restart' }
   $newRest = Invoke-RestMethod -Uri http://127.0.0.1:18080/api/v1/capabilities/rollout_marker_new -Method Post `
     -Headers @{Authorization="Bearer $($apiSecret.api_key)"} -ContentType 'application/json' -Body '{}'
-  if ($newRest.count -ne 1 -or $newRest.rows[0].value -ne 'rollout-v2') { throw "new REST contract failed: $($newRest | ConvertTo-Json -Compress -Depth 10)" }
+  if ($newRest.result.data.count -ne 1 -or $newRest.result.data.rows[0].value -ne 'rollout-v2') { throw "new REST contract failed: $($newRest | ConvertTo-Json -Compress -Depth 10)" }
   $newTools = Invoke-MCP '{"jsonrpc":"2.0","id":"new-list","method":"tools/list"}'
   if (@($newTools.result.tools.name) -notcontains 'rollout_marker_new') { throw 'new MCP tool did not appear after service restart' }
   $newMCP = Invoke-MCP '{"jsonrpc":"2.0","id":"new-call","method":"tools/call","params":{"name":"rollout_marker_new","arguments":{}}}'
-  if ($newMCP.result.isError -eq $true -or $newMCP.result.structuredContent.count -ne 1 -or $newMCP.result.structuredContent.rows[0].value -ne 'rollout-v2') {
+  if ($newMCP.result.isError -eq $true -or $newMCP.result.structuredContent.result.data.count -ne 1 -or $newMCP.result.structuredContent.result.data.rows[0].value -ne 'rollout-v2') {
     throw "new MCP contract failed: $($newMCP | ConvertTo-Json -Compress -Depth 10)"
   }
 
@@ -282,18 +293,14 @@ function Assert-NewCapabilityAbsent {
     throw 'runtime marker records were not preserved across rotation generations'
   }
   $runtimeWriter = Start-Job -ScriptBlock {
-    param($Key)
+    param($Key, $MarkerFunction)
+    Set-Item -Path Function:Invoke-RuntimeMarker -Value $MarkerFunction
     for ($i = 0; $i -lt 10; $i++) {
       foreach ($capability in @('runtime_marker_a', 'runtime_marker_b')) {
-        try {
-          Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18080/api/v1/capabilities/$capability" -Method Post `
-            -Headers @{Authorization="Bearer $Key"} -ContentType 'application/json' -Body '{}' | Out-Null
-        } catch {
-          if ($_.Exception.Response.StatusCode.value__ -ne 400) { throw }
-        }
+        Invoke-RuntimeMarker $capability $Key
       }
     }
-  } -ArgumentList $apiSecret.api_key
+  } -ArgumentList $apiSecret.api_key, ${function:Invoke-RuntimeMarker}.ToString()
   $overlapValidation = & $AgentBin validate --config $DefaultConfig --format json
   if ($LASTEXITCODE -ne 0 -or ($overlapValidation -join "`n") -notmatch '"valid":true') { throw "overlap validate failed: $overlapValidation" }
   Receive-Job -Job (Wait-Job $runtimeWriter) | Out-Null
@@ -438,6 +445,8 @@ function Assert-NewCapabilityAbsent {
 }
 catch {
   $primaryFailure = $_
+  Write-Host "service lifecycle failed: $($_.Exception.Message)"
+  Write-Host $_.ScriptStackTrace
 }
 finally {
   try {

@@ -1,115 +1,96 @@
 # Troubleshooting
 
-## Agent Cannot Connect
+## Agent fails at startup or validate
 
-Check:
-
-- `gateway.url` points to `/ws/agent`.
-- If a reverse proxy or load balancer is used, it supports WebSocket upgrade.
-- `GATEWAY_AGENT_PUBLIC_KEY` matches `gateway.agent_private_key`.
-- agent host can make outbound connections to gateway.
-- timestamp skew is not outside the allowed signing window.
-
-The gateway returns `GATEWAY_AUTH_FAILED` before WebSocket establishment when signature validation fails.
-
-## Run the doctor probe
-
-After the Gateway is running, use `doctor` to separate local preparation failures from Gateway transport and authentication failures:
-
-```bash
-onprest-agent doctor --config /absolute/path/capability.yaml --format json
-```
-
-Use the first failed check to choose the next action:
-
-- `config` or `database_*`: correct `capability.yaml` or restore database access.
-- `gateway_dns` or `gateway_connect`: check the configured hostname, port, DNS, firewall, and proxy path.
-- `gateway_tls`: check the hostname, SNI certificate, and the Agent host's OS trust store. There is no separate Gateway CA setting.
-- `gateway_challenge` or `gateway_verify`: check proxy routing, clock synchronization, and that `GATEWAY_AGENT_PUBLIC_KEY` matches `gateway.agent_private_key`.
-
-Later dependent checks are shown as `skipped`. Doctor does not establish or replace the normal WebSocket connection and does not execute a capability. See the [CLI Reference](/reference/cli#diagnose-agent-and-gateway) for output and exit codes, and [Agent Local Logs](/agent/local-logs) for the latest-failure log.
-
-## OpenAPI Returns 503
-
-`GATEWAY_AGENT_OFFLINE` means gateway has no connected agent or no usable OpenAPI cache.
-
-## Mutation outcome is unknown
-
-`AGENT_TRANSACTION_OUTCOME_UNKNOWN`, `GATEWAY_TIMEOUT`, or an in-flight agent disconnect means the caller cannot safely infer commit or rollback. Do not retry automatically. Check the target record using an independent read capability and inspect the agent-local detail log. By contrast, `AGENT_QUERY_TIMEOUT` means the agent confirmed rollback after its policy timeout.
-
-`AGENT_AFFECTED_ROWS_EXCEEDED` is different: it means the DML exceeded `policy.max_affected_rows` and the Agent confirmed rollback. Check the SQL's target conditions and the intended number of affected rows before deciding whether to narrow the SQL or adjust the limit. Error responses do not include an affected count; the Gateway request log has `count: null`.
-
-See [Mutation Reconciliation](/operations/mutation-reconciliation) for the read-capability workflow and an INSERT example.
-
-Check agent startup logs and `onprest-agent.log`. DB ping or EXPLAIN failure prevents the agent from connecting.
-
-## API Key Authentication Fails
-
-Check:
-
-- Header is `Authorization: Bearer ...` or `X-API-Key`.
-- `GATEWAY_API_KEYS_JSON` contains the bcrypt hash from `create-key`.
-- The JSON value was single-quoted when sourced by shell.
-- The key was not copied from the masked/logged form.
-
-## Capability Denied
-
-`GATEWAY_CAPABILITY_DENIED` means the API key is valid but not authorized for that capability.
-
-Update the key definition or use a key whose `capabilities` includes the requested capability or `"*"`.
-
-## DB Ping or EXPLAIN Startup Failure
-
-Agent stops before connecting to gateway. Check `onprest-agent.log` next to the agent binary.
-
-To check an edited configuration without stopping a running Agent, run:
+The agent stops before connecting if `capability.yaml` is invalid or a source cannot be prepared. Run the same checks without touching a running agent:
 
 ```bash
 onprest-agent validate --config /absolute/path/capability.yaml
 ```
 
-For database-open, Ping, EXPLAIN, or similar recorded failures, inspect only the detail-log path returned by that invocation; it is not the runtime `onprest-agent.log`. Text output identifies it with `see validation detail log`, while JSON uses `detail_log`. Configuration and busy failures are fully reported by the CLI and return no log path. If the CLI reports that the diagnostic could not be recorded, it deliberately omits `detail_log`; do not use an older fixed log as the current diagnostic. A JSON `cleanup_path` names only an incomplete temporary file and may be removed after validation exits.
-
-Do not edit or remove the validation lock file. If another validation is running, wait for it to finish. See [Agent Local Logs](/agent/local-logs) for the authoritative fixed-file, temporary-file, recovery, size, and access-control rules. Check any diagnostic before sending it to support.
-
-Validation success covers YAML lint, DB Ping, and startup EXPLAIN. It does not cover Gateway reachability, real capability results, data-dependent constraints, or trigger runtime behavior.
+A configuration error is printed in full. For failures that need more detail, such as a database that cannot be reached or a statement that fails `EXPLAIN`, the output names a log file (`detail_log` in JSON output); read that file, not an older one. When the running agent itself fails at startup, the detail is in `onprest-agent.log` next to the binary. See [Agent Local Logs](/agent/local-logs).
 
 Common causes:
 
-- DB host or port unreachable.
-- DB credentials are invalid.
-- DB user lacks required permissions.
-- SQL syntax is invalid for the configured driver.
-- SQL Server plan validation permissions are missing.
+- The database host or port is unreachable, or the credentials are wrong.
+- The database user lacks permission for a statement, or for `EXPLAIN` (on SQL Server, `SHOWPLAN`).
+- The SQL does not suit the configured driver.
+- A secret file has the wrong owner or permissions (on Windows, inherited permissions are refused), or a secret or certificate file is a symbolic link. See [Secret files](/agent/configuration#secret-files).
+- A folder root does not exist, or a Wasm module is missing or was not built with `onprest-agent code build`.
+- A PostgreSQL environment variable such as `PGSERVICE` is set in the agent's environment; see [PostgreSQL](/capabilities/databases/postgres#environment-variables).
 
-## Runtime DB Permission Failure
+`validate` does not call HTTP APIs or run any capability, so it cannot catch a wrong upstream endpoint, data-dependent constraint errors, or trigger behavior. Test those with a real call.
 
-External callers receive a normalized agent error such as `AGENT_QUERY_FAILED`. The DB-specific detail is in `onprest-agent.log`.
+## Spool problems prevent startup
 
-This is expected. Do not look for SQL detail in gateway stdout or HTTP responses.
+The spool directory (`runtime.spool_dir`) must be private to the agent's user and used by one agent only. Startup fails if another agent holds it, its permissions are wrong, its quota cannot hold the files left from an interrupted save, or a folder recorded for cleanup is unreachable.
 
-## Rate Limited
+Keep the spool and the recorded folders as they are, read the startup message in the [local log](/agent/local-logs), fix the access or permission problem, and restart with the same spool path. The agent then finishes the cleanup by itself. Do not edit the spool's records, and do not delete files in business folders by their `.onprest-` prefix: the agent removes only the temporary files it can verify and never touches completed files. Move or delete a spool only after a successful start at its original path.
 
-Check the error code to identify which limiter rejected the request.
+## Agent cannot connect
 
-`GATEWAY_RATE_LIMITED` means the source IP exceeded the Gateway rate or burst limits.
+Check that:
 
-Review:
+- `gateway.url` ends in `/ws/agent` and uses `wss://` for a remote gateway.
+- The agent host can reach the gateway, and any proxy in between supports WebSocket upgrade.
+- `GATEWAY_AGENT_PUBLIC_KEY` matches the agent's private key.
+- The agent host's clock is correct.
 
-- `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND`
-- `GATEWAY_RATE_LIMIT_BURST`
-- trusted proxy source IP detection
-
-`AGENT_RATE_LIMITED` means the request exceeded the Agent policy for that capability. Check `policy.rate_limit` on the target capability, or under `defaults` when inherited, and compare it with the actual call rate. See [Capability YAML](/agent/capability-yaml#policy) for the policy fields and [Errors](/api/errors#rest-error-status-mappings) for the response contract.
-
-## Docker or Testcontainers Issues
-
-Container-backed integration tests require Docker daemon access.
-
-Use mandatory mode when skips should fail the gate:
+`doctor` checks each step and stops at the first one that fails:
 
 ```bash
-ONPREST_IT_REQUIRE_CONTAINERS=1 make test-it-release-gate
+onprest-agent doctor --config /absolute/path/capability.yaml --format json
 ```
 
-If tests fail after interruption, check for leftover testcontainers resources and rerun the release gate. See [Test Commands](/reference/test-commands) for the meaning of `ONPREST_IT_REQUIRE_CONTAINERS` and the full command list.
+| First failed check | Look at |
+|---|---|
+| `config` or `database_*` | `capability.yaml` or database access, as in the first section |
+| `gateway_dns`, `gateway_connect` | Host name, port, DNS, firewall, proxy path |
+| `gateway_tls` | Host name and certificate; the agent uses the OS trust store |
+| `gateway_challenge`, `gateway_verify` | Proxy routing of `/ws/agent/*`, clock, and the key pair |
+
+`doctor` does not replace a running agent's connection or run a capability.
+
+## Capability calls return AGENT_OFFLINE or DEPENDENCY_UNAVAILABLE
+
+`AGENT_OFFLINE` means no agent is connected, or the gateway has not loaded its contract yet. Check `/healthz`, then the agent's stdout, stderr, and local log.
+
+`DEPENDENCY_UNAVAILABLE` mentioning `ONPREST_PUBLIC_BASE_URL` on every capability, while `/healthz` reports `agent_connected: true`, means at least one capability returns download links and the gateway has no [file reference origin](/gateway/configuration#file-reference-origin). Set it and restart the gateway.
+
+## API key is rejected
+
+`AUTH_FAILED` means the key is missing or wrong:
+
+- Send it as `Authorization: Bearer ...` or `X-API-Key`.
+- `GATEWAY_API_KEYS_JSON` must contain the `key_hash` printed by `create-key`, and the gateway must have been restarted since.
+- The JSON value must be single-quoted when a shell loads `gateway.env`, or the `$` in the hash is expanded.
+
+`CAPABILITY_DENIED` means the key is valid but its `capabilities` list does not include the capability.
+
+## Rate limited
+
+Three different limits return `RATE_LIMITED`. The message tells them apart:
+
+| Message | Limit | What to check |
+|---|---|---|
+| `too many requests` | Gateway, per source IP | `GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND`, `GATEWAY_RATE_LIMIT_BURST`, and whether the gateway sees the real client IP behind a proxy |
+| `authentication is busy; retry later` | Gateway, too many new API key checks at once | The number of clients authenticating at the same moment |
+| `capability rate limit exceeded` | Agent, the capability's `policy.rate_limit` | The capability's policy or `defaults` and the call rate |
+
+None of them ran the capability.
+
+## Calls fail with EXECUTION_FAILED
+
+The response is deliberately generic. The real error, such as a database permission error or the upstream API's status, is only in the agent's [local log](/agent/local-logs).
+
+## A call that changes data failed with outcome unknown
+
+Do not retry automatically. Check the real state first, as described in [Uncertain outcomes](/operations/uncertain-outcomes). For `LIMIT_EXCEEDED` with `rolled_back` on a mutation, compare `policy.max_affected_rows` with the statement's `WHERE` conditions before raising the limit.
+
+## Download links do not work
+
+- Links point to the wrong host, or a proxy answers 404: check `ONPREST_PUBLIC_BASE_URL` and make sure the proxy routes `/api/v1/files/` to the gateway.
+- HTTP 403: use the same API key that made the call.
+- `NOT_FOUND`: the link expired (`file_ttl`), or the gateway or agent restarted or reconnected. Make a new call, keeping in mind what else that call does.
+- `BUSY`: another download from the same call is running.
+- A cut-off file: the transfer failed. Download again while the link is valid.

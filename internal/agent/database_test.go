@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -195,4 +196,83 @@ func writeTestFile(t *testing.T, name string, data []byte) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestVersionedDatabaseTLSSnapshotNeverReopensConfiguredFiles(t *testing.T) {
+	ca, cert, key, _ := writeDatabaseTLSFixture(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour), "db.internal")
+	caBytes, _ := os.ReadFile(ca)
+	certBytes, _ := os.ReadFile(cert)
+	keyBytes, _ := os.ReadFile(key)
+	for _, path := range []string{ca, cert, key} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PGSSLROOTCERT", ca)
+	t.Setenv("PGSSLCERT", cert)
+	t.Setenv("PGSSLKEY", key)
+	for _, driver := range []string{"postgres", "mysql", "sqlserver", "oracle"} {
+		t.Run(driver, func(t *testing.T) {
+			definition := DatabaseDef{Driver: driver, Host: "127.0.0.1", Port: 1234, Name: "fixture", User: "fixture", TLS: DatabaseTLSDef{Mode: "verify-full", ServerName: "db.internal", Snapshot: true, CAFile: ca, CABytes: caBytes}}
+			if driver == "postgres" || driver == "mysql" {
+				definition.TLS.CertFile = cert
+				definition.TLS.KeyFile = key
+				definition.TLS.CertBytes = certBytes
+				definition.TLS.KeyBytes = keyBytes
+			}
+			db, err := OpenDatabase(definition)
+			if err != nil {
+				t.Fatalf("snapshot connector reopened file: %v", err)
+			}
+			defer db.Close()
+			config, err := databaseTLSConfig(definition)
+			if err != nil || config.RootCAs == nil {
+				t.Fatalf("snapshot trust missing: %v", err)
+			}
+		})
+	}
+}
+
+func TestVersionedPostgresSnapshotIgnoresAmbientSourceSettings(t *testing.T) {
+	for _, name := range postgresUnsupportedEnvironment {
+		t.Setenv(name, "")
+	}
+	for _, name := range []string{"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGPASSFILE", "PGSSLMODE", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY"} {
+		t.Setenv(name, "invalid-ambient-setting")
+	}
+	definition := DatabaseDef{Driver: "postgres", Host: "127.0.0.1", Port: 5432, Name: "snapshot", User: "snapshot", TLS: DatabaseTLSDef{Mode: "disable", Snapshot: true}}
+	for _, password := range []string{"", "space + % / secret"} {
+		definition.Password = password
+		config, err := postgresConnectionConfig(definition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.Host != definition.Host || config.Port != uint16(definition.Port) || config.Database != definition.Name || config.User != definition.User || config.Password != password || config.TLSConfig != nil || len(config.RuntimeParams) != 0 {
+			t.Fatal("ambient settings changed the captured connection")
+		}
+	}
+	// An existing passfile must not supply credentials for an empty snapshot.
+	passfile := writeTestFile(t, "pgpass", []byte("127.0.0.1:5432:snapshot:snapshot:ambient-password\n"))
+	t.Setenv("PGPASSFILE", passfile)
+	definition.Password = ""
+	config, err := postgresConnectionConfig(definition)
+	if err != nil || config.Password != "" {
+		t.Fatal("empty snapshot password used a passfile")
+	}
+}
+
+func TestVersionedPostgresSnapshotRejectsUncapturedAmbientSettings(t *testing.T) {
+	for _, name := range postgresUnsupportedEnvironment {
+		t.Setenv(name, "")
+	}
+	definition := DatabaseDef{Driver: "postgres", Host: "127.0.0.1", Port: 5432, Name: "snapshot", User: "snapshot", TLS: DatabaseTLSDef{Mode: "disable", Snapshot: true}}
+	for _, name := range postgresUnsupportedEnvironment {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "private-value-that-must-not-leak")
+			_, err := postgresConnectionConfig(definition)
+			if err == nil || !strings.Contains(err.Error(), name) || strings.Contains(err.Error(), "private-value-that-must-not-leak") {
+				t.Fatal("uncaptured ambient setting was accepted or exposed")
+			}
+		})
+	}
 }

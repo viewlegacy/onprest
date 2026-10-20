@@ -18,23 +18,30 @@ func TestContainerDBDriverPostgresTimestampResultPreservesJSONContract(t *testin
 	cfg := selectedContainerDBConfig(t, "postgres")
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
-	capabilityFile := writePostgresCapability(t, t.TempDir(), cfg, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  timestamp_result:
+	capabilityFile := writePostgresCapability(t, t.TempDir(), cfg, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `timestamp_result:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: |
       select
         timestamp '2026-03-15 17:45:47.123456' as timestamp_without_time_zone,
         timestamp with time zone '2026-03-15 17:45:47.123456+09:00' as timestamp_with_time_zone,
         null::timestamp as nullable_timestamp_without_time_zone,
         cast(null as timestamp with time zone) as nullable_timestamp_with_time_zone
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      timestamp_without_time_zone: {type: string}
-      timestamp_with_time_zone: {type: string}
-      nullable_timestamp_without_time_zone: {type: string}
-      nullable_timestamp_with_time_zone: {type: string}`)
+  output:
+    data: {}
+    items:
+      properties:
+        timestamp_without_time_zone: {type: string}
+        timestamp_with_time_zone: {type: string}
+        nullable_timestamp_without_time_zone: {type: string}
+        nullable_timestamp_with_time_zone: {type: string}
+`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

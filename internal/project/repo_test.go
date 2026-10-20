@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/viewlegacy/onprest/internal/agent/wasmruntime"
 	"gopkg.in/yaml.v3"
 )
 
@@ -773,14 +774,20 @@ func TestExamplesIncludeCurrentPublicConfigurationFields(t *testing.T) {
 		"password: onprest-example-password",
 		"sql: select id, name, email from customers where id = :customer_id",
 		"sql: update customers set name = :name where id = :customer_id",
-		"max_size: 10MB",
-		"max_files: 3",
-		"readonly: true",
-		"expose_in_openapi: true",
+		"policy: {max_rows: 1}",
+		"policy: {readonly: false, max_affected_rows: 1}",
 	} {
 		if !strings.Contains(capabilityYAML, want) {
 			t.Fatalf("examples/capability.postgres.yaml missing %q", want)
 		}
+	}
+	capabilitiesStart := strings.Index(capabilityYAML, "\ncapabilities:\n")
+	if capabilitiesStart < 0 {
+		t.Fatal("examples/capability.postgres.yaml missing top-level capabilities")
+	}
+	quickStart := readText(t, filepath.Join(root, "docs", "app", "quick-start", "page.mdx"))
+	if !strings.Contains(quickStart, "```yaml\n"+capabilityYAML[capabilitiesStart+1:]+"```") {
+		t.Fatal("Quick Start must show the capabilities section of examples/capability.postgres.yaml as written")
 	}
 
 	composeYAML := readText(t, filepath.Join(root, "examples", "postgres.compose.yml"))
@@ -863,7 +870,8 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		}
 	}
 	ciText := readText(t, filepath.Join(workflowDir, "ci.yml"))
-	for _, command := range []string{"go test ./...", "go vet ./..."} {
+	// The Wasm worker package alone runs longer than go test's default 10m.
+	for _, command := range []string{"go test -timeout 60m ./...", "go vet ./..."} {
 		if !strings.Contains(ciText, command) {
 			t.Fatalf("ci workflow missing %q", command)
 		}
@@ -872,10 +880,33 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	release := readWorkflow(t, filepath.Join(workflowDir, "release-gate.yml"))
 	assertMainWorkflowTriggers(t, release)
 	releaseJobs := workflowSection(t, release, "jobs")
-	for _, job := range []string{"package-candidate", "integration-linux", "service-lifecycle", "release-ready"} {
+	for _, job := range []string{"package-candidate", "integration-linux", "service-lifecycle", "native-tests", "release-ready"} {
 		if _, ok := releaseJobs[job]; !ok {
 			t.Fatalf("release gate workflow missing %s job", job)
 		}
+	}
+	// OS-dependent agent tests run natively on every non-amd64-Linux host and
+	// gate release-ready; Linux amd64 runs them inside integration-linux.
+	native := releaseJobs["native-tests"].(map[string]any)
+	matrix, _ := native["strategy"].(map[string]any)["matrix"].(map[string]any)
+	hosts := fmt.Sprint(matrix["os"])
+	for _, host := range []string{"windows-latest", "macos-latest", "ubuntu-24.04-arm"} {
+		if !strings.Contains(hosts, host) {
+			t.Fatalf("native tests do not run on %s: %s", host, hosts)
+		}
+	}
+	if _, ok := native["needs"]; ok {
+		t.Fatal("native tests must not wait for packaging")
+	}
+	nativeText := fmt.Sprint(native["steps"])
+	for _, marker := range []string{"go test -json -count=1 -timeout 80m ./internal/agent/... ./cmd/agent/...", `"Action":"skip".*"Test":"[^"]+"`, "bash scripts/go_test_json_failures.sh native-tests.jsonl"} {
+		if !strings.Contains(nativeText, marker) {
+			t.Fatalf("native tests missing %q", marker)
+		}
+	}
+	ready := releaseJobs["release-ready"].(map[string]any)
+	if needs := fmt.Sprint(ready["needs"]); !strings.Contains(needs, "native-tests") || !strings.Contains(fmt.Sprint(ready["steps"]), `test "$NATIVE_RESULT" = success`) {
+		t.Fatal("release-ready does not require native tests")
 	}
 	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") ||
 		!strings.Contains(text, "make release-artifacts") ||
@@ -884,7 +915,32 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 		!strings.Contains(text, "PACKAGE_RESULT") || !strings.Contains(text, "SERVICE_RESULT") || !strings.Contains(text, "concurrency:") || !strings.Contains(text, "cancel-in-progress: true") {
 		t.Fatal("release gate workflow does not aggregate Linux integration and reusable service lifecycle")
 	}
+	// The candidate archive must be a release version the Agent accepts for
+	// the Wasm modules it builds: below the compatibility version, every
+	// distributed Wasm test would fail on minimum_agent_version.
+	candidate := wasmruntime.CompatibilityVersion
+	releaseGateText := readText(t, filepath.Join(workflowDir, "release-gate.yml"))
+	for _, marker := range []string{"VERSION: " + candidate, "RELEASE_TAG: v" + candidate, candidate + " v" + candidate + ` "$RELEASE_SHA"`, "onprest-" + candidate + "-linux-amd64", "onprest-" + candidate + "-quickstart", "ONPREST_IT_DISTRIBUTION_VERSION=" + candidate, "version: " + candidate, "release-tag: v" + candidate} {
+		if !strings.Contains(releaseGateText, marker) {
+			t.Fatalf("release gate candidate does not use Wasm compatibility version %s: missing %q", candidate, marker)
+		}
+	}
+	if regexp.MustCompile(`(^|[^0-9.])v?0\.0\.0([^0-9.]|$)`).MatchString(releaseGateText) {
+		t.Fatal("release gate candidate still uses placeholder version 0.0.0")
+	}
 	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
+	// Public schema assertions are no-ops without the schema_validator tag, so
+	// the gate installs the pinned Ajv validator and runs both tagged suites.
+	for _, marker := range []string{"npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator", `-tags=schema_validator "${schema_packages[@]}"`, "-tags=integration,schema_validator ./it/..."} {
+		if !strings.Contains(releaseScript, marker) {
+			t.Fatalf("release gate script does not run public schema validation: missing %q", marker)
+		}
+	}
+	failureSummary := readText(t, filepath.Join(root, "scripts", "go_test_json_failures.sh"))
+	if !strings.Contains(releaseScript, `bash "$ROOT_DIR/scripts/go_test_json_failures.sh" "$log"`) ||
+		!strings.Contains(failureSummary, `"Action":"fail".*"Test":"[^"]+"`) || !strings.Contains(failureSummary, `"Output":`) {
+		t.Fatal("release gate failures do not list failed tests before the log tail")
+	}
 	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "ONPREST_IT_DISTRIBUTION_VERSION", "must be extracted outside the source tree", `cd / && "$absolute" --version`, "scripts/quickstart_smoke.sh"} {
 		if !strings.Contains(releaseScript, marker) {
 			t.Fatalf("release gate script does not validate prebuilt archive binaries: missing %q", marker)
@@ -995,6 +1051,23 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	}
 	unixLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_unix.sh"))
 	windowsLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_windows.ps1"))
+	for path, markers := range map[string][]string{
+		"Unix lifecycle":    {`\\u0000`, "$status != 502", "set -Eeuo pipefail", `trap 'echo "service lifecycle failed at line $LINENO: $BASH_COMMAND" >&2' ERR`},
+		"Windows lifecycle": {`":"\u0000"}'`, "$status -ne 502", "${function:Invoke-RuntimeMarker}", "$_.ScriptStackTrace"},
+	} {
+		text := unixLifecycle
+		if path == "Windows lifecycle" {
+			text = windowsLifecycle
+		}
+		for _, marker := range markers {
+			if !strings.Contains(text, marker) {
+				t.Fatalf("%s does not drive Agent-side runtime records or name its failing step: missing %q", path, marker)
+			}
+		}
+		if strings.Contains(text, `-d '{}' "http://127.0.0.1:18080/api/v1/capabilities/$1"`) || strings.Contains(text, "-ne 400") {
+			t.Fatalf("%s still expects Gateway-rejected input to reach the Agent runtime log", path)
+		}
+	}
 	if strings.Contains(windowsLifecycle, "OnprestValidateReader") {
 		t.Fatal("Windows lifecycle uses a local account name longer than the Windows 20-character limit")
 	}
@@ -1097,6 +1170,51 @@ func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
 	for _, want := range []string{"systemd-sysv", "postgresql", `CMD ["/sbin/init"]`} {
 		if !strings.Contains(systemdImage, want) {
 			t.Fatalf("systemd service test image missing %q", want)
+		}
+	}
+}
+
+func TestGoTestJSONFailureSummaryPrintsEveryFailedTestLeafFirst(t *testing.T) {
+	root := repoRoot(t)
+	var log strings.Builder
+	record := func(action, pkg, test, output string) {
+		fmt.Fprintf(&log, `{"Action":%q,"Package":%q,"Test":%q`, action, pkg, test)
+		if output != "" {
+			fmt.Fprintf(&log, `,"Output":%q`, output)
+		}
+		log.WriteString("}\n")
+	}
+	var leaves []string
+	for i := 0; i < 50; i++ {
+		pkg := fmt.Sprintf("example/p%d", i%3)
+		parent := fmt.Sprintf("TestParent%d", i%5)
+		leaf := fmt.Sprintf("%s/case_%02d", parent, i)
+		if i == 49 {
+			leaf = parent + `/{"quoted":true}`
+		}
+		leaves = append(leaves, pkg+" "+leaf)
+		record("output", pkg, leaf, fmt.Sprintf("    x_test.go:1: body of %s\n", leaf))
+		record("fail", pkg, leaf, "")
+	}
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 5; j++ {
+			record("fail", fmt.Sprintf("example/p%d", i), fmt.Sprintf("TestParent%d", j), "")
+		}
+	}
+	path := filepath.Join(t.TempDir(), "tests.jsonl")
+	if err := os.WriteFile(path, []byte(log.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := runRepoCommand(t, root, nil, "bash", "scripts/go_test_json_failures.sh", path)
+	firstParent := strings.Index(out, "=== output: example/p0 TestParent0\n")
+	if firstParent < 0 {
+		t.Fatalf("parent output missing:\n%s", out)
+	}
+	for _, leaf := range leaves {
+		header := strings.Index(out, "=== output: "+leaf+"\n")
+		name := leaf[strings.Index(leaf, " ")+1:]
+		if header < 0 || header > firstParent || !strings.Contains(out, "body of "+name) {
+			t.Fatalf("failed leaf %q is missing or after a parent:\n%s", leaf, out)
 		}
 	}
 }

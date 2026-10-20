@@ -304,3 +304,27 @@ func TestParseIPBlocksRejectsInvalidValue(t *testing.T) {
 		t.Fatal("parseIPBlocks() error = nil, want error")
 	}
 }
+
+func TestLoadConfigFromEnvInputCapacityLimits(t *testing.T) {
+	setValidGatewayConfigEnv(t)
+	cfg, e := LoadConfigFromEnv()
+	if e != nil || cfg.MaxFileRequestBodyBytes != 100<<20 || cfg.MaxConcurrentBodyReaders != 16 {
+		t.Fatal(cfg, e)
+	}
+	for _, name := range []string{"GATEWAY_MAX_FILE_REQUEST_BODY_BYTES", "GATEWAY_MAX_CONCURRENT_BODY_READERS"} {
+		for _, value := range []string{"0", "-1", "NaN", "1MiB", "9223372036854775808"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				t.Setenv(name, value)
+				if _, e := LoadConfigFromEnv(); e == nil {
+					t.Fatal("invalid finite capacity accepted")
+				}
+			})
+		}
+	}
+	t.Setenv("GATEWAY_MAX_FILE_REQUEST_BODY_BYTES", "65536")
+	t.Setenv("GATEWAY_MAX_CONCURRENT_BODY_READERS", "2")
+	cfg, e = LoadConfigFromEnv()
+	if e != nil || cfg.MaxFileRequestBodyBytes != 65536 || cfg.MaxConcurrentBodyReaders != 2 {
+		t.Fatal(cfg, e)
+	}
+}

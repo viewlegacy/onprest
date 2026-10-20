@@ -1,12 +1,12 @@
 export default {
   index: 'Overview',
   'quick-start': 'Quick Start',
-  architecture: 'Architecture',
-  security: 'Security',
+  architecture: 'How It Works',
+  capabilities: 'Capabilities',
+  api: 'API',
   gateway: 'Gateway',
   agent: 'Agent',
-  databases: 'Databases',
-  api: 'API',
+  security: 'Security',
   operations: 'Operations',
   reference: 'Reference'
 }

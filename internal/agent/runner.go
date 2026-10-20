@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,9 @@ import (
 	_ "time/tzdata"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/viewlegacy/onprest/internal/agent/artifacts"
+	"github.com/viewlegacy/onprest/internal/agent/providers"
+	"github.com/viewlegacy/onprest/internal/contract"
 	"github.com/viewlegacy/onprest/internal/protocol"
 	"github.com/viewlegacy/onprest/internal/ws"
 )
@@ -29,6 +33,11 @@ const (
 )
 
 type Runner struct {
+	dial            func(time.Duration, string, http.Header) (*ws.Conn, error)
+	store           *artifacts.Store
+	controls        *controlAdmission
+	versioned       *providers.Prepared
+	controller      *ExecutionController
 	cfg             Config
 	cf              *CapabilityFile
 	caps            map[string]CapabilityDef
@@ -64,6 +73,12 @@ func (i *inflightRegistry) add(id string, cancel context.CancelFunc) bool {
 	}
 	i.cancels[id] = cancel
 	return true
+}
+func (i *inflightRegistry) contains(id string) bool {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	_, ok := i.cancels[id]
+	return ok
 }
 func (i *inflightRegistry) cancel(id string) {
 	i.mu.Lock()
@@ -101,7 +116,12 @@ func NewRunner(ctx context.Context, cfg Config, logOut io.Writer) (*Runner, erro
 		return nil, startupFailure()
 	}
 	clock := agentClock(time.Now)
-	r := &Runner{cfg: cfg, cf: prepared.cf, caps: prepared.caps, rateLimits: newCapabilityRateLimiters(prepared.cf, clock), clock: clock, db: prepared.db, logOut: logOut, detailLog: prepared.detailLog.Writer, detailLogCloser: preparationLogCloser{prepared.detailLog}}
+	r := &Runner{versioned: prepared.versioned, controller: prepared.controller, cfg: cfg, cf: prepared.cf, caps: prepared.caps, rateLimits: newCapabilityRateLimiters(prepared.cf, clock), clock: clock, db: prepared.db, logOut: logOut, detailLog: prepared.detailLog.Writer, detailLogCloser: preparationLogCloser{prepared.detailLog}}
+	if err := r.initializeTransport(); err != nil {
+		prepared.versioned.Close()
+		prepared.detailLog.Close()
+		return nil, startupFailure()
+	}
 	r.log("agent_ready", map[string]any{"capabilities": len(prepared.cf.Capabilities), "driver": prepared.cf.Database.Driver, "max_concurrent_requests": *prepared.cf.Runtime.MaxConcurrentRequests})
 	return r, nil
 }
@@ -131,7 +151,14 @@ type preparationLogCloser struct{ log *preparationDetailLog }
 func (c preparationLogCloser) Close() error { return c.log.Close() }
 
 func (r *Runner) Run(ctx context.Context) error {
-	defer r.db.Close()
+	if r.store != nil {
+		defer r.store.Close()
+	}
+	if r.versioned != nil {
+		defer r.versioned.Close()
+	} else if r.db != nil {
+		defer r.db.Close()
+	}
 	if r.detailLogCloser != nil {
 		defer r.detailLogCloser.Close()
 	}
@@ -143,13 +170,24 @@ func (r *Runner) Run(ctx context.Context) error {
 			continue
 		}
 		headers := http.Header{}
+		headers.Set(protocol.MajorHeader, protocol.Major)
 		if err := setAgentAuthHeaders(headers, r.cf.Gateway.AgentPrivateKey, "/ws/agent", challenge); err != nil {
 			r.log("agent_auth_failed", map[string]any{"error": err.Error()})
 			return err
 		}
-		conn, err := ws.Dial(10*time.Second, r.cf.Gateway.URL, headers)
+		dial := r.dial
+		if dial == nil {
+			dial = ws.Dial
+		}
+		conn, err := dial(10*time.Second, r.cf.Gateway.URL, headers)
 		if err != nil {
 			r.log("gateway_connect_failed", map[string]any{"error": err.Error()})
+			sleep(ctx, r.cfg.ReconnectEvery)
+			continue
+		}
+		if conn.ProtocolMajor() != protocol.Major {
+			_ = conn.Close()
+			r.log("gateway_connect_failed", map[string]any{"error": "unsupported gateway protocol major"})
 			sleep(ctx, r.cfg.ReconnectEvery)
 			continue
 		}
@@ -167,6 +205,10 @@ func fetchRunnerChallenge(parent context.Context, gatewayURL string, fetch func(
 }
 
 func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
+	if r.controller != nil {
+		r.serveTransport(ctx, conn)
+		return
+	}
 	connCtx, cancel := context.WithCancel(ctx)
 	maxConcurrent := *r.cf.Runtime.MaxConcurrentRequests
 	requests := make(chan requestTask, maxConcurrent)
@@ -239,41 +281,37 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 			r.log("gateway_disconnected", map[string]any{"error": err.Error()})
 			return
 		}
+		// Inspect the bounded ID before allocating the full JSON value tree.
+		// Unmarshal skips other fields without constructing their values.
 		var envelope struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
+			ID boundedWireID `json:"id"`
 		}
-		dec := json.NewDecoder(bytes.NewReader(msg))
-		dec.UseNumber()
-		if err := dec.Decode(&envelope); err != nil {
-			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request", "invalid gateway request: "+err.Error(), "")
-			select {
-			case responses <- protocol.Response{Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
-			case <-connCtx.Done():
-				return
-			}
-			continue
-		}
-		// Do not echo or log an invalid peer-controlled ID. Closing here also
-		// keeps it out of rate admission, the in-flight registry, and the bounded
-		// response queue. The WebSocket message itself remains bounded by ws.
-		if !validAgentWireID(envelope.ID) {
+		if json.Unmarshal(msg, &envelope) != nil || !validAgentWireID(string(envelope.ID)) {
 			return
 		}
-		if envelope.Type != "" {
-			if envelope.Type == "cancel" && envelope.ID != "" {
-				inflight.cancel(envelope.ID)
+		control, decodeErr := contract.DecodeJSON(msg, contract.Limits{MaxBytes: 16 << 20, MaxDepth: 32, MaxItems: 100000})
+		if decodeErr != nil {
+			return
+		}
+		controlFields, validObject := control.(map[string]any)
+		if !validObject {
+			return
+		}
+		requestType, _ := controlFields["type"].(string)
+		if requestType != "request" {
+			if requestType == "cancel" && len(controlFields) == 2 {
+				inflight.cancel(string(envelope.ID))
 				continue
 			}
-			r.detailError("", "AGENT_INTERNAL_ERROR", "invalid gateway request", "unknown or invalid control request", envelope.ID)
+			r.detailError("", "INTERNAL_ERROR", "invalid gateway request", "unknown or invalid control request", string(envelope.ID))
 			continue
 		}
 		var req protocol.Request
-		dec = json.NewDecoder(bytes.NewReader(msg))
+		dec := json.NewDecoder(bytes.NewReader(msg))
 		dec.UseNumber()
 		if err := dec.Decode(&req); err != nil || req.ID == "" {
 			select {
-			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
+			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "INVALID_REQUEST", Message: "invalid gateway request", Outcome: "not_started"}}:
 			case <-connCtx.Done():
 				return
 			}
@@ -300,7 +338,7 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 		if !inflight.add(req.ID, taskCancel) {
 			taskCancel()
 			select {
-			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_INTERNAL_ERROR", Message: "invalid gateway request"}}:
+			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "INVALID_REQUEST", Message: "invalid gateway request", Outcome: "not_started"}}:
 			case <-connCtx.Done():
 				return
 			}
@@ -315,7 +353,7 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 		default:
 			inflight.finish(req.ID)
 			select {
-			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_BUSY", Message: "agent request queue is full"}}:
+			case responses <- protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "BUSY", Message: "agent request queue is full", Outcome: "not_started"}}:
 			case <-connCtx.Done():
 				return
 			default:
@@ -327,8 +365,25 @@ func (r *Runner) serveConn(ctx context.Context, conn *ws.Conn) {
 	}
 }
 
+type boundedWireID string
+
+func (id *boundedWireID) UnmarshalJSON(raw []byte) error {
+	// Bound raw size before strict string decoding so malformed Unicode cannot
+	// be replaced by encoding/json before identity admission.
+	if len(raw) > 6*agentMaxWireIDBytes+2 {
+		return errors.New("invalid gateway request ID")
+	}
+	decoded, e := contract.DecodeJSON(raw, contract.Limits{MaxBytes: 6*agentMaxWireIDBytes + 2, MaxDepth: 1, MaxItems: 1})
+	value, ok := decoded.(string)
+	if e != nil || !ok || !validAgentWireID(value) {
+		return errors.New("invalid gateway request ID")
+	}
+	*id = boundedWireID(value)
+	return nil
+}
+
 func validAgentWireID(id string) bool {
-	return id != "" && len(id) <= agentMaxWireIDBytes
+	return protocol.ValidID(id) && len(id) <= agentMaxWireIDBytes
 }
 
 func agentResponseQueueSize(maxConcurrent int) int {

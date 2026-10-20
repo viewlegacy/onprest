@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os"
@@ -17,10 +15,14 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/viewlegacy/onprest/internal/contract"
+	"github.com/viewlegacy/onprest/internal/sqlsyntax"
 	"gopkg.in/yaml.v3"
 )
 
 type CapabilityFile struct {
+	Compiled     *contract.Config         `json:"-" yaml:"-"`
+	ConfigPath   string                   `json:"-" yaml:"-"`
 	Service      ServiceDef               `json:"service" yaml:"service"`
 	Runtime      RuntimeDef               `json:"runtime" yaml:"runtime"`
 	Gateway      GatewayDef               `json:"gateway" yaml:"gateway"`
@@ -57,14 +59,17 @@ type DatabaseDef struct {
 }
 
 type DatabaseTLSDef struct {
-	Mode       string `json:"mode,omitempty" yaml:"mode,omitempty"`
-	CAFile     string `json:"ca_file,omitempty" yaml:"ca_file,omitempty"`
-	CertFile   string `json:"cert_file,omitempty" yaml:"cert_file,omitempty"`
-	KeyFile    string `json:"key_file,omitempty" yaml:"key_file,omitempty"`
-	ServerName string `json:"server_name,omitempty" yaml:"server_name,omitempty"`
+	CABytes, CertBytes, KeyBytes []byte `json:"-" yaml:"-"`
+	Snapshot                     bool   `json:"-" yaml:"-"`
+	Mode                         string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	CAFile                       string `json:"ca_file,omitempty" yaml:"ca_file,omitempty"`
+	CertFile                     string `json:"cert_file,omitempty" yaml:"cert_file,omitempty"`
+	KeyFile                      string `json:"key_file,omitempty" yaml:"key_file,omitempty"`
+	ServerName                   string `json:"server_name,omitempty" yaml:"server_name,omitempty"`
 }
 
 type LoggingDef struct {
+	Level    string `json:"level" yaml:"level"`
 	MaxSize  string `json:"max_size" yaml:"max_size"`
 	MaxFiles int    `json:"max_files" yaml:"max_files"`
 }
@@ -731,23 +736,11 @@ func LoadCapabilityFile(path string) (*CapabilityFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	var cf CapabilityFile
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cf); err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("parse capability.yaml: %w", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("parse capability.yaml: multiple YAML documents are not allowed")
-		}
-		return nil, fmt.Errorf("parse capability.yaml: %w", err)
-	}
-	if err := cf.Lint(); err != nil {
+	cfg, err := contract.Compile(b)
+	if err != nil {
 		return nil, err
 	}
-	return &cf, nil
+	return capabilityRuntimeView(cfg, path)
 }
 
 func (cf *CapabilityFile) Lint() error {
@@ -956,12 +949,21 @@ func (db DatabaseDef) DSN() string {
 		}
 		q := u.Query()
 		q.Set("sslmode", db.tlsMode())
-		if db.TLS.CAFile != "" {
+		if db.TLS.CAFile != "" && !db.TLS.Snapshot {
 			q.Set("sslrootcert", db.TLS.CAFile)
 		}
-		if db.TLS.CertFile != "" {
+		if db.TLS.CertFile != "" && !db.TLS.Snapshot {
 			q.Set("sslcert", db.TLS.CertFile)
 			q.Set("sslkey", db.TLS.KeyFile)
+		}
+		if db.TLS.Snapshot {
+			// Explicit empty settings override libpq environment/default file paths.
+			// Captured TLS material is injected into the connector after parsing.
+			q.Set("sslrootcert", "")
+			q.Set("sslcert", "")
+			q.Set("sslkey", "")
+			q.Set("passfile", "")
+			q.Set("password", db.Password)
 		}
 		// PostgreSQL URI query values use percent encoding, where '+' is
 		// literal data rather than the form-encoded representation of a space.
@@ -994,7 +996,7 @@ func (db DatabaseDef) DSN() string {
 		case "verify-ca", "verify-full":
 			q.Set("encrypt", "true")
 			q.Set("TrustServerCertificate", "false")
-			if db.TLS.CAFile != "" {
+			if db.TLS.CAFile != "" && !db.TLS.Snapshot {
 				q.Set("certificate", db.TLS.CAFile)
 			}
 			if db.tlsMode() == "verify-full" {
@@ -1273,260 +1275,9 @@ type sqlClassification struct {
 }
 
 func classifySQL(driver, query string) sqlClassification {
-	tokens, single := scanSQLTokens(driver, query)
-	c := sqlClassification{single: single}
-	if len(tokens) == 0 {
-		return c
-	}
-	c.keyword = tokens[0]
-	switch c.keyword {
-	case "select":
-		c.operation = sqlOperationSelect
-	case "insert":
-		c.operation = sqlOperationInsert
-	case "update":
-		c.operation = sqlOperationUpdate
-	case "delete":
-		c.operation = sqlOperationDelete
-	}
-	if c.operation.mutation() {
-		for _, token := range tokens[1:] {
-			if token == "returning" || (driver == "sqlserver" && token == "output") {
-				c.returnsRows = true
-				break
-			}
-		}
-	}
-	return c
+	c := sqlsyntax.Classify(driver, query)
+	return sqlClassification{keyword: c.Keyword, operation: sqlOperation(c.Operation), single: c.Single, returnsRows: c.ReturnsRows}
 }
-
-// scanSQLTokens returns top-level lexical tokens outside quoted/comment regions.
-// It intentionally does not parse SQL grammar: the first token and row-returning
-// DML clauses are the only syntax facts required by the public contract.
-func scanSQLTokens(driver, query string) ([]string, bool) {
-	tokens := []string{}
-	single := true
-	for i := 0; i < len(query); {
-		if next, ok := protectedSQLRegionEnd(driver, query, i); ok {
-			i = next
-			continue
-		}
-		switch {
-		case query[i] == ';':
-			if !onlySQLTrivia(driver, query[i+1:]) {
-				single = false
-			}
-			i++
-		case isIdent(query[i]):
-			start := i
-			for i < len(query) && (isIdent(query[i]) || isDigit(query[i])) {
-				i++
-			}
-			tokens = append(tokens, strings.ToLower(query[start:i]))
-		default:
-			i++
-		}
-	}
-	return tokens, single
-}
-
-func hasSingleSQLStatement(driver, query string) bool {
-	for i := 0; i < len(query); {
-		if next, ok := protectedSQLRegionEnd(driver, query, i); ok {
-			i = next
-			continue
-		}
-		switch {
-		case query[i] == ';':
-			return onlySQLTrivia(driver, query[i+1:])
-		default:
-			i++
-		}
-	}
-	return true
-}
-
-// protectedSQLRegionEnd is the single dialect-aware lexical boundary used by
-// classification, single-statement checks, and placeholder replacement.
 func protectedSQLRegionEnd(driver, query string, start int) (int, bool) {
-	switch {
-	case query[start] == '\'':
-		return skipSQLQuoted(query, start, '\'', driver == "postgres" && isPostgresEscapeStringPrefix(query, start)), true
-	case query[start] == '"':
-		return skipSQLQuoted(query, start, '"', false), true
-	case driver == "mysql" && query[start] == '`':
-		return skipSQLQuoted(query, start, '`', false), true
-	case driver == "sqlserver" && query[start] == '[':
-		return skipSQLBracketIdentifier(query, start), true
-	case driver == "oracle" && isOracleAlternativeQuotePrefix(query, start):
-		return skipOracleAlternativeQuote(query, start), true
-	case start+1 < len(query) && query[start:start+2] == "--":
-		return skipSQLLineComment(query, start), true
-	case start+1 < len(query) && query[start:start+2] == "/*":
-		return skipSQLBlockComment(driver, query, start), true
-	case driver == "postgres" && query[start] == '$':
-		return skipSQLDollarQuote(query, start)
-	default:
-		return 0, false
-	}
-}
-
-func skipSQLQuoted(query string, start int, quote byte, backslashEscapes bool) int {
-	for i := start + 1; i < len(query); i++ {
-		if backslashEscapes && query[i] == '\\' && i+1 < len(query) {
-			i++
-			continue
-		}
-		if query[i] != quote {
-			continue
-		}
-		if i+1 < len(query) && query[i+1] == quote {
-			i++
-			continue
-		}
-		return i + 1
-	}
-	return len(query)
-}
-
-func isPostgresEscapeStringPrefix(query string, quote int) bool {
-	if quote == 0 || (query[quote-1] != 'e' && query[quote-1] != 'E') {
-		return false
-	}
-	return quote == 1 || !isIdent(query[quote-2])
-}
-
-func skipSQLBracketIdentifier(query string, start int) int {
-	for i := start + 1; i < len(query); i++ {
-		if query[i] != ']' {
-			continue
-		}
-		if i+1 < len(query) && query[i+1] == ']' {
-			i++
-			continue
-		}
-		return i + 1
-	}
-	return len(query)
-}
-
-func isOracleAlternativeQuotePrefix(query string, quote int) bool {
-	if quote+2 >= len(query) || (query[quote] != 'q' && query[quote] != 'Q') || query[quote+1] != '\'' {
-		return false
-	}
-	return quote == 0 || !isIdent(query[quote-1])
-}
-
-func skipOracleAlternativeQuote(query string, start int) int {
-	opening := query[start+2]
-	closing := opening
-	switch opening {
-	case '[':
-		closing = ']'
-	case '(':
-		closing = ')'
-	case '{':
-		closing = '}'
-	case '<':
-		closing = '>'
-	}
-	for i := start + 3; i+1 < len(query); i++ {
-		if query[i] == closing && query[i+1] == '\'' {
-			return i + 2
-		}
-	}
-	return len(query)
-}
-
-func skipSQLLineComment(query string, start int) int {
-	if end := strings.IndexByte(query[start+2:], '\n'); end >= 0 {
-		return start + 2 + end + 1
-	}
-	return len(query)
-}
-
-func skipSQLBlockComment(driver, query string, start int) int {
-	// PostgreSQL and SQL Server accept nested block comments. Treating the
-	// first */ as the end would expose text that is still comment trivia to
-	// the classifier and can turn a writable statement into an apparent
-	// SELECT. MySQL and Oracle retain their non-nesting lexical behavior.
-	depth := 1
-	for i := start + 2; i+1 < len(query); i++ {
-		pair := query[i : i+2]
-		if pair == "/*" && (driver == "postgres" || driver == "sqlserver") {
-			depth++
-			i++
-			continue
-		}
-		if pair == "*/" {
-			depth--
-			i++
-			if depth == 0 {
-				return i + 1
-			}
-		}
-	}
-	return len(query)
-}
-
-func skipSQLDollarQuote(query string, start int) (int, bool) {
-	endTag := start + 1
-	for endTag < len(query) && (isIdent(query[endTag]) || isDigit(query[endTag])) {
-		endTag++
-	}
-	if endTag >= len(query) || query[endTag] != '$' {
-		return start, false
-	}
-	tag := query[start : endTag+1]
-	end := strings.Index(query[endTag+1:], tag)
-	if end < 0 {
-		return len(query), true
-	}
-	return endTag + 1 + end + len(tag), true
-}
-
-func onlySQLTrivia(driver, query string) bool {
-	for i := 0; i < len(query); {
-		switch {
-		case query[i] == ' ' || query[i] == '\t' || query[i] == '\r' || query[i] == '\n':
-			i++
-		case i+1 < len(query) && query[i:i+2] == "--":
-			i = skipSQLLineComment(query, i)
-		case i+1 < len(query) && query[i:i+2] == "/*":
-			i = skipSQLBlockComment(driver, query, i)
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func firstSQLKeyword(query string) string {
-	s := strings.TrimSpace(query)
-	for {
-		switch {
-		case strings.HasPrefix(s, "--"):
-			if i := strings.IndexByte(s, '\n'); i >= 0 {
-				s = strings.TrimSpace(s[i+1:])
-				continue
-			}
-			return ""
-		case strings.HasPrefix(s, "/*"):
-			i := skipSQLBlockComment("postgres", s, 0)
-			if i < len(s) {
-				s = strings.TrimSpace(s[i:])
-				continue
-			}
-			return ""
-		}
-		break
-	}
-	for i, r := range s {
-		if r < 'a' || r > 'z' {
-			if r < 'A' || r > 'Z' {
-				return strings.ToLower(s[:i])
-			}
-		}
-	}
-	return strings.ToLower(s)
+	return sqlsyntax.ProtectedRegionEnd(driver, query, start)
 }

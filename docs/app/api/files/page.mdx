@@ -1,0 +1,93 @@
+# Files
+
+Capabilities can take files as input and return files as output. Uploads travel through the gateway to the agent inside the same call, and downloads are streamed from the agent on request; the gateway never stores file contents. How a capability declares its files is described in [Inputs and outputs](/capabilities/inputs-and-outputs#file-inputs).
+
+## Sending files
+
+You can send files in three ways. All of them reach the capability the same way.
+
+**Inline in JSON (REST or MCP).** Put an object with the file name, MIME type, and standard padded Base64 content wherever the input schema declares a file:
+
+```json
+{
+  "month": "2026-10",
+  "document": { "name": "report.pdf", "mime_type": "application/pdf", "data": "JVBERi0xLjcK..." }
+}
+```
+
+This works for files nested in objects and arrays and for MCP `tools/call` arguments. Base64 makes the request about a third larger, and the whole JSON body must fit in the gateway's JSON limit (1 MiB by default), so use it for small files.
+
+**Multipart (REST only).** For larger files, send `multipart/form-data`. Each file goes in a part named after the input property, with a file name. A file array repeats the same part name. Every other property goes in its own part as JSON, with `type=application/json`:
+
+```bash
+curl --fail --show-error \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  --form 'document=@./report.pdf;type=application/pdf' \
+  --form 'month="\"2026-10\"";type=application/json' \
+  https://gateway.example.com/api/v1/capabilities/save_report
+```
+
+Note the quoting in the `month` part: its content is the JSON string `"2026-10"`, quotes included. Parts may come in any order. Uploads are streamed to the agent as they arrive, and the capability runs only after the whole request has been received and validated.
+
+File names must be plain names without directories. A file input cannot be a server path, a URL, or a reference to an earlier upload; uploads belong to the call that sent them and are discarded afterwards.
+
+### Upload limits
+
+| Limit | Default | Set by |
+|---|---|---|
+| Whole JSON body, or all JSON parts of a multipart request | 1 MiB | `GATEWAY_MAX_REQUEST_BODY_BYTES` |
+| Whole multipart request | 100 MiB | `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES` |
+| Input values other than files, in a call with file inputs | 16 MiB | Fixed |
+| Requests receiving input at the same time | 16 | `GATEWAY_MAX_CONCURRENT_BODY_READERS` |
+| Time to receive all uploads | 60s | agent `runtime.transfer_timeout` |
+| File count and sizes per call | 16 files, 32 MiB each, 64 MiB total | capability [file limits](/capabilities/policy-and-limits#file-limits) |
+
+A request over a gateway size limit gets HTTP 413, and one over the fixed 16 MiB limit gets HTTP 422 `LIMIT_EXCEEDED` before anything runs. When all input slots are busy, the gateway answers HTTP 503 `BUSY` before reading the body; retry later.
+
+## Receiving files
+
+Returned files are listed in `result.files`, in a form chosen by the capability's [delivery setting](/capabilities/inputs-and-outputs#file-outputs).
+
+**Download links (default).** Each entry describes one file:
+
+```json
+{
+  "id": "307347a88341df0e043a3489dbe85105",
+  "name": "report.csv",
+  "mime_type": "text/csv",
+  "size_bytes": 2048,
+  "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "uri": "https://gateway.example.com/api/v1/files/307347a88341df0e043a3489dbe85105",
+  "expires_at": "2026-10-12T09:15:00Z"
+}
+```
+
+Download it with the same API key that made the call:
+
+```bash
+curl --fail --show-error \
+  -H "Authorization: Bearer $ONPREST_API_KEY" \
+  "$FILE_URI" --output report.csv
+```
+
+Downloading never runs the capability again. If the transfer breaks after it started, the response is cut off rather than completed with an error, so treat a short or interrupted download as a failure and compare `size_bytes` or `sha256` when it matters. Range requests are not supported, and only one download from the same call runs at a time; a second one gets `BUSY`.
+
+**Direct body (REST).** A capability with `delivery.rest: direct` returns its single file as the response body of the `POST`, with `Content-Type` and `Content-Disposition` set, instead of the JSON envelope.
+
+**MCP.** By default, the tool result contains the envelope with the download link, plus a `resource_link` for clients on protocol `2025-06-18` or later. Clients can fetch it with `resources/read`, which applies the same key and lifetime checks; whether a client does so automatically depends on the client. With `delivery.mcp: inline`, the file content is embedded in the tool result instead, as text for UTF-8 text files and Base64 otherwise, up to the capability's `mcp_inline_total_bytes`.
+
+## Who can download, and for how long
+
+A download link works only:
+
+- with the API key that made the original call, while that key may still call the capability;
+- until `expires_at` (by default 15 minutes, set by the capability's `file_ttl`);
+- while the same agent connection is up. Restarting the gateway or the agent, or the agent reconnecting, ends all links.
+
+Knowing the URL is not enough to download, and another API key gets HTTP 403 even if it may call the same capability. An expired or ended link returns `NOT_FOUND`; make a new call to get the file again, keeping in mind whatever else that call does.
+
+Links use the gateway's configured `ONPREST_PUBLIC_BASE_URL`. If any capability uses download links and it is not set, all of the agent's capabilities stay unavailable with `DEPENDENCY_UNAVAILABLE`; see [File reference origin](/gateway/configuration#file-reference-origin).
+
+## Generated clients
+
+The OpenAPI document describes both the JSON and the multipart form of each upload. Clients generated with OpenAPI Generator's `typescript-fetch` send files inline as Base64. Swagger UI can send multipart uploads; type JSON string values with their quotes (`"2026-10"`) because it sends the part content as typed.

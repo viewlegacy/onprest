@@ -1,0 +1,71 @@
+# Policy and Limits
+
+`policy` bounds how a capability runs: how long it may take, how much it may read and return, and how often it may be called. Set common values once in the top-level `defaults` section and override them per capability:
+
+```yaml
+defaults:
+  timeout: 10s
+  max_output_bytes: 1MB
+  rate_limit: {requests: 60, per: 1m, burst: 10}
+
+capabilities:
+  get_customer:
+    policy:
+      timeout: 3s
+      max_rows: 1
+```
+
+A value in `defaults` only applies to capabilities where it makes sense; `max_rows` in `defaults` does not affect an HTTP capability. Setting a key directly in a capability's `policy` where it does not apply is a configuration error.
+
+## Settings
+
+| Key | Default | Applies to | Meaning |
+|---|---|---|---|
+| `timeout` | `5s` | all | Time budget for execution and output validation, up to `300s` |
+| `readonly` | `true` | DB | `true` allows only `SELECT`. Set `false` for `INSERT`, `UPDATE`, or `DELETE` |
+| `max_rows` | `100` | DB `SELECT`, CSV | DB results are truncated at this count. CSV fails with `LIMIT_EXCEEDED` if more rows match |
+| `max_affected_rows` | none | DB mutations | If more rows are affected, the transaction is rolled back and the call fails with `LIMIT_EXCEEDED` |
+| `max_input_bytes` | `1MB` | all | Size of the JSON input |
+| `max_output_bytes` | `1MB` | capabilities that publish data or generate CSV | Size of the published JSON, and of the data a generated CSV is built from |
+| `max_json_depth` | `32` | all | Nesting depth of input and output JSON |
+| `max_json_items` | `100000` | all | Total number of values in input and output JSON |
+| `rate_limit` | none | all | `{requests, per, burst}`. See below |
+| `expose_in_openapi` | `true` | all | Whether the capability appears in OpenAPI and the MCP tool list |
+
+Sizes accept plain byte counts or units such as `256KB`, `8MiB`, or `1GB`; `KB` and `KiB` both mean 1024 bytes. Every limit must be a positive, finite value; `0` does not mean unlimited.
+
+## File limits
+
+These apply only to capabilities that accept or return files:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_input_files` | `16` | Number of uploaded files per call |
+| `max_input_file_bytes` | `32MiB` | Size of each uploaded file. A file input's `max_bytes` can lower it |
+| `max_total_input_file_bytes` | `64MiB` | Combined size of uploaded files per call |
+| `max_output_files` | `16` | Number of returned files per call |
+| `max_output_file_bytes` | `32MiB` | Size of each returned file |
+| `max_total_output_file_bytes` | `64MiB` | Combined size of returned files per call |
+| `file_ttl` | `15m` | How long download links and retained files stay valid |
+| `mcp_inline_total_bytes` | `1MiB` | Size of an MCP tool result with `delivery.mcp: inline`, including Base64 encoding |
+
+The gateway has its own request size limits for uploads; see [Gateway configuration](/gateway/configuration#request-size-limits). Uploads and returned files are staged in the agent's spool, which has a total quota set by `runtime.spool_total_bytes`; see [Agent configuration](/agent/configuration#runtime).
+
+## Rate limits
+
+`rate_limit` gives each capability a token bucket shared by all its callers. The bucket starts with `burst` tokens and refills at `requests` per `per`:
+
+```yaml
+policy:
+  rate_limit: {requests: 10, per: 1s, burst: 20}
+```
+
+A call that finds the bucket empty fails with `RATE_LIMITED` before it runs. A capability takes the whole `rate_limit` object from `defaults` unless it sets its own. Buckets survive gateway reconnects and reset when the agent restarts.
+
+This limit is enforced by the agent, so it holds even if the gateway's own per-IP limit is bypassed. The agent also caps concurrent executions with `runtime.max_concurrent_requests`; calls beyond that and its waiting queue fail with `BUSY`.
+
+## Timeouts
+
+`timeout` covers the run itself and checking its output. A caller that disconnects or sets a shorter deadline ends the call earlier. Receiving uploaded files and sending large downloads are bounded separately by `runtime.transfer_timeout`, so a client or proxy in front of the gateway needs a timeout that covers both; see [Deployment](/operations/deployment#timeouts-and-uploads).
+
+If a mutation, HTTP call, or code capability times out after it started, the result may be unknown. Read [Uncertain outcomes](/operations/uncertain-outcomes) before retrying.

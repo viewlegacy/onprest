@@ -1,4 +1,4 @@
-.PHONY: build build-cross package-release scan-release-binaries finalize-release-artifacts release-artifacts verify-release-artifacts quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down reconciliation-change-order test vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-database-tls test-it-docker-ops test-it-release-gate fmt vet clean
+.PHONY: build build-cross package-release scan-release-binaries finalize-release-artifacts release-artifacts verify-release-artifacts quickstart-db quickstart-db-down reconciliation-db reconciliation-db-down reconciliation-change-order test test-contract-schema vulncheck test-it test-it-postgres-ci test-it-postgres-stability test-it-all-db test-it-database-tls test-it-docker-ops test-it-release-gate fmt vet clean
 
 DIST_DIR ?= dist
 RELEASE_DIR ?= release-dist
@@ -48,7 +48,11 @@ reconciliation-change-order:
 	bash examples/mutation-reconciliation/db.sh change-order "$(RECONCILIATION_DB)"
 
 test:
-	go test ./...
+	go test -timeout 60m ./...
+
+test-contract-schema:
+	npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator
+	go test -tags=schema_validator ./internal/contract -run '^TestPublic' -count=1
 
 vulncheck:
 	go tool govulncheck ./...

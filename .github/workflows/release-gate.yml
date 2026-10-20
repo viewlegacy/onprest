@@ -26,10 +26,14 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      # The candidate carries the Wasm compatibility version
+      # (wasmruntime.CompatibilityVersion). Agents reject modules whose
+      # minimum_agent_version is newer than their own release version, so a
+      # lower placeholder could not run the Wasm modules it builds.
       - name: Build and scan the canonical archive matrix
         env:
-          VERSION: 0.0.0
-          RELEASE_TAG: v0.0.0
+          VERSION: 2.0.0
+          RELEASE_TAG: v2.0.0
           RELEASE_SHA: ${{ github.sha }}
           RELEASE_READY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: make release-artifacts
@@ -61,16 +65,16 @@ jobs:
           package_root="$RUNNER_TEMP/onprest-integration-package"
           go run ./internal/releaseverify extract \
             release-dist/onprest-linux-amd64.tar.gz "$package_root" \
-            0.0.0 v0.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" linux/amd64 release-dist/SHA256SUMS
+            2.0.0 v2.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" linux/amd64 release-dist/SHA256SUMS
           quickstart_root="$RUNNER_TEMP/onprest-quickstart"
           go run ./internal/releaseverify extract \
             release-dist/onprest-quickstart.tar.gz "$quickstart_root" \
-            0.0.0 v0.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" quickstart release-dist/SHA256SUMS
-          install_dir="$package_root/onprest-0.0.0-linux-amd64"
+            2.0.0 v2.0.0 "$RELEASE_SHA" "$RELEASE_READY_URL" quickstart release-dist/SHA256SUMS
+          install_dir="$package_root/onprest-2.0.0-linux-amd64"
           ONPREST_IT_GATEWAY_BINARY="$install_dir/onprest-gateway" \
             ONPREST_IT_AGENT_BINARY="$install_dir/onprest-agent" \
-            ONPREST_IT_QUICKSTART_DIR="$quickstart_root/onprest-0.0.0-quickstart" \
-            ONPREST_IT_DISTRIBUTION_VERSION=0.0.0 \
+            ONPREST_IT_QUICKSTART_DIR="$quickstart_root/onprest-2.0.0-quickstart" \
+            ONPREST_IT_DISTRIBUTION_VERSION=2.0.0 \
             make test-it-release-gate
 
   service-lifecycle:
@@ -78,25 +82,60 @@ jobs:
     uses: ./.github/workflows/service-lifecycle.yml
     with:
       artifact-name: release-candidate-${{ github.sha }}
-      version: 0.0.0
-      release-tag: v0.0.0
+      version: 2.0.0
+      release-tag: v2.0.0
       release-sha: ${{ github.sha }}
       release-ready-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  # Agent filesystem, spool, save/recovery, worker and author CLI guarantees
+  # depend on the host OS. Linux amd64 runs them inside integration-linux; these
+  # hosts run the same packages natively, and a skipped test fails the job.
+  native-tests:
+    name: native-tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Run agent native tests without skips
+        shell: bash
+        run: |
+          status=0
+          go test -json -count=1 -timeout 80m ./internal/agent/... ./cmd/agent/... >native-tests.jsonl || status=$?
+          if grep -Eq '"Action":"skip".*"Test":"[^"]+"' native-tests.jsonl; then
+            grep -E '"Action":"skip".*"Test":"[^"]+"' native-tests.jsonl
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            bash scripts/go_test_json_failures.sh native-tests.jsonl || true
+            echo "--- last 200 fail/output records ---"
+            grep -E '"Action":"(fail|output)"' native-tests.jsonl | tail -n 200
+            exit "$status"
+          fi
 
   release-ready:
     if: always()
     runs-on: ubuntu-latest
     needs:
       - integration-linux
+      - native-tests
       - package-candidate
       - service-lifecycle
     steps:
-      - name: Require Linux integration and every service lifecycle job
+      - name: Require Linux integration, native tests and every service lifecycle job
         env:
           INTEGRATION_RESULT: ${{ needs.integration-linux.result }}
+          NATIVE_RESULT: ${{ needs.native-tests.result }}
           PACKAGE_RESULT: ${{ needs.package-candidate.result }}
           SERVICE_RESULT: ${{ needs.service-lifecycle.result }}
         run: |
           test "$INTEGRATION_RESULT" = success
+          test "$NATIVE_RESULT" = success
           test "$PACKAGE_RESULT" = success
           test "$SERVICE_RESULT" = success

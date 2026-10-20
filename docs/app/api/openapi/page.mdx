@@ -1,69 +1,25 @@
 # OpenAPI
 
-The gateway exposes an API-key-filtered OpenAPI document.
+`GET /openapi.json` returns an OpenAPI 3.1 document for the capabilities the API key may call. Use it to generate clients, to explore the API in Swagger UI, or to review exactly what a key exposes.
 
-## Endpoint
-
-```http
-GET /openapi.json
-Authorization: Bearer {api_key}
+```bash
+curl -s -H "Authorization: Bearer $ONPREST_API_KEY" https://gateway.example.com/openapi.json
 ```
 
-## Source
+## What it contains
 
-The Agent generates OpenAPI from `capability.yaml`, excluding capabilities with `expose_in_openapi: false`. When the Agent connects, the Gateway retrieves and caches the generated document in memory.
+The agent generates the document from `capability.yaml` and the gateway caches it when the agent connects. For each capability it describes the request body (JSON, plus multipart when the capability takes files), the success envelope with the declared output schema, and the error envelope. A capability with `delivery.rest: direct` is described as returning a binary file.
 
-The public HTTP 200 schema is operation-specific: SELECT requires `rows` and non-negative `int64` `count`; INSERT/UPDATE/DELETE requires only non-negative `int64` `count` and disallows additional properties.
+The gateway adds:
 
-Optional `x-onprest-annotations` contains explicitly configured operation hints, and optional `x-onprest-examples` contains validated `{params: object}` examples.
+- `servers`, from `GATEWAY_PUBLIC_URL` (or derived from `GATEWAY_ADDR`)
+- the `bearerAuth` and `apiKeyAuth` security schemes
+- `x-onprest-annotations` and `x-onprest-examples` on operations that set [annotations or examples](/capabilities/inputs-and-outputs#descriptions-and-metadata)
 
-```json
-{
-  "id": "01J5ABCDEG...",
-  "capability": "meta"
-}
-```
-
-The agent responds with:
-
-```json
-{
-  "id": "01J5ABCDEG...",
-  "result": {
-    "data": {
-      "openapi": "3.1.0"
-    }
-  }
-}
-```
+The document is a public contract, not a copy of the configuration: SQL, source settings, credentials, and paths never appear in it.
 
 ## Filtering
 
-`/openapi.json` is filtered by API key authorization.
+Each API key sees only the capabilities it may call. A capability with `policy.expose_in_openapi: false` is left out of OpenAPI and the MCP tool list for every key, but a key that is allowed to call it still can.
 
-If an API key can call only `get_customer`, paths for other capabilities are removed from the returned spec. If a capability has `policy.expose_in_openapi: false`, it is not exposed through OpenAPI or MCP `tools/list`.
-
-## Gateway Metadata
-
-Gateway adds:
-
-- `servers` using `GATEWAY_PUBLIC_URL`, or a fallback derived from `GATEWAY_ADDR`
-- `components.securitySchemes.bearerAuth` for `Authorization: Bearer {api_key}`
-- `components.securitySchemes.apiKeyAuth` for `X-API-Key: {api_key}`
-- top-level `security` requiring either auth scheme
-
-The cached document also feeds the optional `openapi_snapshot` stdout event. See [Logging Reference](/reference/logging) for its exposure boundary.
-
-## Sensitive Data
-
-OpenAPI metadata must not include:
-
-- SQL text
-- DB host, user, password, or DSN
-- agent private key
-- runtime params
-- agent error detail
-
-Annotations and examples are public metadata and must not contain secrets.
-
-The spec is a public contract for allowed capability calls, not a mirror of `capability.yaml`.
+Until the agent is connected and its contract is loaded, `/openapi.json` returns `AGENT_OFFLINE`. Capability calls return the same, or `DEPENDENCY_UNAVAILABLE` when the contract was refused because `ONPREST_PUBLIC_BASE_URL` is missing; see [File reference origin](/gateway/configuration#file-reference-origin).

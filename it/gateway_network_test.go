@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/viewlegacy/onprest/internal/gateway"
+	"github.com/viewlegacy/onprest/internal/protocol"
+	"github.com/viewlegacy/onprest/internal/ws"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -74,8 +76,8 @@ func TestGatewayWorksThroughGenericReverseProxyForHTTPAndWebSocket(t *testing.T)
 		}
 		done <- body
 	}()
-	req := readAgentRequest(t, conn, "echo_customer")
-	if err := conn.WriteText(resultForRequest(req.ID, map[string]any{"rows": []any{map[string]any{"id": 9}}, "count": 1})); err != nil {
+	req := readAgentRequest(t, conn, "echo_customer", done)
+	if err := conn.WriteText(protocol.MustJSON(currentDBFixtureResult(req.ID, map[string]any{"rows": []any{map[string]any{"id": 9}}, "count": 1}))); err != nil {
 		t.Fatalf("write proxy REST response: %v", err)
 	}
 	body := <-done
@@ -250,12 +252,9 @@ func startReverseProxy(t *testing.T, target string, forwardedFor string) *httpte
 	return httptest.NewServer(proxy)
 }
 
-func readAgentRequest(t *testing.T, conn interface{ ReadText() ([]byte, error) }, capability string) protocolRequest {
+func readAgentRequest(t *testing.T, conn *ws.Conn, capability string, clientResults ...<-chan []byte) protocolRequest {
 	t.Helper()
-	msg, err := conn.ReadText()
-	if err != nil {
-		t.Fatalf("read agent request: %v", err)
-	}
+	msg := readManualAgentFrame(t, conn, clientResults...)
 	var req protocolRequest
 	if err := json.Unmarshal(msg, &req); err != nil {
 		t.Fatalf("decode agent request: %v; msg=%s", err, string(msg))
@@ -270,11 +269,6 @@ type protocolRequest struct {
 	ID         string         `json:"id"`
 	Capability string         `json:"capability"`
 	Params     map[string]any `json:"params"`
-}
-
-func resultForRequest(id string, result any) []byte {
-	b, _ := json.Marshal(map[string]any{"id": id, "result": result})
-	return b
 }
 
 func getStatusWithAPIKey(t *testing.T, url, apiKey string) (int, []byte) {

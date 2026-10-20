@@ -29,26 +29,35 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
 	tmp := t.TempDir()
-	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  validated_lookup:
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `validated_lookup:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select :id::int as id
-    params:
+  input:
+    properties:
       id:
         type: integer
-        required: true
         minimum: 1
         maximum: 10
       code:
         type: string
-        required: true
         pattern: "^[A-Z]{3}$"
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer`)
+    required:
+      - id
+      - code
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -75,7 +84,7 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 		if status != http.StatusBadRequest {
 			t.Fatalf("invalid REST payload %s status=%d body=%s", payload, status, string(body))
 		}
-		requireAPIErrorCode(t, body, "AGENT_VALIDATION_FAILED")
+		requireAPIErrorCode(t, body, "VALIDATION_FAILED")
 		if strings.Contains(string(body), "leak-me") || strings.Contains(logs.String(), "leak-me") {
 			t.Fatalf("validation detail leaked; body=%s logs=%s", string(body), logs.String())
 		}
@@ -98,7 +107,7 @@ func TestActualAgentValidationThroughRESTAndMCP(t *testing.T) {
 			}
 			var text string
 			if version.wantStructured {
-				text = requireMCPToolErrorCode(t, body, "AGENT_VALIDATION_FAILED")
+				text = requireMCPToolErrorCode(t, body, "VALIDATION_FAILED")
 			} else {
 				text = requireMCPToolErrorText(t, body)
 				legacyErrorText = text
@@ -136,13 +145,14 @@ func TestAgentRejectsUnknownCapabilityFromCompromisedGateway(t *testing.T) {
 			_, _ = io.WriteString(w, `{"challenge":"compromised-gateway-challenge"}`)
 			return
 		}
+		w.Header().Set(protocol.MajorHeader, protocol.Major)
 		conn, err := ws.Accept(w, r)
 		if err != nil {
 			t.Errorf("accept fake gateway websocket: %v", err)
 			return
 		}
 		defer conn.Close()
-		req := protocol.Request{ID: "unknown-1", Capability: "not_in_capability_yaml", Params: map[string]any{"secret": "gateway-only-secret"}}
+		req := protocol.Request{Type: "request", Deadline: time.Now().Add(time.Minute), ID: "unknown-1", Capability: "not_in_capability_yaml", Params: map[string]any{"secret": "gateway-only-secret"}}
 		if err := conn.WriteText(protocol.MustJSON(req)); err != nil {
 			t.Errorf("write unknown capability: %v", err)
 			return
@@ -183,7 +193,7 @@ func TestAgentRejectsUnknownCapabilityFromCompromisedGateway(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("agent did not respond to compromised gateway request")
 	}
-	if resp.Error == nil || resp.Error.Code != "GATEWAY_CAPABILITY_NOT_FOUND" {
+	if resp.Error == nil || resp.Error.Code != "NOT_FOUND" {
 		t.Fatalf("unknown capability response = %#v", resp)
 	}
 	if strings.Contains(resp.Error.Message, "gateway-only-secret") {
@@ -234,20 +244,29 @@ func TestDistCLIProvisioningRunsOutsideSourceTree(t *testing.T) {
 		"GATEWAY_API_KEYS_JSON='[{\"name\":"+quoteJSON(apiKey.Name)+",\"key_hash\":"+quoteJSON(apiKey.KeyHash)+",\"capabilities\":"+string(apiKey.Capabilities)+"}]'\n"+
 		"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=100\n"+
 		"GATEWAY_RATE_LIMIT_BURST=100\n")
-	capabilityFile := writePostgresCapability(t, runDir, db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `  get_customer:
+	capabilityFile := writePostgresCapability(t, runDir, db, "ws://"+addr+"/ws/agent", agentKeys.PrivateKey, `get_customer:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select :id::int as id
-    params:
+  input:
+    properties:
       id:
         type: integer
-        required: true
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer`)
+    required:
+      - id
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+`)
 
 	gatewayCmd, gatewayOut := startShellProcessWithOutput(t, runDir, "set -a; . "+shellQuote(envFile)+"; set +a; exec "+shellQuote(gatewayBin))
 	defer stopProcess(t, gatewayCmd)
@@ -457,25 +476,34 @@ func TestOperationalSensitiveDataAuditAcrossArtifacts(t *testing.T) {
 	addr := freeAddr(t)
 	const sqlMarker = "onprest_audit_sql_marker"
 	const paramSecret = "audit-secret-param"
-	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  audited_failure:
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `audited_failure:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select :label::text as label, (1 / :denominator::int)::int as value /* onprest_audit_sql_marker */
-    params:
+  input:
+    properties:
       label:
         type: string
-        required: true
       denominator:
         type: integer
-        required: true
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      label:
-        type: string
-      value:
-        type: integer`)
+    required:
+      - label
+      - denominator
+  output:
+    data: {}
+    items:
+      properties:
+        label:
+          type: string
+        value:
+          type: integer
+`)
 
 	gatewayCmd, gatewayOut := startProcessWithOutput(t, tmp, gatewayBin, nil, []string{
 		"GATEWAY_ADDR=" + addr,
@@ -497,7 +525,7 @@ func TestOperationalSensitiveDataAuditAcrossArtifacts(t *testing.T) {
 	if status != http.StatusBadGateway {
 		t.Fatalf("audited_failure status=%d body=%s", status, string(body))
 	}
-	requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+	requireAPIErrorCode(t, body, "EXECUTION_FAILED")
 
 	gatewayArtifacts := map[string]string{
 		"gateway stdout": gatewayOut.String(),
@@ -526,7 +554,7 @@ func TestOperationalSensitiveDataAuditAcrossArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read agent local detail log: %v", err)
 	}
-	if !bytes.Contains(detailLog, []byte("AGENT_QUERY_FAILED")) ||
+	if !bytes.Contains(detailLog, []byte("EXECUTION_FAILED")) ||
 		!bytes.Contains(bytes.ToLower(detailLog), []byte("division")) {
 		t.Fatalf("agent local detail log missing DB detail: %s", string(detailLog))
 	}

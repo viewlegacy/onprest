@@ -1,120 +1,40 @@
 # Security
 
-Onprest is designed to reduce the boundary under the assumption that every component can be compromised. The gateway carries the Agent-generated public contract, but the Agent alone owns capability meaning and execution.
+Onprest is designed on the assumption that any component, including the public gateway, may be compromised. This page explains what each part protects and what remains your responsibility. [How it works](/architecture#who-holds-what) lists what the gateway and the agent each hold.
 
-## Trust Model
+## If the gateway is compromised
 
-| Boundary | Holds secrets | Holds SQL | External role |
-|---|---:|---:|---|
-| gateway | agent public key, API key hashes | No | routing, identity, observability, filtered public metadata |
-| agent | agent private key, DB credentials | Yes | capability execution |
+The gateway holds the agent public key, bcrypt hashes of API keys, and the public contract of each capability. If the gateway is compromised, an attacker can see the public contract and send calls to the agent, but only to capabilities that exist in `capability.yaml`, with input that passes validation, within the capability's policy, and receiving only its declared output. They learn no SQL or credentials. The agent's per-capability [rate limits](/capabilities/policy-and-limits#rate-limits) also hold without the gateway's cooperation.
 
-The gateway routes capability names and params and serves the Agent-generated public contract. DB connection information, SQL text, and raw agent detail are never written to gateway HTTP responses or stdout logs. HTTP errors return a stable `code` and public `message`.
+The gateway alone checks which API key made a call. A compromised gateway can therefore call any capability as any caller; keep each capability's reach narrow enough that this is acceptable.
 
-## Gateway Compromise
+## API keys
 
-Even if the gateway is compromised, the attacker cannot make the agent run operations that do not exist in `capability.yaml`.
+Each key lists the capabilities it may call; an empty list allows nothing and `"*"` must be set explicitly to allow everything. The same check applies to REST, MCP, OpenAPI, and file downloads. The gateway stores only bcrypt hashes and logs only key names. See [API Keys](/gateway/api-keys).
 
-For mutations, grant the agent DB user only the required table-level INSERT, UPDATE, or DELETE privileges. Do not grant schema/DDL or unrestricted database privileges. `readonly` lint is a syntactic guardrail and cannot prove that a SELECT-invoked DB function has no side effect, so least privilege remains the final boundary. DML is never retried automatically after a timeout or disconnect because the transaction outcome may be unknown.
+## What the agent may touch
 
-- SQL text does not exist in the gateway.
-- DB credentials do not exist in the gateway.
-- The OpenAPI cache contains only Agent-generated public metadata, not SQL or DB connection information.
-- The agent rejects unknown capabilities.
-- The agent rejects inputs outside the params contract with `AGENT_VALIDATION_FAILED`.
-- The agent can enforce a per-capability `policy.rate_limit` even if a compromised gateway sends requests without applying its own HTTP rate limit.
-- SELECT columns not included in the `result` allow-list are not returned externally. DML forbids `result`, returns affected count only, and may use `max_affected_rows` to rollback mutations larger than the declared policy.
+The agent's configuration and its operating-system permissions decide what a capability can reach. Keep both narrow:
 
-The gateway knows which API key can call which capability and can serve its public contract. Capability meaning and execution remain on the Agent.
+- **Databases**: use a read-only user for read capabilities, and grant mutations only the operations and tables they need. `policy.readonly` checks the statement type but cannot see what a function does; database permissions are the real boundary. See [Databases](/capabilities/databases#least-privilege).
+- **Folders**: point folder sources at dedicated directories, use `access: read` unless the capability saves files, and give the agent's user only those permissions.
+- **HTTP APIs**: callers can only fill in the arguments you bind; they cannot change the URL, method, or credentials. Restrict each source's methods and, where possible, its addresses with `allowed_cidrs`. See [HTTP APIs](/capabilities/http).
+- **Code**: with the sandbox off (the default), a module has the agent user's full file, network, and environment access. Turn the sandbox on and grant only what the module needs. Review the code and how it uses its input, especially input that selects a path or destination. Output selection controls the API response, not what code sends over a network grant. See [Code (Wasm)](/capabilities/code#sandbox).
 
-## API Key Authorization
+## Side effects
 
-API keys use explicit capability-level authorization.
+Mutations, file saves, HTTP calls, and code can change things that are not automatically undone. Onprest never retries them. When a call fails after it started, the error's `outcome` tells you whether the change was rolled back or is `unknown`; see [Uncertain outcomes](/operations/uncertain-outcomes). Annotations and `effects: none` describe a capability; they do not make a retry safe.
 
-```json
-[
-  {
-    "name": "partner-a",
-    "key_hash": "$2a$10$...",
-    "capabilities": ["get_customer", "get_orders"]
-  },
-  {
-    "name": "internal",
-    "key_hash": "$2a$10$...",
-    "capabilities": ["*"]
-  }
-]
-```
+## Returned files
 
-- Omitted or empty capabilities mean zero permissions.
-- All capabilities are allowed only when `"*"` is explicitly set.
-- REST, MCP, and OpenAPI use the same API key authentication and capability authorization.
+A download link works only with the API key that made the call, only while that key may still call the capability, only until it expires, and only while the same agent connection is up. Knowing the URL is not enough. The gateway streams files without storing them, and builds links only from the configured `ONPREST_PUBLIC_BASE_URL`. See [Files](/api/files#who-can-download-and-for-how-long).
 
-## Agent Validation Boundary
+## Agent connection
 
-The agent is the only OSS core component that owns capability meaning.
+The agent connects outbound, so the on-prem network needs no inbound port. Each connection is authenticated with an Ed25519 signature over a one-time challenge from the gateway, which cannot be replayed. Use `wss://` for any gateway that is not on the same host as the agent. The gateway accepts one agent connection at a time and rejects a second one while the first is alive.
 
-At startup:
+If the agent private key may have leaked, [rotate it](/agent/key-rotation).
 
-- It lints the YAML structure and required fields.
-- It verifies SQL with each DB's EXPLAIN mechanism.
-- It stops startup if DB ping fails.
+## Errors and logs
 
-At runtime:
-
-- It checks whether the capability is defined.
-- It rejects unknown params, invalid types, enum violations, out-of-range values, and invalid formats.
-- It applies timeout and max-bytes policy to every operation, and max rows only to SELECT.
-- After capability and params validation, it applies any capability rate limit before execution-queue or database admission. Unknown capabilities and invalid params do not consume tokens.
-- It passes parameters through prepared statements.
-- It limits SELECT columns with the `result` allow-list; DML has no row result and returns native affected count only.
-
-## Agent Secret Leakage
-
-If the agent private key leaks, rotate the key.
-
-Before each WebSocket handshake, the agent obtains a one-time challenge with `POST /ws/agent/challenge`. The gateway then verifies an Ed25519 signature over this exact UTF-8 byte sequence (with LF separators and no trailing LF):
-
-```text
-onprest-agent-v2
-<request path>
-<RFC3339 timestamp>
-<nonce>
-<gateway challenge>
-<Sec-WebSocket-Key>
-```
-
-The gateway validates the signature before atomically consuming both the challenge and nonce. Challenges expire after one minute, are bounded in memory, and exist only in the gateway process that issued them. A captured complete handshake therefore fails both after first use and after a gateway restart. Binding `Sec-WebSocket-Key` prevents substitution of a different handshake key; it is not, by itself, a replay store.
-
-Use `wss://` for every non-loopback agent connection so challenges and authentication headers cannot be captured from the network. Plain `ws://` is accepted by default only for loopback development. `gateway.allow_insecure_non_loopback_ws: true` is an explicit escape hatch for an isolated development network and must not be used in production.
-
-Concurrent connections are limited to one agent. If a fake agent tries to connect with the same key while the legitimate agent is already connected, the gateway rejects it with `GATEWAY_AGENT_ALREADY_CONNECTED`.
-
-`onprest-agent doctor` uses the same one-time challenge store but a separate signature domain:
-
-```text
-onprest-agent-verify-v1\n{path}\n{RFC3339 timestamp}\n{base64url nonce}\n{gateway challenge}
-```
-
-The challenge endpoint itself requires no API key or Agent signature; it is bounded by the Gateway's IP/rate controls and the one-minute challenge lifetime. `/ws/agent/verify` requires a valid signature over the dedicated domain above, then consumes the challenge and nonce atomically. It does not open or replace a WebSocket connection. See [CLI Reference](/reference/cli#diagnose-agent-and-gateway) for the command contract.
-
-## Product Boundary
-
-Managed products and dashboards are outside the OSS core security boundary. Their UI, storage, administration, and operating policies are not OSS gateway or agent guarantees.
-
-## Sensitive Detail Handling
-
-External HTTP responses and gateway stdout never include raw detail. The HTTP response `message` is a public contract field; validation messages may identify the invalid field and reason.
-
-```json
-{
-  "error": {
-    "code": "AGENT_QUERY_FAILED",
-    "message": "database query failed"
-  }
-}
-```
-
-DB-specific errors and SQL execution detail stay in agent-local logs; DB credentials, Agent keys, API keys, authorization values, and submitted param values are not emitted as public diagnostics. Standalone diagnostics use protected files separate from the rotating runtime log. See [Agent Local Logs](/agent/local-logs).
-
-Agent rate-limit rejections use a fixed public message and never include submitted params. Rejection logging is bounded; see [Agent Local Logs](/agent/local-logs).
+Responses and gateway logs contain only fixed error codes and safe messages. Database errors, upstream responses, paths, credentials, and submitted values stay in the agent's [local log](/agent/local-logs), with secrets removed. Treat that log as sensitive and keep it on the on-prem side.

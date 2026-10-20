@@ -22,6 +22,8 @@ func HandleCLI(ctx context.Context, args []string, stdout, stderr io.Writer) (bo
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, buildinfo.Current())
 		return true, 0
+	case "code":
+		return true, handleCodeCLI(ctx, args[1:], stdout, stderr)
 	case "validate":
 		return true, handleValidateCLI(ctx, args[1:], stdout, stderr)
 	case "doctor":
@@ -277,6 +279,7 @@ func rejectServiceArgs(command string, args []string, stderr io.Writer) bool {
 
 func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  onprest-agent code build|validate|test          build and test Go WASI code")
 	fmt.Fprintln(w, "  onprest-agent [--config PATH] [--capability-file PATH]  start agent")
 	fmt.Fprintln(w, "  onprest-agent version                                 print agent version")
 	fmt.Fprintln(w, "  onprest-agent --version                               print agent version")

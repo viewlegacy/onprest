@@ -3,17 +3,17 @@
 service:
   title: replace-with-service-title
   version: 1.0.0
-
 gateway:
   url: wss://replace-with-gateway-host/ws/agent
   agent_private_key: replace-with-create-agent-secret-private-key
-
-database:
-  driver: postgres
-  host: replace-with-database-host
-  port: 5432
-  name: replace-with-database-name
-  user: replace-with-database-user
-  password: replace-with-database-password
-
 capabilities: {}
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: replace-with-database-host
+      port: 5432
+      name: replace-with-database-name
+      user: replace-with-database-user
+      password: replace-with-database-password
+schema_version: 1

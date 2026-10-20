@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/viewlegacy/onprest/internal/contract"
 	"github.com/viewlegacy/onprest/internal/protocol"
 )
 
@@ -37,4 +38,18 @@ func writeMCPErrorStatus(w http.ResponseWriter, status int, id any, rpcCode int,
 			"data":    map[string]any{"code": appCode},
 		},
 	})
+}
+
+func commonAPIError(id, code, message, outcome string) contract.ErrorEnvelope {
+	return contract.ErrorEnvelope{RequestID: id, Error: contract.ErrorValue{Code: code, Message: message, Outcome: outcome}}
+}
+func resultError(id string, result agentCallResult) contract.ErrorEnvelope {
+	if result.Failure != nil {
+		return contract.ErrorEnvelope{RequestID: id, Error: *result.Failure}
+	}
+	return commonAPIError(id, result.Code, result.Message, "unknown")
+}
+
+func requestAPIError(r *http.Request, code, message string) contract.ErrorEnvelope {
+	return commonAPIError(authRequestID(r), code, message, "not_started")
 }

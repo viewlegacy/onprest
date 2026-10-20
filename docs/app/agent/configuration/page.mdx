@@ -1,0 +1,122 @@
+# Agent Configuration
+
+Besides capabilities, `capability.yaml` configures the agent process itself. Most deployments only set `gateway` and leave the rest at their defaults.
+
+```yaml
+schema_version: 1
+
+service:
+  title: Example CRM
+  version: 1.0.0
+  description: Customer operations for the CRM.
+
+gateway:
+  url: wss://gateway.example.com/ws/agent
+  agent_private_key_file: ./secrets/agent.key
+
+runtime:
+  max_concurrent_requests: 16
+  spool_dir: /var/lib/onprest/spool
+  identity_dir: /var/lib/onprest/identity
+
+logging:
+  level: info
+  max_size: 10MB
+  max_files: 3
+
+sources: {}
+defaults: {}
+capabilities: {}
+```
+
+| Section | Purpose |
+|---|---|
+| `schema_version` | Required. Always `1` |
+| `service` | Title, version, and description shown in OpenAPI |
+| `gateway` | Where to connect and how to authenticate |
+| `runtime` | Concurrency, temporary storage, and transfer limits |
+| `logging` | Local log level and rotation; see [Local Logs](/agent/local-logs) |
+| `sources` | Databases, folders, and HTTP APIs; see each [executor page](/capabilities#choose-an-executor) |
+| `defaults` | Policy defaults; see [Policy and limits](/capabilities/policy-and-limits) |
+| `capabilities` | The operations; at least one is required |
+
+## service
+
+| Key | Default |
+|---|---|
+| `title` | `Onprest Agent` |
+| `version` | `0.1.0` |
+| `description` | empty |
+
+## gateway
+
+| Key | Default | Meaning |
+|---|---|---|
+| `url` | required | The gateway's agent endpoint, such as `wss://gateway.example.com/ws/agent` |
+| `agent_private_key` or `agent_private_key_file` | required, one of them | The Ed25519 private key from `onprest-gateway create-agent-secret`, inline or in a protected file |
+| `allow_insecure_non_loopback_ws` | `false` | Allows `ws://` to a non-loopback host. For isolated test networks only |
+
+Use `wss://` in production. Plain `ws://` is accepted only for a gateway on the same host unless you set `allow_insecure_non_loopback_ws: true`. A key file contains exactly the key, with no trailing newline.
+
+## runtime
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_concurrent_requests` | `16` | Calls that run at the same time. The same number can wait; further calls get `BUSY` |
+| `spool_dir` | `./spool` | Private directory for uploaded and returned files while they are in use |
+| `spool_total_bytes` | `1GiB` | Disk quota for everything in the spool |
+| `identity_dir` | `./identity` | Private directory for the key the agent uses to fingerprint its configuration. Unrelated to the gateway key and [Key Rotation](/agent/key-rotation) |
+| `transfer_timeout` | `60s` | Time allowed to receive a call's uploads, or to send one download, up to `300s` |
+| `input_limits.max_pending_requests` | `16` | Calls that can be receiving uploads at the same time |
+| `input_limits.max_multipart_parts` | `128` | Parts in one multipart upload |
+| `input_limits.max_recent_requests` | `4096` | Recently finished uploads remembered to reject duplicates |
+| `control_limits` | see below | Limits for downloads, uploads, and cancellations |
+
+Relative paths are resolved from the configuration directory. The agent creates `spool_dir` and `identity_dir` if needed; its operating-system user must own them and be the only one with access (on Windows, see [Windows permissions](#windows-permissions)).
+
+The spool belongs to one agent process. Do not share it between agents or keep business files in it. Keep it across restarts: if a file save was interrupted, the agent finishes cleaning it up at the next start. Files in the spool do not survive a restart as downloads.
+
+Keep `identity_dir` across restarts and container replacements as well. It holds a key the agent generates on first start and reuses afterwards.
+
+A folder source root or a code [filesystem grant](/capabilities/code#sandbox) must not be, contain, or lie inside either directory; otherwise `validate` fails and the agent refuses to start. With the defaults, both directories are inside the configuration directory, so use a subdirectory such as `./reports` as the root, not the configuration directory itself.
+
+### control_limits
+
+The gateway forwards downloads, upload chunks, and cancellations to the agent. These limits protect the agent even if the gateway misbehaves, and the defaults suit most deployments:
+
+| Class | Counts | `requests` per `per` | `burst` | `max_concurrent` |
+|---|---|---|---|---|
+| `read` | Fetching the capability list after the agent connects, and starting a download | 60 per `1s` | 120 | 8 |
+| `write` | Starting and completing a call with file uploads | 10 per `1s` | 20 | 2 |
+| `cancel` | Cancellations of calls and transfers | 20 per `1s` | 40 | 2 |
+| `transfer` | Opening each upload or download stream | 32 per `1s` | 64 | 4 |
+
+Set any of `requests`, `per`, `burst`, and `max_concurrent` per class, for example `control_limits: {read: {requests: 120}}`.
+
+`bytes_per_second` (default `8MiB`) and `burst_bytes` (default `16MiB`) cap the transfer rate, and `max_concurrent_transfers` (default `4`, at most `8`) caps parallel transfers. Requests over a limit get `RATE_LIMITED` or `BUSY`. All values must be positive.
+
+## Secret files
+
+Database passwords, HTTP credentials, the agent key, and database TLS files can be kept in files instead of the YAML:
+
+- Paths are absolute or relative to the configuration directory. Symbolic links are refused.
+- Secret files (passwords, credentials, the agent key, and TLS client keys) must be private: on Linux and macOS, owned by the agent's user with no group or other permissions (for example mode `0600`); on Windows, see [Windows permissions](#windows-permissions).
+- TLS CA and client certificate files only need to be regular files. The agent does not check their permissions because they are not secret.
+- Contents are used exactly as written; nothing is trimmed.
+- The agent reads them once at startup. Restart it after replacing a file.
+
+### Windows permissions
+
+On Windows, a secret file, and an existing `identity_dir` or `spool_dir`, must be owned by the agent's user, `SYSTEM`, or `Administrators`, must not inherit permissions, and may grant access only to those three. Files and directories you create get inherited permissions by default, so fix them by running these commands as an administrator, replacing `DOMAIN\onprest-agent` with the account the agent runs as (`*S-1-5-18` is `SYSTEM`, `*S-1-5-32-544` is `Administrators`):
+
+```powershell
+# A secret file
+icacls C:\ProgramData\Onprest\db-password.txt /setowner "DOMAIN\onprest-agent"
+icacls C:\ProgramData\Onprest\db-password.txt /inheritance:r /grant:r "DOMAIN\onprest-agent:F" "*S-1-5-18:F" "*S-1-5-32-544:F"
+
+# An identity or spool directory you created yourself
+icacls C:\ProgramData\Onprest\spool /setowner "DOMAIN\onprest-agent"
+icacls C:\ProgramData\Onprest\spool /inheritance:r /grant:r "DOMAIN\onprest-agent:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
+```
+
+Remove any other account the file or directory still lists (`icacls <path> /remove:g <account>`). Directories the agent creates itself get these permissions automatically.

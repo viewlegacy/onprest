@@ -133,9 +133,7 @@ func TestValidationLogBoundAndStrictOrphanRecovery(t *testing.T) {
 	executablePath = func() (string, error) { return filepath.Join(dir, "onprest-agent"), nil }
 	orphan := filepath.Join(dir, ".onprest-agent.validate.0123456789abcdef0123456789abcdef.tmp")
 	unknown := filepath.Join(dir, ".onprest-agent.validate.not-a-run-id.tmp")
-	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePrivateValidationFileForTest(t, orphan, "orphan")
 	if err := os.WriteFile(unknown, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -164,9 +162,7 @@ func TestValidationLogFaultsPreservePreviousCompletedFailure(t *testing.T) {
 	dir := t.TempDir()
 	executablePath = func() (string, error) { return filepath.Join(dir, "onprest-agent"), nil }
 	fixed := filepath.Join(dir, "onprest-agent.validate.log")
-	if err := os.WriteFile(fixed, []byte("previous-complete"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePrivateValidationFileForTest(t, fixed, "previous-complete")
 
 	session, err := newValidationLogSession()
 	if err != nil {
@@ -227,9 +223,7 @@ func TestValidationPostCommitDurabilityFaultLeavesOnlyCompleteFixedLog(t *testin
 	defer func() { executablePath, validationPostCommitDurabilityHook = oldExe, oldHook }()
 	dir := t.TempDir()
 	executablePath = func() (string, error) { return filepath.Join(dir, "onprest-agent"), nil }
-	if err := os.WriteFile(filepath.Join(dir, "onprest-agent.validate.log"), []byte("previous"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePrivateValidationFileForTest(t, filepath.Join(dir, "onprest-agent.validate.log"), "previous")
 	session, err := newValidationLogSession()
 	if err != nil {
 		t.Fatal(err)
@@ -301,9 +295,7 @@ func TestValidationLogOrphanRemovalFailureStopsBeforeNewTemporary(t *testing.T) 
 	dir := t.TempDir()
 	executablePath = func() (string, error) { return filepath.Join(dir, "onprest-agent"), nil }
 	orphan := filepath.Join(dir, ".onprest-agent.validate.0123456789abcdef0123456789abcdef.tmp")
-	if err := os.WriteFile(orphan, []byte("orphan"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writePrivateValidationFileForTest(t, orphan, "orphan")
 	validationRemoveFile = func(path string) error {
 		if path == orphan {
 			return errors.New("orphan remove failed")

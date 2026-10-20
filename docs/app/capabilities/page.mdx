@@ -1,0 +1,82 @@
+# Capabilities
+
+A capability is one named operation that callers can invoke, such as `get_customer` or `download_invoice`. You define capabilities in `capability.yaml`, the agent's configuration file. Nothing that is not in this file can run.
+
+Each capability has four parts:
+
+- `executor`: what runs, and against which source.
+- `input`: what callers may send, as a JSON Schema.
+- `policy`: limits such as timeout, row count, and response size.
+- `output`: what may be returned to the caller.
+
+## A complete file
+
+```yaml
+schema_version: 1
+service:
+  title: Example CRM
+  version: 1.0.0
+
+gateway:
+  url: wss://gateway.example.com/ws/agent
+  agent_private_key_file: ./secrets/agent.key
+
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: db.internal.example
+      port: 5432
+      name: crm
+      user: onprest_reader
+      password_file: ./secrets/db-password
+
+capabilities:
+  get_customer:
+    description: Fetch one customer by ID.
+    executor:
+      type: db
+      source: primary
+      sql: select id, name from customers where id = :id
+    input:
+      properties:
+        id: {type: integer, minimum: 1}
+      required: [id]
+    policy:
+      timeout: 5s
+      max_rows: 1
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: integer}
+          name: {type: string}
+```
+
+`schema_version`, `gateway`, and at least one capability are required. The top-level `service`, `runtime`, `gateway`, and `logging` sections configure the agent itself; see [Agent configuration](/agent/configuration). `sources` names the databases, folders, and HTTP APIs that executors may use. `defaults` sets [policy defaults](/capabilities/policy-and-limits) for every capability.
+
+Capability names start with a letter and may contain letters, digits, `_`, `.`, and `-`, up to 128 characters. Names starting with `onprest_` are reserved.
+
+## Choose an executor
+
+| `executor.type` | Use it to | Reference |
+|---|---|---|
+| `db` | Run one SQL statement on PostgreSQL, MySQL, SQL Server, or Oracle | [Databases](/capabilities/databases) |
+| `csv` | Read CSV files from a folder or an upload, filter rows, and return JSON or a generated CSV | [CSV](/capabilities/csv) |
+| `file` | Return completed files from a folder, or save uploaded files into one | [Files](/capabilities/files) |
+| `http` | Call a fixed internal HTTP API with arguments taken from the input | [HTTP APIs](/capabilities/http) |
+| `wasm` | Run a WebAssembly module you wrote, for logic the other executors cannot express | [Code (Wasm)](/capabilities/code) |
+
+Input, output, and policy work the same way for every executor; see [Inputs and outputs](/capabilities/inputs-and-outputs) and [Policy and limits](/capabilities/policy-and-limits).
+
+## From YAML to a callable API
+
+1. Add or edit the capability in `capability.yaml`.
+2. Run `onprest-agent validate --config capability.yaml`. It checks the file and prepares every source the capabilities use (for databases it connects and runs `EXPLAIN`), without running any capability or contacting the gateway.
+3. Restart the agent. It reads the file only at startup.
+4. Make sure the caller's API key lists the capability; see [API Keys](/gateway/api-keys).
+5. Call it through [REST](/api/rest) or [MCP](/api/mcp).
+
+For a running service, follow [Capability Changes](/operations/capability-changes), which only stops the agent after validation succeeds.
+
+YAML anchors and merge keys work as usual. Unknown keys and settings that do not apply to the chosen executor are reported by `validate`, so a typo fails early instead of being ignored.

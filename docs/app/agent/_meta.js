@@ -1,6 +1,6 @@
 export default {
   index: 'Overview',
-  'capability-yaml': 'Capability YAML',
+  configuration: 'Configuration',
   'local-logs': 'Local Logs',
   'key-rotation': 'Key Rotation'
 }

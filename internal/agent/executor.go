@@ -22,12 +22,14 @@ const queryTimeoutDetail = "query exceeded policy.timeout"
 const affectedRowsExceededDetail = "affected rows exceed policy.max_affected_rows"
 
 type preparedExecution struct {
-	req      protocol.Request
-	cap      CapabilityDef
-	query    string
-	args     []any
-	timeout  time.Duration
-	metadata bool
+	req                protocol.Request
+	cap                CapabilityDef
+	query              string
+	args               []any
+	timeout            time.Duration
+	metadata           bool
+	admitted           bool
+	admissionRejection *protocol.Response
 }
 
 func newCapabilityRateLimiters(cf *CapabilityFile, clock agentClock) map[string]*capabilityRateLimiter {
@@ -50,27 +52,42 @@ func (r *Runner) handle(parent context.Context, req protocol.Request) protocol.R
 }
 
 func (r *Runner) prepare(req protocol.Request) (*preparedExecution, *protocol.Response) {
+	if r.controller != nil {
+		if req.Capability == "meta" {
+			return &preparedExecution{req: req, metadata: true}, nil
+		}
+		params, failure := r.controller.admit(ExecutionRequest{ID: req.ID, Capability: req.Capability, DefinitionHash: req.DefinitionHash, Params: req.Params, Deadline: req.Deadline})
+		if failure != nil {
+			resp := &protocol.Response{Type: "error", ID: req.ID, Error: failure}
+			if failure.Code == "RATE_LIMITED" {
+				return &preparedExecution{req: req, admissionRejection: resp}, nil
+			}
+			return nil, resp
+		}
+		req.Params = params
+		return &preparedExecution{req: req, admitted: true}, nil
+	}
 	if req.Capability == "meta" {
 		return &preparedExecution{req: req, metadata: true}, nil
 	}
 	cap, ok := r.caps[req.Capability]
 	if !ok {
-		resp := r.errorResponse(req, "GATEWAY_CAPABILITY_NOT_FOUND", "capability is not defined", "capability is not defined")
+		resp := r.errorResponse(req, "NOT_FOUND", "capability is not defined", "capability is not defined")
 		return nil, &resp
 	}
 	params, err := validateParams(cap, req.Params)
 	if err != nil {
-		resp := r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
+		resp := r.errorResponse(req, "VALIDATION_FAILED", err.Error(), err.Error())
 		return nil, &resp
 	}
 	query, args, err := buildSQL(r.cf.Database.Driver, cap.SQL, params)
 	if err != nil {
-		resp := r.errorResponse(req, "AGENT_VALIDATION_FAILED", err.Error(), err.Error())
+		resp := r.errorResponse(req, "VALIDATION_FAILED", err.Error(), err.Error())
 		return nil, &resp
 	}
 	d, err := timeout(cap.Policy)
 	if err != nil {
-		resp := r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
+		resp := r.errorResponse(req, "INTERNAL_ERROR", "agent internal error", err.Error())
 		return nil, &resp
 	}
 	return &preparedExecution{req: req, cap: cap, query: query, args: args, timeout: d}, nil
@@ -88,6 +105,9 @@ func (r *Runner) admit(req protocol.Request) (*preparedExecution, *protocol.Resp
 }
 
 func (r *Runner) rateLimitRejection(prepared *preparedExecution) *protocol.Response {
+	if r.controller != nil {
+		return prepared.admissionRejection
+	}
 	if prepared.metadata {
 		return nil
 	}
@@ -105,24 +125,31 @@ func (r *Runner) rateLimitRejection(prepared *preparedExecution) *protocol.Respo
 		return nil
 	}
 	if logRejection {
-		r.detailError(req.Capability, "AGENT_RATE_LIMITED", rateLimitedMessage, rateLimitedMessage, req.ID)
+		r.detailError(req.Capability, "RATE_LIMITED", rateLimitedMessage, rateLimitedMessage, req.ID)
 	}
-	resp := protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "AGENT_RATE_LIMITED", Message: rateLimitedMessage}}
+	resp := protocol.Response{ID: req.ID, Error: &protocol.Error{Code: "RATE_LIMITED", Message: rateLimitedMessage, Outcome: "unknown"}}
 	return &resp
 }
 
 func (r *Runner) executePrepared(parent context.Context, prepared *preparedExecution) protocol.Response {
+	if r.controller != nil {
+		return r.executeVersionedPrepared(parent, prepared.req, prepared.admitted)
+	}
 	if prepared.metadata {
-		return protocol.ResultResponse(prepared.req.ID, map[string]any{"data": BuildOpenAPI(r.cf), "response_kinds": responseKinds(r.cf)})
+		resp := protocol.ResultResponse(prepared.req.ID, map[string]any{"data": BuildOpenAPI(r.cf), "response_kinds": responseKinds(r.cf)})
+		resp.Type = "metadata"
+		return resp
 	}
 	ctx, cancel := context.WithTimeout(parent, prepared.timeout)
 	defer cancel()
 	if prepared.cap.Operation.mutation() {
-		payload, _, failure := r.executeMutation(parent, ctx, prepared.cap, prepared.query, prepared.args)
+		payload, count, failure := r.executeMutation(parent, ctx, prepared.cap, prepared.query, prepared.args)
 		if failure != nil {
 			return r.errorResponse(prepared.req, failure.code, failure.message, failure.detail)
 		}
-		return protocol.Response{ID: prepared.req.ID, Result: payload}
+		resp := protocol.ResultResponse(prepared.req.ID, map[string]any{"data": json.RawMessage(payload), "files": []any{}})
+		resp.Metrics = &protocol.Metrics{ExecutorKind: "db", AffectedRows: &count, ResponseBytes: int64(len(payload))}
+		return resp
 	}
 	return r.executeSelect(ctx, parent, prepared.req, prepared.cap, prepared.query, prepared.args)
 }
@@ -143,31 +170,35 @@ func (r *Runner) executeSelect(ctx, parent context.Context, req protocol.Request
 	rows, cols, err := queryRows(ctx, r.db, query, args, resolvedMaxRows(cap.Policy))
 	if err != nil {
 		if ctx.Err() != nil {
-			return r.errorResponse(req, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail, queryTimeoutDetail)
+			return r.errorResponse(req, "EXECUTION_TIMEOUT", queryTimeoutDetail, queryTimeoutDetail)
 		}
 		if classifyDBError(r.cf.Database.Driver, err) == errorConstraintViolation {
 			return r.errorResponse(req, errorConstraintViolation, "database constraint violation", err.Error())
 		}
 		if isDBUnreachable(err) || !r.dbReachable(parent) {
-			return r.errorResponse(req, "AGENT_DB_UNREACHABLE", "database is unreachable", err.Error())
+			return r.errorResponse(req, "DEPENDENCY_UNAVAILABLE", "database is unreachable", err.Error())
 		}
-		return r.errorResponse(req, "AGENT_QUERY_FAILED", "database query failed", err.Error())
+		return r.errorResponse(req, "EXECUTION_FAILED", "database query failed", err.Error())
 	}
 	rows, err = applyResultContract(rows, cols, cap.Result)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_QUERY_FAILED", "database query failed", err.Error())
+		return r.errorResponse(req, "EXECUTION_FAILED", "database query failed", err.Error())
 	}
 	result := map[string]any{"rows": rows, "count": int64(len(rows))}
 	limit, err := maxBytes(cap.Policy)
 	if err != nil {
-		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
+		return r.errorResponse(req, "INTERNAL_ERROR", "agent internal error", err.Error())
 	}
 	if b, err := json.Marshal(result); err != nil {
-		return r.errorResponse(req, "AGENT_INTERNAL_ERROR", "agent internal error", err.Error())
+		return r.errorResponse(req, "INTERNAL_ERROR", "agent internal error", err.Error())
 	} else if int64(len(b)) > limit {
-		return r.errorResponse(req, "AGENT_QUERY_FAILED", "response exceeds policy.max_bytes", "response exceeds policy.max_bytes")
+		return r.errorResponse(req, "EXECUTION_FAILED", "response exceeds policy.max_bytes", "response exceeds policy.max_bytes")
 	}
-	return protocol.ResultResponse(req.ID, result)
+	resp := protocol.ResultResponse(req.ID, map[string]any{"data": rows, "files": []any{}})
+	count := int64(len(rows))
+	data, _ := json.Marshal(rows)
+	resp.Metrics = &protocol.Metrics{ExecutorKind: "db", ReturnedRows: &count, ResponseBytes: int64(len(data))}
+	return resp
 }
 
 type mutationFailure struct{ code, message, detail string }
@@ -300,12 +331,12 @@ func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap Capabi
 			return nil, 0, &mutationFailure{errorOutcomeUnknown, "transaction outcome is unknown", err.Error()}
 		}
 		if execCtx.Err() != nil {
-			return nil, 0, &mutationFailure{"AGENT_QUERY_TIMEOUT", queryTimeoutDetail, execCtx.Err().Error()}
+			return nil, 0, &mutationFailure{"EXECUTION_TIMEOUT", queryTimeoutDetail, execCtx.Err().Error()}
 		}
 		if isDBUnreachable(err) {
-			return nil, 0, &mutationFailure{"AGENT_DB_UNREACHABLE", "database is unreachable", err.Error()}
+			return nil, 0, &mutationFailure{"DEPENDENCY_UNAVAILABLE", "database is unreachable", err.Error()}
 		}
-		return nil, 0, &mutationFailure{"AGENT_QUERY_FAILED", "database query failed", err.Error()}
+		return nil, 0, &mutationFailure{"EXECUTION_FAILED", "database query failed", err.Error()}
 	}
 	tx := mtx.tx
 	terminal := false
@@ -328,29 +359,29 @@ func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap Capabi
 	result, err := tx.ExecContext(execCtx, query, args...)
 	if err != nil {
 		if execCtx.Err() != nil {
-			return failAfterRollback(execCtx.Err(), "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
+			return failAfterRollback(execCtx.Err(), "EXECUTION_TIMEOUT", queryTimeoutDetail)
 		}
 		if classifyDBError(r.cf.Database.Driver, err) == errorConstraintViolation {
 			return failAfterRollback(err, errorConstraintViolation, "database constraint violation")
 		}
 		if isDBUnreachable(err) {
-			return failAfterRollback(err, "AGENT_DB_UNREACHABLE", "database is unreachable")
+			return failAfterRollback(err, "DEPENDENCY_UNAVAILABLE", "database is unreachable")
 		}
-		return failAfterRollback(err, "AGENT_QUERY_FAILED", "database query failed")
+		return failAfterRollback(err, "EXECUTION_FAILED", "database query failed")
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return failAfterRollback(err, "AGENT_QUERY_FAILED", "database query failed")
+		return failAfterRollback(err, "EXECUTION_FAILED", "database query failed")
 	}
 	if count < 0 {
-		return failAfterRollback(errors.New("RowsAffected returned a negative count"), "AGENT_QUERY_FAILED", "database query failed")
+		return failAfterRollback(errors.New("RowsAffected returned a negative count"), "EXECUTION_FAILED", "database query failed")
 	}
 	if cap.Policy.MaxAffectedRows != nil && count > *cap.Policy.MaxAffectedRows {
 		return failAfterRollback(errors.New(affectedRowsExceededDetail), errorAffectedRowsExceeded, affectedRowsExceededDetail)
 	}
 	limit, err := maxBytes(cap.Policy)
 	if err != nil {
-		return failAfterRollback(err, "AGENT_INTERNAL_ERROR", "agent internal error")
+		return failAfterRollback(err, "INTERNAL_ERROR", "agent internal error")
 	}
 	payload, err := buildMutationPayload(count, limit)
 	if err != nil {
@@ -358,10 +389,10 @@ func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap Capabi
 		if errors.Is(err, errMutationResponseTooLarge) {
 			message = "response exceeds policy.max_bytes"
 		}
-		return failAfterRollback(err, "AGENT_QUERY_FAILED", message)
+		return failAfterRollback(err, "EXECUTION_FAILED", message)
 	}
 	if err := execCtx.Err(); err != nil {
-		return failAfterRollback(err, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail)
+		return failAfterRollback(err, "EXECUTION_TIMEOUT", queryTimeoutDetail)
 	}
 	if err := tx.Commit(); err != nil {
 		terminal = true
@@ -373,7 +404,7 @@ func (r *Runner) executeMutation(requestCtx, execCtx context.Context, cap Capabi
 }
 
 func (r *Runner) canceledMutationStartFailure(mtx *mutationTx, cause error) *mutationFailure {
-	return rollbackMutationFailure(mtx, cause, "AGENT_QUERY_TIMEOUT", queryTimeoutDetail, r.cf.Database.Driver == "oracle")
+	return rollbackMutationFailure(mtx, cause, "EXECUTION_TIMEOUT", queryTimeoutDetail, r.cf.Database.Driver == "oracle")
 }
 
 func rollbackMutationFailure(mtx *mutationTx, original error, code, message string, discard bool) *mutationFailure {
@@ -607,7 +638,7 @@ func coerceString(v any) string {
 
 func (r *Runner) errorResponse(req protocol.Request, code, message, detail string) protocol.Response {
 	r.detailError(req.Capability, code, message, detail, req.ID)
-	return protocol.Response{ID: req.ID, Error: &protocol.Error{Code: code, Message: message}}
+	return protocol.Response{ID: req.ID, Error: &protocol.Error{Code: code, Message: message, Outcome: "unknown"}}
 }
 
 func explainQuery(ctx context.Context, db *sql.DB, driver, query string, args []any) error {

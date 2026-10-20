@@ -1,13 +1,6 @@
 service:
   title: Onprest PostgreSQL IT
   version: 0.1.0
-database:
-  driver: postgres
-  host: {{DB_HOST}}
-  port: {{DB_PORT}}
-  name: {{DB_NAME}}
-  user: {{DB_USER}}
-  password: {{DB_PASSWORD}}
 gateway:
   url: {{GATEWAY_URL}}
   agent_private_key: {{AGENT_PRIVATE_KEY}}
@@ -17,21 +10,39 @@ logging:
 capabilities:
   echo_customer:
     description: Echoes typed params through the integration database.
-    sql: select :id::int as id, :name::text as name
-    params:
-      id:
-        type: integer
-        required: true
-      name:
-        type: string
-        required: true
     policy:
       readonly: true
       timeout: 5s
       max_rows: 10
-      max_bytes: 64KB
-    result:
-      id:
-        type: integer
-      name:
-        type: string
+      max_output_bytes: 64KB
+    executor:
+      type: db
+      source: primary
+      sql: select :id::int as id, :name::text as name
+    input:
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+      required:
+        - id
+        - name
+    output:
+      data: {}
+      items:
+        properties:
+          id:
+            type: integer
+          name:
+            type: string
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: {{DB_HOST}}
+      port: {{DB_PORT}}
+      name: {{DB_NAME}}
+      user: {{DB_USER}}
+      password: {{DB_PASSWORD}}
+schema_version: 1

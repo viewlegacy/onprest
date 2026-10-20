@@ -1,10 +1,12 @@
 # Capability Changes
 
-Capabilities are owned by the Agent-side `capability.yaml`. The Gateway does not define SQL, params, policy, or result schemas. The Agent loads this file at startup; changes are not hot-loaded.
+The agent loads `capability.yaml` only at startup. To change a capability, edit the file, validate it, and restart the agent. The commands below stop the running agent only if validation succeeds, so a broken file never takes a working agent offline.
 
-## Apply a Change to an Existing Service
+Run the commands on this page, including `validate`, as an administrator: the service runs as root (LocalSystem on Windows), and the spool and identity directories and the secret files must be owned by that user.
 
-Edit the file registered with the service, then run the following block. Set `CAPABILITY_FILE` to that exact absolute path. The `&&` chain is intentional: `service stop` is not invoked unless validation succeeds.
+## Apply a change to an existing service
+
+Edit the file registered with the service, then run:
 
 ```bash
 CAPABILITY_FILE=/absolute/path/capability.yaml
@@ -15,11 +17,11 @@ onprest-agent validate --config "$CAPABILITY_FILE" &&
   onprest-agent service status
 ```
 
-Validation runs while the current Agent remains online. After the chain succeeds, use the verification block below to confirm that the Gateway has the replacement connection and fresh metadata.
+Validation runs while the current agent stays online. If it fails, nothing else runs; fix the file using the message it printed (and the log path it names, if any). See [Troubleshooting](/operations/troubleshooting#agent-fails-at-startup-or-validate).
 
-## Install a New Service
+If you add a capability, also add it to the callers' API keys and restart the gateway; see [API Keys](/gateway/api-keys).
 
-Installation is a separate lifecycle. Validate first, then register the same absolute configuration path and start the service. There is no existing service to stop.
+## Install a new service
 
 ```bash
 CAPABILITY_FILE=/absolute/path/capability.yaml
@@ -30,11 +32,11 @@ onprest-agent validate --config "$CAPABILITY_FILE" &&
   onprest-agent service status
 ```
 
-`service install` does not enable automatic start on OS boot. Configure boot-time startup separately with the host OS if required. See [Deployment](/operations/deployment) for binary, container, and service-manager boundaries.
+`service install` registers the agent with systemd, launchd, or Windows Service. It does not enable start on boot.
 
-## Verify the Applied Contract
+## Check the result
 
-After a successful start, set the values for one changed capability and verify health, OpenAPI, REST, and both MCP discovery and execution.
+After the restart, check that the gateway sees the new definition:
 
 ```bash
 GATEWAY_URL=https://gateway.example.com
@@ -57,26 +59,9 @@ curl --fail-with-body -sS \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
   -H "MCP-Protocol-Version: 2025-11-25" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-curl --fail-with-body -sS \
-  -X POST "$GATEWAY_URL/mcp" \
-  -H "Authorization: Bearer $ONPREST_API_KEY" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "MCP-Protocol-Version: 2025-11-25" \
-  -d "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"$CAPABILITY_NAME\",\"arguments\":$CAPABILITY_ARGS}}"
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"$CAPABILITY_NAME\",\"arguments\":$CAPABILITY_ARGS}}"
 ```
 
-Confirm that `/healthz` reports `agent_connected: true`, OpenAPI and `tools/list` show the intended contract, and REST and `tools/call` return the expected result. MCP execution errors use HTTP 200 with `isError: true`, so inspect the response body as well as curl's exit status.
+`/healthz` should report `agent_connected: true`, and OpenAPI should show the new contract. An MCP tool error still returns HTTP 200 with `isError: true`, so read the body, not just curl's exit code.
 
-## Failure Behavior
-
-If validation exits nonzero, the `&&` chain leaves the existing service running and its Gateway metadata unchanged. Do not stop it manually. Configuration and busy failures are reported by the CLI without a detail log. Read a validation log only when the command reports a `detail_log` path; if diagnostic finalization itself fails, no current diagnostic path is reported. Follow [Troubleshooting](/operations/troubleshooting#db-ping-or-explain-startup-failure) and [Agent Local Logs](/agent/local-logs).
-
-Normal startup repeats the same preparation. If the configuration was changed again and now fails to load or lint, startup reports the safe configuration error on stderr before opening the runtime diagnostic log. If the diagnostic sink itself cannot be initialized, there is no current runtime detail record. After that sink is ready, a database-open, Ping, or EXPLAIN failure keeps the Agent offline and the Gateway metadata unchanged, writes recordable private detail to `onprest-agent.log`, and leaves stderr generic.
-
-This makes capability changes fail closed.
-
-## Public Contract Changes
-
-When a public behavior, configuration, deployment procedure, security rule, API, error code, or operational workflow changes, update these docs together with the [Architecture](/architecture) page.
+If the agent was restarted without validation and fails at startup, it stays offline and the gateway keeps reporting `agent_connected: false` until a valid file is in place. Download links from before the restart no longer work.

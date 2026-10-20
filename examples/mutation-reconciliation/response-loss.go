@@ -107,18 +107,29 @@ func loseResponse() error {
 		}
 		defer response.Body.Close()
 		data, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024))
-		var result struct {
-			Count  int `json:"count"`
-			Result struct {
-				IsError    bool `json:"isError"`
-				Structured struct {
+		type businessEnvelope struct {
+			RequestID string `json:"request_id"`
+			Result    struct {
+				Data struct {
 					Count int `json:"count"`
-				} `json:"structuredContent"`
+				} `json:"data"`
+			} `json:"result"`
+		}
+		var result struct {
+			RequestID string `json:"request_id"`
+			Result    struct {
+				Data struct {
+					Count int `json:"count"`
+				} `json:"data"`
+				IsError    bool             `json:"isError"`
+				Structured businessEnvelope `json:"structuredContent"`
 			} `json:"result"`
 			Error json.RawMessage `json:"error"`
 		}
 		decodeErr := json.Unmarshal(data, &result)
-		success := err == nil && decodeErr == nil && response.StatusCode == http.StatusOK && (result.Count == 1 || (r.URL.Path == "/mcp" && len(result.Error) == 0 && !result.Result.IsError && result.Result.Structured.Count == 1))
+		success := err == nil && decodeErr == nil && response.StatusCode == http.StatusOK && len(result.Error) == 0 &&
+			((r.URL.Path != "/mcp" && len(result.RequestID) == 26 && result.Result.Data.Count == 1) ||
+				(r.URL.Path == "/mcp" && !result.Result.IsError && len(result.Result.Structured.RequestID) == 26 && result.Result.Structured.Result.Data.Count == 1))
 		if !success {
 			mu.Lock()
 			failed = true

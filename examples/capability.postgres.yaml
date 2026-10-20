@@ -1,96 +1,53 @@
+schema_version: 1
+
 service:
   title: Example CRM Capabilities
   version: 0.1.0
-  description: Example agent-defined capabilities for a legacy CRM database.
-
-runtime:
-  max_concurrent_requests: 16
 
 gateway:
   url: ws://localhost:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
 
-database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy
-  user: capability_user
-  password: onprest-example-password
-
-logging:
-  max_size: 10MB
-  max_files: 3
-
-defaults:
-  readonly: true
-  timeout: 30s
-  max_rows: 1000
-  max_bytes: 1MB
-  rate_limit:
-    requests: 60
-    per: 1m
-    burst: 10
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: localhost
+      port: 5432
+      name: legacy
+      user: capability_user
+      password: onprest-example-password
 
 capabilities:
   get_customer:
-    description: Fetch one customer by id.
-    sql: select id, name, email from customers where id = :customer_id
-    annotations:
-      read_only: true
-      destructive: false
-      idempotent: true
-      open_world: false
-    examples:
-      - params: {customer_id: 1}
-    params:
-      customer_id:
-        type: integer
-        required: true
-        minimum: 1
-        description: Customer ID.
-    policy:
-      timeout: 3s
-      max_rows: 1
-      max_bytes: 256KB
-      expose_in_openapi: true
-    result:
-      id:
-        type: integer
-        description: Customer ID.
-      name:
-        type: string
-        description: Customer name.
-      email:
-        type: string
-        description: Customer email address.
+    description: Fetch one customer by ID.
+    executor:
+      type: db
+      source: primary
+      sql: select id, name, email from customers where id = :customer_id
+    input:
+      properties:
+        customer_id: {type: integer, minimum: 1}
+      required: [customer_id]
+    policy: {max_rows: 1}
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: integer}
+          name: {type: string}
+          email: {type: string}
+
   update_customer:
     description: Update one customer's name.
-    sql: update customers set name = :name where id = :customer_id
-    annotations:
-      read_only: false
-      destructive: true
-      idempotent: true
-      open_world: false
-    examples:
-      - params:
-          customer_id: 1
-          name: Ada Lovelace
-    params:
-      customer_id:
-        type: integer
-        required: true
-        minimum: 1
-        description: Customer ID.
-      name:
-        type: string
-        required: true
-        minLength: 1
-        maxLength: 200
-        description: New customer name.
-    policy:
-      readonly: false
-      timeout: 3s
-      max_affected_rows: 1
-      max_bytes: 256KB
-      expose_in_openapi: true
+    executor:
+      type: db
+      source: primary
+      sql: update customers set name = :name where id = :customer_id
+    input:
+      properties:
+        customer_id: {type: integer, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 200}
+      required: [customer_id, name]
+    policy: {readonly: false, max_affected_rows: 1}
+    output: {data: {}}

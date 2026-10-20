@@ -6,15 +6,18 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/viewlegacy/onprest/internal/protocol"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -310,7 +313,7 @@ func TestCapabilityEndpointHTTPErrorCases(t *testing.T) {
 		wantCode    string
 		wantMessage string
 	}{
-		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest, wantMessage: "Content-Type must be application/json"},
+		{name: "content-type", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "text/plain", body: `{}`, wantStatus: http.StatusUnsupportedMediaType, wantCode: errGatewayInvalidRequest, wantMessage: "unsupported input media type"},
 		{name: "invalid-json", method: http.MethodPost, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{`, wantStatus: http.StatusBadRequest, wantCode: errGatewayInvalidRequest, wantMessage: "invalid json body"},
 		{name: "method", method: http.MethodGet, path: "/api/v1/capabilities/get_customer", contentType: "application/json", body: `{}`, wantStatus: http.StatusMethodNotAllowed, wantCode: errGatewayMethodNotAllowed, wantMessage: "use POST"},
 		{name: "empty-name", method: http.MethodPost, path: "/api/v1/capabilities/", contentType: "application/json", body: `{}`, wantStatus: http.StatusNotFound, wantCode: errGatewayCapabilityNotFound, wantMessage: "capability not found"},
@@ -372,10 +375,10 @@ func TestRESTAndMCPUseDefaultOneMiBBodyLimit(t *testing.T) {
 	rest.Header.Set("Content-Type", "application/json")
 	restRec := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(restRec, rest)
-	if restRec.Code != http.StatusBadRequest {
+	if restRec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("REST oversized status=%d body=%s", restRec.Code, restRec.Body.String())
 	}
-	assertAPIErrorMessage(t, restRec.Body.Bytes(), errGatewayInvalidRequest, "invalid json body")
+	assertAPIErrorMessage(t, restRec.Body.Bytes(), "LIMIT_EXCEEDED", "invalid request body")
 
 	mcp := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","padding":"`+largeString+`"}`))
 	mcp.Header.Set("Authorization", "Bearer "+apiKey)
@@ -407,10 +410,10 @@ func TestRESTAndMCPApplyConfiguredBodyLimitAtExactBoundary(t *testing.T) {
 	rest.Header.Set("Content-Type", "application/json")
 	restRec = httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(restRec, rest)
-	if restRec.Code != http.StatusBadRequest {
+	if restRec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("REST over-limit status=%d, want 400; body=%s", restRec.Code, restRec.Body.String())
 	}
-	assertAPIErrorMessage(t, restRec.Body.Bytes(), errGatewayInvalidRequest, "invalid json body")
+	assertAPIErrorMessage(t, restRec.Body.Bytes(), "LIMIT_EXCEEDED", "invalid request body")
 
 	mcpBody := paddedJSONObject(t, `{"jsonrpc":"2.0","id":1,"method":"ping","padding":"`, `"}`, int(s.cfg.MaxRequestBodyBytes))
 	mcp := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(mcpBody))
@@ -452,7 +455,7 @@ func TestCapabilityEndpointUsesDirectParamsBody(t *testing.T) {
 		if _, nested := req.Params["params"]; nested {
 			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Message: "nested params are not expected"}}
 		}
-		if id, ok := req.Params["id"].(json.Number); !ok || id.String() != "7" {
+		if id, ok := req.Params["id"].(int64); !ok || strconv.FormatInt(id, 10) != "7" {
 			return agentResponse{ID: req.ID, Error: &wireError{Code: errAgentValidationFailed, Message: "missing direct id"}}
 		}
 		return agentResponse{ID: req.ID, Result: json.RawMessage(agentPayload)}
@@ -467,7 +470,7 @@ func TestCapabilityEndpointUsesDirectParamsBody(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if rec.Body.String() != agentPayload {
+	if !equivalentTestBusiness(t, rec.Body.String(), agentPayload) {
 		t.Fatalf("body = %s, want exact agent payload %s", rec.Body.String(), agentPayload)
 	}
 	entry := lastLogEntry(t, logs)
@@ -505,11 +508,11 @@ func TestAgentErrorCodeAndMessagePassThroughForRESTAndMCPHTTP(t *testing.T) {
 		{errAgentValidationFailed, "id: required param missing", http.StatusBadRequest},
 		{errAgentQueryFailed, "database query failed", http.StatusBadGateway},
 		{errAgentQueryTimeout, "query exceeded policy.timeout", http.StatusGatewayTimeout},
-		{errAgentDBUnreachable, "database is unreachable", http.StatusBadGateway},
+		{errAgentDBUnreachable, "database is unreachable", http.StatusServiceUnavailable},
 		{errAgentInternal, "agent internal error", http.StatusBadGateway},
 		{errAgentRateLimited, "agent rate limit exceeded", http.StatusTooManyRequests},
-		{errAgentAffectedRowsExceeded, "affected rows exceed policy.max_affected_rows", http.StatusConflict},
-		{"AGENT_NEW_PUBLIC_ERROR", "future public message", http.StatusBadGateway},
+		{errAgentAffectedRowsExceeded, "affected rows exceed policy.max_affected_rows", http.StatusUnprocessableEntity},
+		{"APP_NEW_PUBLIC_ERROR", "future public message", http.StatusUnprocessableEntity},
 	}
 	for _, tc := range tests {
 		t.Run("REST "+tc.code, func(t *testing.T) {
@@ -546,7 +549,7 @@ func TestAgentErrorCodeAndMessagePassThroughForRESTAndMCPHTTP(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 			}
 			if tc.code == errGatewayCapabilityNotFound {
-				assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "tool is not defined")
+				assertMCPToolErrorLegacy(t, rec.Body.Bytes(), errGatewayCapabilityNotFound)
 			} else {
 				assertMCPToolError(t, rec.Body.Bytes(), tc.code, tc.message)
 			}
@@ -579,6 +582,7 @@ func TestCapabilityEndpointReturnsGatewayTimeoutWhenAgentDoesNotRespond(t *testi
 	s, _, apiKey := testServer(t)
 	s.cfg.AgentTimeout = time.Millisecond
 	s.agent = &agentConn{conn: silentAgentConn{}, pending: map[string]chan agentResponse{}}
+	seedVersionedTestMetadata(s)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{"id":7}`))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -626,13 +630,14 @@ func TestMCPAcceptsNotificationWithoutResponseBody(t *testing.T) {
 func TestMCPToolCallPreservesInt64ArgumentsAndStructuredContent(t *testing.T) {
 	const boundary = "9007199254740993"
 	s, _, apiKey, cleanup := testServerWithAgent(t, func(req agentRequest) agentResponse {
-		id, ok := req.Params["id"].(json.Number)
-		if !ok || id.String() != boundary {
+		id, ok := req.Params["id"].(int64)
+		if !ok || strconv.FormatInt(id, 10) != boundary {
 			t.Errorf("agent param id = %#v (%T), want json.Number(%s)", req.Params["id"], req.Params["id"], boundary)
 		}
 		return agentResponse{ID: req.ID, Result: json.RawMessage(`{"data":[{"id":` + boundary + `}],"count":1}`)}
 	})
 	defer cleanup()
+	setVersionedTestKind(s, "get_customer", responseKindMutation)
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{"id":`+boundary+`}}}`))
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -651,10 +656,10 @@ func TestMCPToolCallPreservesInt64ArgumentsAndStructuredContent(t *testing.T) {
 	decodeMCPJSONUseNumber(t, []byte(response.Result.Content[0].Text), &textValue)
 	requireMCPStructuredObject(t, response.Result.StructuredContent)
 	decodeMCPJSONUseNumber(t, response.Result.StructuredContent, &structuredValue)
-	want := map[string]any{
+	want := expectedTestEnvelope(t, response.Result.Content[0].Text, map[string]any{
 		"data":  []any{map[string]any{"id": json.Number(boundary)}},
 		"count": json.Number("1"),
-	}
+	})
 	if !reflect.DeepEqual(textValue, want) || !reflect.DeepEqual(structuredValue, want) || !reflect.DeepEqual(textValue, structuredValue) {
 		t.Fatalf("MCP response lost int64 precision: text=%#v structured=%#v want=%#v", textValue, structuredValue, want)
 	}
@@ -771,6 +776,7 @@ func TestMCPToolsCallUsesAgentResultAsContentAndStructuredContent(t *testing.T) 
 	decodeMCPJSONUseNumber(t, response.Result.StructuredContent, &structuredValue)
 	var want any
 	decodeMCPJSONUseNumber(t, []byte(agentPayload), &want)
+	want = expectedTestEnvelope(t, response.Result.Content[0].Text, want.(map[string]any))
 	if !reflect.DeepEqual(textValue, want) || !reflect.DeepEqual(structuredValue, want) || !reflect.DeepEqual(textValue, structuredValue) {
 		t.Fatalf("content=%#v structuredContent=%#v want=%#v", textValue, structuredValue, want)
 	}
@@ -812,7 +818,7 @@ func TestMCPToolsCallInvalidDeniedAndUnknown(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
 		}
-		assertMCPErrorMessage(t, rec.Body.Bytes(), -32602, errJSONRPCInvalidParams, "tool is not defined")
+		assertMCPToolErrorLegacy(t, rec.Body.Bytes(), errGatewayCapabilityNotFound)
 	})
 }
 
@@ -958,8 +964,8 @@ func TestCapabilityErrorsAreAccessLoggedWithoutSensitiveData(t *testing.T) {
 
 	s.httpSrv.Handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnsupportedMediaType)
 	}
 	entry := lastLogEntry(t, logs)
 	if entry["event"] != "request" {
@@ -968,11 +974,11 @@ func TestCapabilityErrorsAreAccessLoggedWithoutSensitiveData(t *testing.T) {
 	if entry["capability"] != "get_customer" || entry["api_key_name"] != "dev" {
 		t.Fatalf("unexpected access log: %#v", entry)
 	}
-	if entry["http_status"] != float64(http.StatusBadRequest) || entry["error_code"] != errGatewayInvalidRequest {
+	if entry["http_status"] != float64(http.StatusUnsupportedMediaType) || entry["error_code"] != errGatewayInvalidRequest {
 		t.Fatalf("unexpected access log status/code: %#v", entry)
 	}
-	if entry["error_message"] != "Content-Type must be application/json" {
-		t.Fatalf("error_message = %#v, want Content-Type must be application/json", entry["error_message"])
+	if entry["error_message"] != "unsupported input media type" {
+		t.Fatalf("error_message = %#v, want unsupported input media type", entry["error_message"])
 	}
 	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "password") {
 		t.Fatalf("access log leaked request params: %s", logs.String())
@@ -1110,11 +1116,11 @@ func TestAgentErrorStatusMapping(t *testing.T) {
 		{errAgentValidationFailed, http.StatusBadRequest, errAgentValidationFailed},
 		{errAgentQueryFailed, http.StatusBadGateway, errAgentQueryFailed},
 		{errAgentQueryTimeout, http.StatusGatewayTimeout, errAgentQueryTimeout},
-		{errAgentDBUnreachable, http.StatusBadGateway, errAgentDBUnreachable},
+		{errAgentDBUnreachable, http.StatusServiceUnavailable, errAgentDBUnreachable},
 		{errAgentInternal, http.StatusBadGateway, errAgentInternal},
 		{errAgentRateLimited, http.StatusTooManyRequests, errAgentRateLimited},
 		{errAgentConstraintViolation, http.StatusConflict, errAgentConstraintViolation},
-		{errAgentAffectedRowsExceeded, http.StatusConflict, errAgentAffectedRowsExceeded},
+		{errAgentAffectedRowsExceeded, http.StatusUnprocessableEntity, errAgentAffectedRowsExceeded},
 		{errAgentTransactionOutcomeUnknown, http.StatusBadGateway, errAgentTransactionOutcomeUnknown},
 		{"UNKNOWN", http.StatusBadGateway, "UNKNOWN"},
 	}
@@ -1189,6 +1195,7 @@ func TestAgentWebSocketHTTPErrorMessages(t *testing.T) {
 	t.Run("invalid signature", func(t *testing.T) {
 		s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
 		req := httptest.NewRequest(http.MethodGet, "/ws/agent", nil)
+		req.Header.Set(protocol.MajorHeader, protocol.Major)
 		rec := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -1212,7 +1219,12 @@ func TestAgentWebSocketHTTPErrorMessages(t *testing.T) {
 func testServer(t *testing.T) (*Server, *bytes.Buffer, string) {
 	t.Helper()
 	apiKey := "test-api-key"
-	hash, err := hashSecret(apiKey)
+	// Requests still authenticate through bcrypt, but at the minimum cost: a
+	// default-cost comparison takes about 0.8s under the race detector and
+	// would consume the short client deadlines of timing tests built on this
+	// server. Production CLI hashing (hashSecret) is unchanged.
+	hashBytes, err := bcrypt.GenerateFromPassword([]byte(apiKey), bcrypt.MinCost)
+	hash := string(hashBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1237,6 +1249,7 @@ func testServerWithAgent(t *testing.T, handler func(agentRequest) agentResponse)
 	fake := &fakeAgentConn{s: s, handler: handler}
 	ac.conn = fake
 	s.agent = ac
+	seedVersionedTestMetadata(s)
 	cleanup := func() {
 		s.agentMu.Lock()
 		s.agent = nil
@@ -1274,6 +1287,7 @@ func (f *fakeAgentConn) WriteText(msg []byte) error {
 	} else if req.Capability == "meta" {
 		resp.Result = json.RawMessage(`{"data":{"openapi":"3.1.0","paths":{}}}`)
 	}
+	resp = versionedTestResponse(req, resp)
 	go func() {
 		f.s.agentMu.RLock()
 		ac := f.s.agent
@@ -1341,7 +1355,7 @@ func assertMCPErrorMessage(t *testing.T, body []byte, wantRPC int, wantApp, want
 func assertMCPToolError(t *testing.T, body []byte, wantCode, wantMessage string) {
 	t.Helper()
 	got := decodeMCPToolCallEnvelope(t, body)
-	if !got.Result.IsError || got.Result.Content[0].Text != wantMessage {
+	if !got.Result.IsError || testEnvelopeErrorMessage(t, got.Result.Content[0].Text) != wantMessage {
 		t.Fatalf("MCP tool error mismatch; body=%s", string(body))
 	}
 	requireMCPStructuredObject(t, got.Result.StructuredContent)
@@ -1392,6 +1406,7 @@ func signedAgentRequest(t *testing.T, s *Server, path string, ts time.Time, nonc
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.Header = signedAgentHeaders(t, s, path, ts, nonce)
+	req.Header.Set(protocol.MajorHeader, protocol.Major)
 	return req
 }
 
@@ -1478,4 +1493,109 @@ func assertOpenAPIGatewayMetadata(t *testing.T, doc map[string]any, wantServerUR
 	if !ok || apiKey["type"] != "apiKey" || apiKey["in"] != "header" || apiKey["name"] != "X-API-Key" {
 		t.Fatalf("apiKeyAuth = %#v", schemes["apiKeyAuth"])
 	}
+}
+
+func TestVersionedAgentHandshakeRequiresMajor(t *testing.T) {
+	for _, values := range [][]string{nil, {"0"}, {"2"}, {"1", "1"}, {"1, 1"}} {
+		s := NewServer(Config{AgentPublicKey: testAgentPublicKey}, nil)
+		req := httptest.NewRequest(http.MethodGet, "/ws/agent", nil)
+		for _, v := range values {
+			req.Header.Add(protocol.MajorHeader, v)
+		}
+		rec := httptest.NewRecorder()
+		s.httpSrv.Handler.ServeHTTP(rec, req)
+		if rec.Code != 400 {
+			t.Fatalf("values=%v status=%d", values, rec.Code)
+		}
+		var body struct {
+			RequestID string `json:"request_id"`
+			Error     struct {
+				Code    string `json:"code"`
+				Outcome string `json:"outcome"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || len(body.RequestID) != 26 || body.Error.Code != "INVALID_REQUEST" || body.Error.Outcome != "not_started" {
+			t.Fatalf("handshake error=%s err=%v", rec.Body.String(), err)
+		}
+	}
+}
+
+func TestVersionedAgentWebSocketRejectsUnknownNestedFields(t *testing.T) {
+	for _, kind := range []string{"metrics", "error"} {
+		t.Run(kind, func(t *testing.T) {
+			s, _, _ := testServer(t)
+			httpServer := httptest.NewServer(s.httpSrv.Handler)
+			defer httpServer.Close()
+			conn := dialSignedTestAgent(t, "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/agent", "strict-agent")
+			defer conn.Close()
+			metaMessage, err := conn.ReadText()
+			var metaRequest agentRequest
+			if err != nil || json.Unmarshal(metaMessage, &metaRequest) != nil || metaRequest.Capability != "meta" {
+				t.Fatal("missing metadata request")
+			}
+			meta := versionedTestResponse(metaRequest, agentResponse{ID: metaRequest.ID, Result: json.RawMessage(`{"data":{"openapi":"3.1.0","paths":{"/api/v1/capabilities/get_customer":{"post":{}}}}}`)})
+			if err := conn.WriteText(protocol.MustJSON(meta)); err != nil {
+				t.Fatal(err)
+			}
+			waitForCondition(t, time.Second, func() bool { s.agentMu.RLock(); defer s.agentMu.RUnlock(); return s.openapi != nil }, "metadata cache")
+			result := make(chan agentCallResult, 1)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			go func() { result <- s.callAgent(ctx, "get_customer", nil) }()
+			var req agentRequest
+			for {
+				msg, err := conn.ReadText()
+				if err != nil || json.Unmarshal(msg, &req) != nil {
+					t.Fatalf("read request: %v", err)
+				}
+				if req.Capability != "meta" {
+					break
+				}
+				meta := versionedTestResponse(req, agentResponse{ID: req.ID, Result: json.RawMessage(`{"data":{"openapi":"3.1.0","paths":{}}}`)})
+				if err := conn.WriteText(protocol.MustJSON(meta)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bad := versionedTestResponse(req, agentResponse{ID: req.ID, Result: json.RawMessage(`{"rows":[{"private":"REJECTED_SENTINEL"}],"count":1}`)})
+			raw := string(protocol.MustJSON(bad))
+			if kind == "metrics" {
+				raw = strings.Replace(raw, `"metrics":{`, `"metrics":{"unknown_metric":1,`, 1)
+			} else {
+				raw = string(protocol.MustJSON(map[string]any{"type": "error", "id": req.ID, "error": map[string]any{"code": "VALIDATION_FAILED", "message": "REJECTED_SENTINEL", "outcome": "not_started", "detail": "private"}}))
+			}
+			if err := conn.WriteText([]byte(raw)); err != nil {
+				t.Fatal(err)
+			}
+			good := versionedTestResponse(req, agentResponse{ID: req.ID, Result: json.RawMessage(`{"rows":[],"count":0}`)})
+			if err := conn.WriteText(protocol.MustJSON(good)); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-result:
+				if got.Failure != nil || strings.Contains(string(got.Payload), "REJECTED_SENTINEL") || !strings.Contains(string(got.Payload), `"count":0`) {
+					t.Fatalf("invalid nested frame was forwarded: %+v", got)
+				}
+			case <-ctx.Done():
+				t.Fatal("valid follow-up frame did not complete the pending call")
+			}
+		})
+	}
+}
+
+func (conn silentAgentConn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return conn.WriteTextWithDeadline(payload, timeout)
+}
+
+func (f *fakeAgentConn) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return f.WriteTextWithDeadline(payload, timeout)
 }

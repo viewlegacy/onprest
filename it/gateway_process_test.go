@@ -74,10 +74,11 @@ func TestGatewayProcessAppliesEnvRequestBodyLimit(t *testing.T) {
 	if status, body := postCapability(t, baseURL, secrets.APIKey, "offline_capability", restExactBody); status != http.StatusServiceUnavailable {
 		t.Fatalf("REST exact-limit status=%d, want 503 proving request parsing passed; body=%s", status, body)
 	}
-	if status, body := postCapability(t, baseURL, secrets.APIKey, "offline_capability", restExactBody+" "); status != http.StatusBadRequest {
-		t.Fatalf("REST over-limit status=%d, want 400; body=%s", status, body)
+	if status, body := postCapability(t, baseURL, secrets.APIKey, "offline_capability", restExactBody+" "); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("REST over-limit status=%d, want 413; body=%s", status, body)
 	} else {
-		requireAPIErrorCode(t, body, "GATEWAY_INVALID_REQUEST")
+		requireAPIErrorCode(t, body, "LIMIT_EXCEEDED")
+		requireAPIErrorOutcome(t, body, "not_started")
 	}
 
 	prefix := `{"jsonrpc":"2.0","id":1,"method":"ping","padding":"`
@@ -103,6 +104,25 @@ func TestGatewayReturnsTimeoutWhenConnectedAgentDoesNotRespond(t *testing.T) {
 
 	conn := dialManualAgent(t, "ws://"+addr+"/ws/agent", secrets.PrivateKey)
 	defer conn.Close()
+	// Business calls require ready metadata; its execution_timeout is the call
+	// budget, so the Agent answers meta and then never answers the request.
+	serveMetaOnceWithExecutionTimeout(t, conn, openAPIDocFor("echo_customer"), "300ms")
+	waitForHTTP(t, baseURL+"/openapi.json", secrets.APIKey, http.StatusOK)
+
+	type clientResult struct {
+		status int
+		body   []byte
+		err    error
+	}
+	done := make(chan clientResult, 1)
+	go func() {
+		status, body, err := postCapabilityEnvelopeRequest(baseURL, secrets.APIKey, "echo_customer", `{"id":1}`)
+		done <- clientResult{status: status, body: body, err: err}
+	}()
+	req := readAgentRequest(t, conn, "echo_customer")
+	if req.Params["id"] != float64(1) {
+		t.Fatalf("agent request params = %#v", req.Params)
+	}
 	go func() {
 		for {
 			if _, err := conn.ReadText(); err != nil {
@@ -111,12 +131,17 @@ func TestGatewayReturnsTimeoutWhenConnectedAgentDoesNotRespond(t *testing.T) {
 		}
 	}()
 
-	waitForAgentConnected(t, baseURL)
-	status, body := postCapability(t, baseURL, secrets.APIKey, "echo_customer", `{"id":1}`)
-	if status != http.StatusGatewayTimeout {
-		t.Fatalf("status = %d, want %d; body=%s", status, http.StatusGatewayTimeout, string(body))
+	var result clientResult
+	select {
+	case result = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("REST call did not finish after the advertised execution timeout")
 	}
-	requireAPIErrorCode(t, body, "GATEWAY_TIMEOUT")
+	if result.err != nil || result.status != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d; body=%s err=%v", result.status, http.StatusGatewayTimeout, string(result.body), result.err)
+	}
+	requireAPIErrorCode(t, result.body, "EXECUTION_TIMEOUT")
+	requireAPIErrorOutcome(t, result.body, "unknown")
 }
 
 func TestGatewayRejectsDuplicateAgentAndAcceptsReconnect(t *testing.T) {

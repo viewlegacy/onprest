@@ -1,34 +1,53 @@
+schema_version: 1
 service:
   title: Service lifecycle test
 gateway:
   url: ws://127.0.0.1:18080/ws/agent
   agent_private_key: PRIVATE_KEY
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: postgres
-  user: postgres
-  password: onprest
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: 127.0.0.1
+      port: 5432
+      name: postgres
+      user: postgres
+      password: onprest
 logging:
   max_size: 1B
   max_files: 2
 capabilities:
   runtime_marker_a:
-    sql: select :runtime_marker_a as value
-    params:
-      runtime_marker_a: {type: string, required: true}
+    executor:
+      type: db
+      source: primary
+      sql: select :runtime_marker_a as value
+    input:
+      properties:
+        runtime_marker_a: {type: string}
+      required: [runtime_marker_a]
     policy:
       readonly: true
-    result:
-      value:
-        type: string
+    output:
+      data: {}
+      items:
+        properties:
+          value:
+            type: string
   runtime_marker_b:
-    sql: select :runtime_marker_b as value
-    params:
-      runtime_marker_b: {type: string, required: true}
+    executor:
+      type: db
+      source: primary
+      sql: select :runtime_marker_b as value
+    input:
+      properties:
+        runtime_marker_b: {type: string}
+      required: [runtime_marker_b]
     policy:
       readonly: true
-    result:
-      value:
-        type: string
+    output:
+      data: {}
+      items:
+        properties:
+          value:
+            type: string

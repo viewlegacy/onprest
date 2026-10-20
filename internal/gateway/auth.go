@@ -25,7 +25,7 @@ const (
 
 func (s *Server) handleAgentChallenge(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
+		writeJSON(w, http.StatusMethodNotAllowed, requestAPIError(r, errGatewayMethodNotAllowed, "use POST"))
 		return
 	}
 	if !emptyAgentAuthBody(w, r) {
@@ -33,7 +33,7 @@ func (s *Server) handleAgentChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiError(errGatewayInternal, "unexpected gateway error"))
+		writeJSON(w, http.StatusInternalServerError, requestAPIError(r, errGatewayInternal, "unexpected gateway error"))
 		return
 	}
 	challenge := base64.RawURLEncoding.EncodeToString(raw[:])
@@ -51,14 +51,14 @@ func (s *Server) handleAgentChallenge(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAgentVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
+		writeJSON(w, http.StatusMethodNotAllowed, requestAPIError(r, errGatewayMethodNotAllowed, "use POST"))
 		return
 	}
 	if !emptyAgentAuthBody(w, r) {
 		return
 	}
 	if !s.authenticateAgentVerify(r) {
-		writeJSON(w, http.StatusUnauthorized, apiError(errGatewayAuthFailed, "invalid agent signature"))
+		writeJSON(w, http.StatusUnauthorized, requestAPIError(r, errGatewayAuthFailed, "invalid agent signature"))
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -68,24 +68,24 @@ func (s *Server) handleAgentVerify(w http.ResponseWriter, r *http.Request) {
 func emptyAgentAuthBody(w http.ResponseWriter, r *http.Request) bool {
 	if r.Body == nil || r.Body == http.NoBody {
 		if r.ContentLength > 0 {
-			writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+			writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "request body must be empty"))
 			return false
 		}
 		return true
 	}
 	if r.ContentLength > 0 {
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "request body must be empty"))
 		return false
 	}
 	body := http.MaxBytesReader(w, r.Body, 1)
 	var one [1]byte
 	n, err := body.Read(one[:])
 	if n != 0 || (err != nil && err != io.EOF) {
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "request body must be empty"))
 		return false
 	}
 	if err != io.EOF {
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "request body must be empty"))
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "request body must be empty"))
 		return false
 	}
 	return true
@@ -199,7 +199,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (APIKey, i
 		token = r.Header.Get("X-API-Key")
 	}
 	if token == "" {
-		writeJSON(w, http.StatusUnauthorized, apiError(errGatewayAuthFailed, "invalid api key"))
+		writeJSON(w, http.StatusUnauthorized, commonAPIError(authRequestID(r), errGatewayAuthFailed, "invalid api key", "not_started"))
 		return APIKey{}, http.StatusUnauthorized
 	}
 	digest := sha256.Sum256([]byte(token))
@@ -210,7 +210,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (APIKey, i
 	case s.apiKeyAuthSlots <- struct{}{}:
 		defer func() { <-s.apiKeyAuthSlots }()
 	default:
-		writeJSON(w, http.StatusTooManyRequests, apiError(errGatewayRateLimited, "authentication is busy; retry later"))
+		writeJSON(w, http.StatusTooManyRequests, commonAPIError(authRequestID(r), errGatewayRateLimited, "authentication is busy; retry later", "not_started"))
 		return APIKey{}, http.StatusTooManyRequests
 	}
 	// Recheck after acquiring a slot because another request may have populated
@@ -224,7 +224,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (APIKey, i
 			return key, 0
 		}
 	}
-	writeJSON(w, http.StatusUnauthorized, apiError(errGatewayAuthFailed, "invalid api key"))
+	writeJSON(w, http.StatusUnauthorized, commonAPIError(authRequestID(r), errGatewayAuthFailed, "invalid api key", "not_started"))
 	return APIKey{}, http.StatusUnauthorized
 }
 
@@ -271,4 +271,12 @@ func allowed(key APIKey, cap string) bool {
 		}
 	}
 	return false
+}
+
+func authRequestID(r *http.Request) string {
+	identity, _ := r.Context().Value(callIdentityKey{}).(callIdentity)
+	if identity.ID != "" {
+		return identity.ID
+	}
+	return newID()
 }

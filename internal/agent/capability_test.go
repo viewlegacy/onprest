@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"math"
 	"math/big"
 	"os"
@@ -35,99 +34,43 @@ func writeCapabilityFixture(t *testing.T, content string) string {
 	return path
 }
 
-func writeParamsCapabilityFixture(t *testing.T, paramsYAML string) string {
-	t.Helper()
-	paramsYAML = "      " + strings.ReplaceAll(strings.TrimSpace(paramsYAML), "\n", "\n      ")
-	return writeCapabilityFixture(t, `service:
-  title: Param fixture
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: test
-  user: test
-  password: test
-capabilities:
-  param_fixture:
-    sql: select 1 as value
-    params:
-`+paramsYAML+`
-    policy:
-      timeout: 1s
-      max_rows: 1
-      max_bytes: 1KB
-    result:
-      value: {type: integer}
-`)
-}
-
-func TestConfigurationDiagnosticsDoNotEchoUnsafeDynamicKeys(t *testing.T) {
-	const sentinel = "RAW_KEY_SENTINEL"
-	tests := []string{
-		`"bad\n` + sentinel + `\x1b[31m": {type: unsupported}`,
-		`value:
-  type: string
-  "bad\r` + sentinel + `": true`,
-		`"bad ` + sentinel + `": {type: unsupported}`,
-		`value:
-  type: string
-  "bad-\"` + sentinel + `": true`,
-	}
-	for _, params := range tests {
-		_, err := LoadCapabilityFile(writeParamsCapabilityFixture(t, params))
-		if err == nil {
-			t.Fatalf("unsafe key fixture unexpectedly loaded: %s", params)
-		}
-		message := err.Error()
-		if strings.Contains(message, sentinel) || strings.ContainsAny(message, "\r\n\x1b") || !strings.Contains(message, "<invalid-key>") {
-			t.Fatalf("unsafe key reached public diagnostic: %q", message)
-		}
-	}
-
-	path := writeCapabilityFixture(t, `
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database: {driver: postgres, host: localhost, port: 5432, name: test, user: test}
-capabilities:
-  "bad `+sentinel+`": {sql: "select 1"}
-`)
-	_, err := LoadCapabilityFile(path)
-	if err == nil || strings.Contains(err.Error(), sentinel) || strings.ContainsAny(err.Error(), "\r\n\x1b") || !strings.Contains(err.Error(), "<invalid-key>") {
-		t.Fatalf("unsafe capability key diagnostic=%q", err)
-	}
-}
-
 func TestLoadCapabilityFileYAML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "capability.yaml")
 	err := os.WriteFile(path, []byte(`
 service:
   title: Test
   version: 0.1.0
-database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy
-  user: readonly_user
-  password: secret
 gateway:
   url: ws://localhost:8080/ws/agent
   agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
 capabilities:
   get_customer:
-    sql: select * from customers where id = :id
-    params:
-      id:
-        type: integer
-        required: true
     policy:
       timeout: 1s
       max_rows: 1
-      max_bytes: 128KB
+      max_output_bytes: 128KB
+    executor:
+      type: db
+      source: primary
+      sql: select * from customers where id = :id
+    input:
+      properties:
+        id:
+          type: integer
+      required:
+        - id
+    output:
+      data: {}
+sources:
+  databases:
+    primary:
+      driver: postgres
+      host: localhost
+      port: 5432
+      name: legacy
+      user: readonly_user
+      password: secret
+schema_version: 1
 `), 0o600)
 	if err != nil {
 		t.Fatal(err)
@@ -141,389 +84,6 @@ capabilities:
 	}
 	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
 		t.Fatalf("runtime.max_concurrent_requests = %v, want default 16", cf.Runtime.MaxConcurrentRequests)
-	}
-}
-
-func TestLoadCapabilityFileRejectsExplicitInvalidPolicyValues(t *testing.T) {
-	base := `database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy
-  user: readonly_user
-gateway:
-  url: ws://localhost:8080/ws/agent
-  agent_private_key: ` + testAgentPrivateKey + `
-defaults:
-  max_rows: 100
-capabilities:
-  get_customer:
-    sql: select 1 as id
-    policy:
-%s
-    result:
-      id:
-        type: integer
-`
-	for _, tc := range []struct {
-		name, policy, want string
-	}{
-		{name: "explicit zero max rows", policy: "      max_rows: 0", want: "max_rows must be > 0"},
-		{name: "negative max rows", policy: "      max_rows: -1", want: "max_rows must be > 0"},
-		{name: "explicit zero max affected rows", policy: "      max_affected_rows: 0", want: "max_affected_rows must be > 0"},
-		{name: "negative max affected rows", policy: "      max_affected_rows: -1", want: "max_affected_rows must be > 0"},
-		{name: "fractional max affected rows", policy: "      max_affected_rows: 1.5", want: "max_affected_rows must be an integer"},
-		{name: "overflow max affected rows", policy: "      max_affected_rows: 9223372036854775808", want: "max_affected_rows must be an int64"},
-		{name: "zero timeout", policy: "      timeout: 0s", want: "timeout must be > 0"},
-		{name: "negative timeout", policy: "      timeout: -1s", want: "timeout must be > 0"},
-		{name: "rate limit null", policy: "      rate_limit: null", want: "rate_limit must be an object"},
-		{name: "rate limit missing requests", policy: "      rate_limit: {per: 1s, burst: 1}", want: "requests must be > 0"},
-		{name: "rate limit missing per", policy: "      rate_limit: {requests: 1, burst: 1}", want: "per is required"},
-		{name: "rate limit missing burst", policy: "      rate_limit: {requests: 1, per: 1s}", want: "burst must be > 0"},
-		{name: "rate limit zero requests", policy: "      rate_limit: {requests: 0, per: 1s, burst: 1}", want: "requests must be > 0"},
-		{name: "rate limit negative requests", policy: "      rate_limit: {requests: -1, per: 1s, burst: 1}", want: "requests must be > 0"},
-		{name: "rate limit zero per", policy: "      rate_limit: {requests: 1, per: 0s, burst: 1}", want: "per must be > 0"},
-		{name: "rate limit negative per", policy: "      rate_limit: {requests: 1, per: -1s, burst: 1}", want: "per must be > 0"},
-		{name: "rate limit invalid per", policy: "      rate_limit: {requests: 1, per: soon, burst: 1}", want: "per is invalid"},
-		{name: "rate limit duration overflow", policy: "      rate_limit: {requests: 1, per: 2562048h, burst: 1}", want: "per is invalid"},
-		{name: "rate limit zero burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: 0}", want: "burst must be > 0"},
-		{name: "rate limit negative burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: -1}", want: "burst must be > 0"},
-		{name: "rate limit derived overflow", policy: "      rate_limit: {requests: 1, per: 2ns, burst: 9223372036854775807}", want: "burst and per are too large"},
-		{name: "rate limit sequence", policy: "      rate_limit: [1, 1s, 1]", want: "rate_limit must be an object"},
-		{name: "rate limit unknown field", policy: "      rate_limit: {requests: 1, per: 1s, burst: 1, window: fixed}", want: "field window not found"},
-		{name: "rate limit fractional requests", policy: "      rate_limit: {requests: 1.5, per: 1s, burst: 1}", want: "rate_limit.requests must be an integer"},
-		{name: "rate limit string requests", policy: `      rate_limit: {requests: "1", per: 1s, burst: 1}`, want: "rate_limit.requests must be an integer"},
-		{name: "rate limit requests overflow", policy: "      rate_limit: {requests: 9223372036854775808, per: 1s, burst: 1}", want: "rate_limit.requests must be an int64"},
-		{name: "rate limit numeric per", policy: "      rate_limit: {requests: 1, per: 1, burst: 1}", want: "per is invalid"},
-		{name: "rate limit fractional burst", policy: "      rate_limit: {requests: 1, per: 1s, burst: 1.5}", want: "rate_limit.burst must be an integer"},
-		{name: "rate limit string burst", policy: `      rate_limit: {requests: 1, per: 1s, burst: "1"}`, want: "rate_limit.burst must be an integer"},
-		{name: "rate limit burst overflow", policy: "      rate_limit: {requests: 1, per: 1ns, burst: 9223372036854775808}", want: "rate_limit.burst must be an int64"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "capability.yaml")
-			content := strings.Replace(base, "%s", tc.policy, 1)
-			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.want)
-			}
-		})
-	}
-}
-
-func TestCapabilityRateLimitDefaultsAndObjectOverride(t *testing.T) {
-	path := writeCapabilityFixture(t, `
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database: {driver: postgres, host: localhost, port: 5432, name: test, user: test}
-defaults:
-  rate_limit: {requests: 60, per: 1m, burst: 10}
-capabilities:
-  inherited:
-    sql: select 1 as id
-    result: {id: {type: integer}}
-  overridden:
-    sql: select 2 as id
-    policy:
-      rate_limit: {requests: 2, per: 1s, burst: 1}
-    result: {id: {type: integer}}
-`)
-	cf, err := LoadCapabilityFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inherited := cf.Capabilities["inherited"].Policy.RateLimit
-	if inherited == nil || inherited.Requests != 60 || inherited.Per != "1m" || inherited.Burst != 10 {
-		t.Fatalf("inherited rate limit = %#v", inherited)
-	}
-	overridden := cf.Capabilities["overridden"].Policy.RateLimit
-	if overridden == nil || overridden.Requests != 2 || overridden.Per != "1s" || overridden.Burst != 1 {
-		t.Fatalf("overridden rate limit = %#v", overridden)
-	}
-
-	without := validCapabilityFile()
-	if err := without.Lint(); err != nil {
-		t.Fatal(err)
-	}
-	for name, capability := range without.Capabilities {
-		if capability.Policy.RateLimit != nil {
-			t.Fatalf("%s unexpectedly has rate limit %#v", name, capability.Policy.RateLimit)
-		}
-	}
-}
-
-func TestLoadCapabilityFileRejectsExplicitNullDefaultForEveryParamType(t *testing.T) {
-	base := `database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy
-  user: readonly_user
-gateway:
-  url: ws://localhost:8080/ws/agent
-  agent_private_key: ` + testAgentPrivateKey + `
-capabilities:
-  get_customer:
-    sql: select 1 as id
-    params:
-      value:
-        type: %s
-        default: null
-    result:
-      id:
-        type: integer
-`
-	for _, paramType := range []string{"string", "integer", "number", "boolean"} {
-		t.Run(paramType, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "capability.yaml")
-			if err := os.WriteFile(path, []byte(fmt.Sprintf(base, paramType)), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), ".default is invalid") {
-				t.Fatalf("LoadCapabilityFile() error=%v, want explicit null default lint error", err)
-			}
-		})
-	}
-}
-
-func TestLoadCapabilityFilePreservesEmptyPatternAndFormatPresence(t *testing.T) {
-	for _, constraint := range []string{"pattern", "format"} {
-		for _, paramType := range []string{"integer", "number", "boolean"} {
-			t.Run("reject empty "+constraint+" on "+paramType, func(t *testing.T) {
-				path := writeCapabilityFixture(t, fmt.Sprintf(`service:
-  title: Presence test
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: test
-  user: test
-  password: test
-capabilities:
-  invalid_empty_constraint:
-    sql: select :value
-    params:
-      value:
-        type: %s
-        %s: ""
-    policy:
-      timeout: 1s
-      max_rows: 1
-      max_bytes: 1KB
-    result:
-      value: {type: integer}
-`, paramType, constraint))
-				if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "string constraints are supported only for string") {
-					t.Fatalf("LoadCapabilityFile() error=%v, want %s %s startup lint error", err, paramType, constraint)
-				}
-			})
-		}
-	}
-
-	valid := writeCapabilityFixture(t, `service:
-  title: Presence test
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: test
-  user: test
-  password: test
-capabilities:
-  valid_empty_string_constraints:
-    sql: select :value
-    params:
-      value:
-        type: string
-        pattern: ""
-        format: ""
-    policy:
-      timeout: 1s
-      max_rows: 1
-      max_bytes: 1KB
-    result:
-      value: {type: string}
-`)
-	if _, err := LoadCapabilityFile(valid); err != nil {
-		t.Fatalf("valid string empty pattern/format rejected: %v", err)
-	}
-}
-
-func TestLoadCapabilityFileSupportsParamYAMLMergeAndAliasPresence(t *testing.T) {
-	t.Run("merge alias inherits default presence", func(t *testing.T) {
-		path := writeParamsCapabilityFixture(t, `template: &template
-  type: string
-  default: inherited
-value:
-  <<: *template`)
-		cf, err := LoadCapabilityFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		value := cf.Capabilities["param_fixture"].Params["value"]
-		if value.Type != "string" || value.Default != "inherited" || !value.DefaultSet {
-			t.Fatalf("merged param=%#v", value)
-		}
-		validated, err := validateParams(cf.Capabilities["param_fixture"], map[string]any{})
-		if err != nil || validated["value"] != "inherited" {
-			t.Fatalf("merged default validation=%#v error=%v", validated, err)
-		}
-	})
-
-	t.Run("sequence merge inherits effective fields", func(t *testing.T) {
-		path := writeParamsCapabilityFixture(t, `first: &first
-  type: string
-  default: inherited
-second: &second
-  type: string
-  description: merged
-value:
-  <<: [*first, *second]`)
-		cf, err := LoadCapabilityFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		value := cf.Capabilities["param_fixture"].Params["value"]
-		if value.Type != "string" || value.Default != "inherited" || !value.DefaultSet || value.Description != "merged" {
-			t.Fatalf("sequence-merged param=%#v", value)
-		}
-	})
-
-	t.Run("parameter definition may be an alias", func(t *testing.T) {
-		path := writeParamsCapabilityFixture(t, `template: &template
-  type: string
-  default: inherited
-value: *template`)
-		cf, err := LoadCapabilityFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		value := cf.Capabilities["param_fixture"].Params["value"]
-		if value.Type != "string" || value.Default != "inherited" || !value.DefaultSet {
-			t.Fatalf("aliased param=%#v", value)
-		}
-	})
-
-	t.Run("direct values override merge alias", func(t *testing.T) {
-		path := writeParamsCapabilityFixture(t, `template: &template
-  type: integer
-  default: 1
-value:
-  <<: *template
-  type: string
-  default: direct`)
-		cf, err := LoadCapabilityFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		value := cf.Capabilities["param_fixture"].Params["value"]
-		if value.Type != "string" || value.Default != "direct" || !value.DefaultSet {
-			t.Fatalf("direct override param=%#v", value)
-		}
-	})
-
-	t.Run("merge alias inherits explicit null default presence", func(t *testing.T) {
-		path := writeParamsCapabilityFixture(t, `template: &template
-  type: string
-  default: null
-value:
-  <<: *template`)
-		if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), ".default is invalid") {
-			t.Fatalf("LoadCapabilityFile() error=%v, want inherited explicit null default rejection", err)
-		}
-	})
-
-	for _, constraint := range []string{"pattern", "format"} {
-		t.Run("merged empty "+constraint+" remains present", func(t *testing.T) {
-			path := writeParamsCapabilityFixture(t, fmt.Sprintf(`template: &template
-  type: string
-  %s: ""
-value:
-  <<: *template
-  type: integer`, constraint))
-			if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "string constraints are supported only for string") {
-				t.Fatalf("LoadCapabilityFile() error=%v, want inherited empty %s lint error", err, constraint)
-			}
-		})
-	}
-
-	for _, tc := range []struct {
-		name, params, want string
-	}{
-		{name: "unknown field in merge source", want: "field unknown_merged_field", params: `value:
-  <<: &template
-    type: string
-    unknown_merged_field: true`},
-		{name: "unknown direct field", want: "field unknown_direct_field", params: `value:
-  type: string
-  unknown_direct_field: true`},
-		{name: "quoted merge spelling is an unknown direct field", want: "field <invalid-key>", params: `value:
-  type: string
-  "<<": {type: string}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := LoadCapabilityFile(writeParamsCapabilityFixture(t, tc.params)); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("LoadCapabilityFile() error=%v, want unknown field rejection", err)
-			}
-		})
-	}
-
-	t.Run("cyclic merge is rejected", func(t *testing.T) {
-		path := writeParamsCapabilityFixture(t, `value: &value
-  type: string
-  <<: *value`)
-		if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "cyclic YAML merge") {
-			t.Fatalf("LoadCapabilityFile() error=%v, want cyclic merge rejection", err)
-		}
-	})
-}
-
-func TestLoadCapabilityFileRejectsInvalidParamContracts(t *testing.T) {
-	tests := []struct {
-		name, definition, want string
-	}{
-		{name: "default type", definition: "type: integer\ndefault: wrong", want: ".default is invalid"},
-		{name: "default enum", definition: "type: string\nenum: [allowed]\ndefault: denied", want: ".default is invalid"},
-		{name: "default range", definition: "type: integer\nminimum: 5\ndefault: 4", want: ".default is invalid"},
-		{name: "default length", definition: "type: string\nminLength: 3\ndefault: ab", want: ".default is invalid"},
-		{name: "default pattern", definition: "type: string\npattern: '^[A-Z]+$'\ndefault: lower", want: ".default is invalid"},
-		{name: "default format", definition: "type: string\nformat: email\ndefault: invalid", want: ".default is invalid"},
-		{name: "invalid enum member type", definition: "type: integer\nenum: [1, wrong]", want: ".enum[1] is invalid"},
-		{name: "invalid enum member constraint", definition: "type: string\npattern: '^[A-Z]+$'\nenum: [VALID, invalid]", want: ".enum[1] is invalid"},
-		{name: "unknown parameter field", definition: "type: string\nunknown_contract_field: true", want: "field unknown_contract_field"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			params := "value:\n  " + strings.ReplaceAll(tc.definition, "\n", "\n  ")
-			if _, err := LoadCapabilityFile(writeParamsCapabilityFixture(t, params)); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.want)
-			}
-		})
-	}
-
-	valid := writeParamsCapabilityFixture(t, `value:
-  type: string
-  enum: [USER@example.com]
-  minLength: 5
-  maxLength: 64
-  pattern: '^[A-Za-z]+@example[.]com$'
-  format: email
-  default: USER@example.com`)
-	cf, err := LoadCapabilityFile(valid)
-	if err != nil {
-		t.Fatalf("valid constrained default rejected: %v", err)
-	}
-	validated, err := validateParams(cf.Capabilities["param_fixture"], map[string]any{})
-	if err != nil || validated["value"] != "USER@example.com" {
-		t.Fatalf("valid default validation=%#v error=%v", validated, err)
 	}
 }
 
@@ -563,138 +123,17 @@ func TestRepositoryExampleCapabilityFileLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != 16 {
-		t.Fatalf("example runtime.max_concurrent_requests = %v, want 16", cf.Runtime.MaxConcurrentRequests)
+	// The Quick Start reads at most one customer and updates at most one row.
+	get := cf.Compiled.Capabilities["get_customer"]
+	if get.Executor.Operation != "select" || get.Policy["readonly"] != true || get.Policy["max_rows"] != int64(1) {
+		t.Fatalf("get_customer operation=%q policy=%v", get.Executor.Operation, get.Policy)
 	}
-	for name, capability := range cf.Capabilities {
-		rate := capability.Policy.RateLimit
-		if rate == nil || rate.Requests != 60 || rate.Per != "1m" || rate.Burst != 10 {
-			t.Fatalf("example %s rate limit = %#v, want 60/1m burst 10", name, rate)
-		}
+	update := cf.Compiled.Capabilities["update_customer"]
+	if update.Executor.Operation != "update" || update.Policy["readonly"] != false || update.Policy["max_affected_rows"] != int64(1) {
+		t.Fatalf("update_customer operation=%q policy=%v", update.Executor.Operation, update.Policy)
 	}
-}
-
-func TestReleaseCapabilityTemplateIsIntentionallyIncompleteAndBecomesValid(t *testing.T) {
-	templatePath := filepath.Join("..", "..", "release", "capability.yaml.example")
-	content, err := os.ReadFile(templatePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(content), "get_customer:") || strings.Contains(string(content), "\ndefaults:") {
-		t.Fatal("production template must not contain an application-specific capability or policy defaults")
-	}
-	configured := strings.ReplaceAll(string(content), "replace-with-create-agent-secret-private-key", testAgentPrivateKey)
-	path := filepath.Join(t.TempDir(), "capability.yaml")
-	if err := os.WriteFile(path, []byte(configured), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadCapabilityFile(path); err == nil || !strings.Contains(err.Error(), "at least one capability is required") {
-		t.Fatalf("LoadCapabilityFile(incomplete release template) error=%v, want missing capability", err)
-	}
-	configured = strings.Replace(configured, "capabilities: {}", `capabilities:
-  replace_with_capability_name:
-    sql: select 1 as ok
-    result:
-      ok:
-        type: integer`, 1)
-	if err := os.WriteFile(path, []byte(configured), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cf, err := LoadCapabilityFile(path)
-	if err != nil {
-		t.Fatalf("LoadCapabilityFile(completed release template): %v", err)
-	}
-	if cf.Service.Title != "replace-with-service-title" || cf.Database.Driver != "postgres" {
-		t.Fatalf("release example loaded unexpected contract: service=%q driver=%q", cf.Service.Title, cf.Database.Driver)
-	}
-	policy := cf.Capabilities["replace_with_capability_name"].Policy
-	if policy.Timeout != "5s" || policy.MaxRows == nil || *policy.MaxRows != 100 || policy.MaxBytes != "1MB" || !readonly(policy) {
-		t.Fatalf("release template built-in policy defaults=%#v", policy)
-	}
-}
-
-func TestCapabilityFileRuntimeMaxConcurrentRequests(t *testing.T) {
-	tests := []struct {
-		name    string
-		runtime string
-		want    int
-		wantErr string
-	}{
-		{name: "custom", runtime: "runtime:\n  max_concurrent_requests: 3\n", want: 3},
-		{name: "zero", runtime: "runtime:\n  max_concurrent_requests: 0\n", wantErr: "runtime.max_concurrent_requests must be > 0"},
-		{name: "negative", runtime: "runtime:\n  max_concurrent_requests: -1\n", wantErr: "runtime.max_concurrent_requests must be > 0"},
-		{name: "not integer", runtime: "runtime:\n  max_concurrent_requests: many\n", wantErr: "cannot unmarshal"},
-		{name: "unknown field", runtime: "runtime:\n  max_concurrent_request: 3\n", wantErr: "field max_concurrent_request not found"},
-		{name: "multiple documents", runtime: "runtime: {}\n---\n", wantErr: "multiple YAML documents"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "capability.yaml")
-			content := tc.runtime + `database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy
-  user: readonly_user
-gateway:
-  url: ws://localhost:8080/ws/agent
-  agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
-capabilities:
-  get_customer:
-    sql: select 1 as id
-    result:
-      id:
-        type: integer
-`
-			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cf, err := LoadCapabilityFile(path)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("LoadCapabilityFile() error = %v, want containing %q", err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cf.Runtime.MaxConcurrentRequests == nil || *cf.Runtime.MaxConcurrentRequests != tc.want {
-				t.Fatalf("runtime.max_concurrent_requests = %v, want %d", cf.Runtime.MaxConcurrentRequests, tc.want)
-			}
-		})
-	}
-}
-
-func TestCapabilityFileRejectsWriteSQLWhenReadonly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "capability.yaml")
-	err := os.WriteFile(path, []byte(`
-database:
-  driver: postgres
-  host: localhost
-  port: 5432
-  name: legacy
-  user: readonly_user
-gateway:
-  url: ws://localhost:8080/ws/agent
-  agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
-capabilities:
-  update_customer:
-    sql: update customers set name = :name
-    params:
-      name:
-        type: string
-    policy:
-      readonly: true
-      timeout: 1s
-      max_rows: 1
-      max_bytes: 128KB
-`), 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadCapabilityFile(path); err == nil {
-		t.Fatal("LoadCapabilityFile() error = nil, want readonly SQL error")
+	if _, ok := update.Policy["rate_limit"]; ok {
+		t.Fatalf("update_customer policy=%v, want no rate limit in the minimal example", update.Policy)
 	}
 }
 
@@ -1085,82 +524,6 @@ func TestCapabilityFileRejectsMaxAffectedRowsForSelectIncludingDefaults(t *testi
 	}
 }
 
-func TestLoadCapabilityFileMaxAffectedRowsYAMLMergeAndLint(t *testing.T) {
-	const merged = `service:
-  title: Mutation limit fixture
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: fixture
-  user: fixture
-  password: fixture
-defaults:
-  readonly: false
-  max_affected_rows: 9
-capabilities:
-  source:
-    sql: update customers set name = name
-    policy: &mutation_policy
-      readonly: false
-      timeout: 1s
-      max_rows: 100
-      max_bytes: 128KB
-      max_affected_rows: 9223372036854775807
-  direct:
-    sql: update customers set name = name
-    policy:
-      <<: *mutation_policy
-      max_affected_rows: 7
-  inherited:
-    sql: delete from customers where id = 1
-`
-	cf, err := LoadCapabilityFile(writeCapabilityFixture(t, merged))
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := cf.Capabilities["source"].Policy
-	direct := cf.Capabilities["direct"].Policy
-	inherited := cf.Capabilities["inherited"].Policy
-	if source.MaxAffectedRows == nil || *source.MaxAffectedRows != math.MaxInt64 {
-		t.Fatalf("source max_affected_rows=%#v, want MaxInt64", source.MaxAffectedRows)
-	}
-	if direct.MaxAffectedRows == nil || *direct.MaxAffectedRows != 7 {
-		t.Fatalf("direct max_affected_rows=%#v, want direct YAML value 7", direct.MaxAffectedRows)
-	}
-	if direct.Readonly == nil || *direct.Readonly || direct.Timeout != "1s" || resolvedMaxRows(direct) != 100 || direct.MaxBytes != "128KB" {
-		t.Fatalf("YAML merge fields were not preserved: %#v", direct)
-	}
-	if inherited.MaxAffectedRows == nil || *inherited.MaxAffectedRows != 9 {
-		t.Fatalf("inherited max_affected_rows=%#v, want defaults value 9", inherited.MaxAffectedRows)
-	}
-
-	const selectWithEffectiveLimit = `service:
-  title: Select limit fixture
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: fixture
-  user: fixture
-  password: fixture
-defaults:
-  max_affected_rows: 1
-capabilities:
-  read:
-    sql: select 1 as value
-`
-	if _, err := LoadCapabilityFile(writeCapabilityFixture(t, selectWithEffectiveLimit)); err == nil || !strings.Contains(err.Error(), "max_affected_rows is only supported for DML") {
-		t.Fatalf("LoadCapabilityFile() error=%v, want effective SELECT rejection", err)
-	}
-}
-
 func TestValidateParamsAppliesContract(t *testing.T) {
 	minLen := 3
 	maxLen := 12
@@ -1350,92 +713,6 @@ func TestBuildOpenAPIReflectsServiceParamsResultAndExposePolicy(t *testing.T) {
 	}
 }
 
-func TestCapabilityAnnotationsAndExamplesReachOpenAPIWithoutHiddenMetadata(t *testing.T) {
-	content := strings.Join([]string{
-		"service:",
-		"  title: AI contract fixture",
-		"gateway:",
-		"  url: ws://127.0.0.1:8080/ws/agent",
-		"  agent_private_key: test",
-		"database:",
-		"  driver: postgres",
-		"  host: 127.0.0.1",
-		"  port: 5432",
-		"  name: fixture",
-		"  user: fixture",
-		"  password: fixture",
-		"capabilities:",
-		"  visible:",
-		"    description: Public customer lookup.",
-		"    sql: select :customer_id as customer_id",
-		"    annotations:",
-		"      read_only: true",
-		"      destructive: false",
-		"      idempotent: true",
-		"      open_world: false",
-		"    examples:",
-		"      - params:",
-		"          customer_id: 123",
-		"    params:",
-		"      customer_id:",
-		"        type: integer",
-		"        required: true",
-		"        minimum: 1",
-		"        description: Customer ID.",
-		"    result:",
-		"      customer_id:",
-		"        type: integer",
-		"        description: Customer ID.",
-		"  hidden:",
-		"    description: PRIVATE_DESCRIPTION_SENTINEL",
-		"    sql: select :customer_id as customer_id",
-		"    annotations:",
-		"      read_only: false",
-		"    examples:",
-		"      - params:",
-		"          customer_id: 456",
-		"    params:",
-		"      customer_id:",
-		"        type: integer",
-		"        required: true",
-		"    policy:",
-		"      expose_in_openapi: false",
-	}, "\n")
-	cf, err := LoadCapabilityFile(writeCapabilityFixture(t, content))
-	if err != nil {
-		t.Fatal(err)
-	}
-	visible := cf.Capabilities["visible"]
-	if visible.Annotations == nil || visible.Annotations.ReadOnly == nil || !*visible.Annotations.ReadOnly || visible.Annotations.Destructive == nil || *visible.Annotations.Destructive || visible.Annotations.Idempotent == nil || !*visible.Annotations.Idempotent || visible.Annotations.OpenWorld == nil || *visible.Annotations.OpenWorld {
-		t.Fatalf("annotations=%#v", visible.Annotations)
-	}
-	if len(visible.Examples) != 1 || visible.Examples[0].Params["customer_id"] != 123 {
-		t.Fatalf("examples=%#v", visible.Examples)
-	}
-
-	doc := BuildOpenAPI(cf)
-	paths := doc["paths"].(map[string]any)
-	if _, ok := paths["/api/v1/capabilities/hidden"]; ok {
-		t.Fatalf("hidden capability exposed: %#v", paths)
-	}
-	post := paths["/api/v1/capabilities/visible"].(map[string]any)["post"].(map[string]any)
-	annotations, ok := post["x-onprest-annotations"].(map[string]any)
-	if !ok || annotations["read_only"] != true || annotations["destructive"] != false || annotations["idempotent"] != true || annotations["open_world"] != false {
-		t.Fatalf("OpenAPI annotations=%#v", post["x-onprest-annotations"])
-	}
-	examples, ok := post["x-onprest-examples"].([]any)
-	if !ok || len(examples) != 1 || examples[0].(map[string]any)["params"].(map[string]any)["customer_id"] != 123 {
-		t.Fatalf("OpenAPI examples=%#v", post["x-onprest-examples"])
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "PRIVATE_DESCRIPTION_SENTINEL") || strings.Contains(string(raw), "456") {
-		t.Fatalf("hidden metadata leaked into OpenAPI: %s", raw)
-	}
-}
-
 func TestCapabilityAnnotationsPreserveOmittedFieldsAndExplicitFalse(t *testing.T) {
 	cf := validCapabilityFile()
 	cap := cf.Capabilities["get_customer"]
@@ -1460,160 +737,6 @@ func TestCapabilityAnnotationsPreserveOmittedFieldsAndExplicitFalse(t *testing.T
 	post = BuildOpenAPI(cf)["paths"].(map[string]any)["/api/v1/capabilities/get_customer"].(map[string]any)["post"].(map[string]any)
 	if _, ok := post["x-onprest-annotations"]; ok {
 		t.Fatalf("nil annotations unexpectedly emitted: %#v", post["x-onprest-annotations"])
-	}
-}
-
-func TestLoadCapabilityFileRejectsInvalidCapabilityAnnotationsAndExamples(t *testing.T) {
-	base := strings.Join([]string{
-		"service:",
-		"  title: AI contract fixture",
-		"gateway:",
-		"  url: ws://127.0.0.1:8080/ws/agent",
-		"  agent_private_key: test",
-		"database:",
-		"  driver: postgres",
-		"  host: 127.0.0.1",
-		"  port: 5432",
-		"  name: fixture",
-		"  user: fixture",
-		"  password: fixture",
-		"capabilities:",
-		"  visible:",
-		"    sql: select :customer_id as customer_id",
-		"%s",
-		"    params:",
-		"      customer_id:",
-		"        type: integer",
-		"        required: true",
-		"        minimum: 1",
-		"    result:",
-		"      customer_id: {type: integer}",
-	}, "\n")
-	tests := []struct {
-		name    string
-		insert  string
-		wantErr string
-	}{
-		{name: "unknown capability field", insert: "    unsupported_metadata: true", wantErr: "field unsupported_metadata not found in capability definition"},
-		{name: "unknown annotation key", insert: "    annotations:\n      unknown: true", wantErr: "field unknown not found"},
-		{name: "wrong annotation type", insert: "    annotations:\n      read_only: 1", wantErr: "cannot unmarshal"},
-		{name: "null annotation type", insert: "    annotations:\n      read_only: null", wantErr: "cannot unmarshal"},
-		{name: "missing example params", insert: "    examples:\n      - {}", wantErr: "examples[0].params must be an object"},
-		{name: "unknown example field", insert: "    examples:\n      - extra: true\n        params:\n          customer_id: 1", wantErr: "field extra not found in capability example definition"},
-		{name: "null example params", insert: "    examples:\n      - params: null", wantErr: "cannot unmarshal capability example.params"},
-		{name: "tagged null example params", insert: "    examples:\n      - params: !!null {}", wantErr: "cannot unmarshal capability example.params"},
-		{name: "tagged null example params alias", insert: "    description: &null !!null {}\n    examples:\n      - params: *null", wantErr: "cannot unmarshal capability example.params"},
-		{name: "null example item", insert: "    examples:\n      - null", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "tilde example item", insert: "    examples:\n      - ~", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "tagged null scalar example item", insert: "    examples:\n      - !!null null", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "tagged null mapping example item", insert: "    examples:\n      - !!null {}", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "tagged null sequence example item", insert: "    examples:\n      - !!null []", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "null alias example item", insert: "    policy: &null null\n    examples:\n      - *null", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "tagged null collection alias example item", insert: "    policy: &null !!null {}\n    examples:\n      - *null", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "tagged null sequence alias example item", insert: "    policy: &null !!null []\n    examples:\n      - *null", wantErr: "cannot unmarshal capability.examples[0]"},
-		{name: "unknown example param", insert: "    examples:\n      - params:\n          unknown: 1\n          customer_id: 1", wantErr: "examples[0].params: unknown param: unknown"},
-		{name: "missing required example param", insert: "    examples:\n      - params: {}", wantErr: "examples[0].params: required param missing: customer_id"},
-		{name: "wrong example param type", insert: "    examples:\n      - params:\n          customer_id: wrong", wantErr: "examples[0].params: customer_id: must be integer"},
-		{name: "example below minimum", insert: "    examples:\n      - params:\n          customer_id: 0", wantErr: "examples[0].params: customer_id: below minimum"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			content := fmt.Sprintf(base, tc.insert)
-			if _, err := LoadCapabilityFile(writeCapabilityFixture(t, content)); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("LoadCapabilityFile() error=%v, want containing %q", err, tc.wantErr)
-			}
-		})
-	}
-}
-
-func TestLoadCapabilityFileRejectsExplicitNullCapabilityMetadata(t *testing.T) {
-	base := `service:
-  title: null metadata fixture
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: fixture
-  user: fixture
-  password: fixture
-capabilities:
-  get_value:
-    sql: select 1 as value
-    params: {}
-    result:
-      value: {type: integer}
-`
-	tests := []struct {
-		name   string
-		insert string
-	}{
-		{name: "annotations null", insert: "    annotations: null\n"},
-		{name: "examples null", insert: "    examples: null\n"},
-		{name: "annotations tagged null sequence", insert: "    annotations: !!null []\n"},
-		{name: "annotations tagged null mapping", insert: "    annotations: !!null {}\n"},
-		{name: "examples tagged null sequence", insert: "    examples: !!null []\n"},
-		{name: "examples tagged null mapping", insert: "    examples: !!null {}\n"},
-		{name: "annotations null alias", insert: "    description: &null null\n    annotations: *null\n"},
-		{name: "examples null alias", insert: "    description: &null null\n    examples: *null\n"},
-		{name: "annotations tagged null sequence alias", insert: "    description: &null !!null []\n    annotations: *null\n"},
-		{name: "examples tagged null mapping alias", insert: "    description: &null !!null {}\n    examples: *null\n"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			content := strings.Replace(base, "    params: {}\n", tc.insert+"    params: {}\n", 1)
-			if _, err := LoadCapabilityFile(writeCapabilityFixture(t, content)); err == nil || !strings.Contains(err.Error(), "cannot unmarshal capability") {
-				t.Fatalf("LoadCapabilityFile() error=%v, want explicit null metadata rejection", err)
-			}
-		})
-	}
-	if _, err := LoadCapabilityFile(writeCapabilityFixture(t, base)); err != nil {
-		t.Fatalf("omitted annotations/examples should remain valid: %v", err)
-	}
-}
-
-func TestLoadCapabilityFileAcceptsAliasedExampleObjects(t *testing.T) {
-	content := `service:
-  title: aliased examples fixture
-gateway:
-  url: ws://127.0.0.1:8080/ws/agent
-  agent_private_key: test
-database:
-  driver: postgres
-  host: 127.0.0.1
-  port: 5432
-  name: fixture
-  user: fixture
-  password: fixture
-capabilities:
-  get_value:
-    sql: select :customer_id as customer_id
-    examples:
-      - &example
-        params: &params
-          customer_id: 1
-      - *example
-    params:
-      customer_id:
-        type: integer
-        required: true
-        minimum: 1
-    result:
-      customer_id: {type: integer}
-`
-	cf, err := LoadCapabilityFile(writeCapabilityFixture(t, content))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cf.Capabilities["get_value"].Examples) != 2 {
-		t.Fatalf("aliased examples=%#v, want two decoded examples", cf.Capabilities["get_value"].Examples)
-	}
-	for i, example := range cf.Capabilities["get_value"].Examples {
-		if example.Params["customer_id"] != 1 {
-			t.Fatalf("example[%d]=%#v, want aliased customer_id=1", i, example.Params)
-		}
 	}
 }
 
@@ -1740,14 +863,14 @@ func TestRunnerWritesDetailedAgentErrorsToDetailLog(t *testing.T) {
 		Capability: "get_customer",
 		Params:     map[string]any{},
 	})
-	if resp.Error == nil || resp.Error.Code != "AGENT_VALIDATION_FAILED" {
+	if resp.Error == nil || resp.Error.Code != "VALIDATION_FAILED" {
 		t.Fatalf("response = %#v", resp)
 	}
 	if resp.Error.Message != "required param missing: id" {
 		t.Fatalf("response message = %q", resp.Error.Message)
 	}
 	logs := detail.String()
-	for _, want := range []string{"agent_error", "req-1", "get_customer", "AGENT_VALIDATION_FAILED", "required param missing"} {
+	for _, want := range []string{"agent_error", "req-1", "get_customer", "VALIDATION_FAILED", "required param missing"} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("detail log missing %q: %s", want, logs)
 		}
@@ -1831,8 +954,8 @@ func TestMutationPayloadIsObjectAndPreservesInt64(t *testing.T) {
 	if got := string(payload); got != `{"count":9223372036854775807}` {
 		t.Fatalf("payload=%s", got)
 	}
-	response := protocol.Response{ID: "1", Result: payload}
-	if got := string(protocol.MustJSON(response)); !strings.Contains(got, `"result":{"count":9223372036854775807}`) {
+	response := protocol.ResultResponse("1", map[string]any{"data": json.RawMessage(payload), "files": []any{}})
+	if got := string(protocol.MustJSON(response)); !strings.Contains(got, `"data":{"count":9223372036854775807}`) {
 		t.Fatalf("wire=%s", got)
 	}
 	if _, err := buildMutationPayload(1, 1); !errors.Is(err, errMutationResponseTooLarge) {

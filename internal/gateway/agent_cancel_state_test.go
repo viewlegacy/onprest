@@ -99,6 +99,7 @@ func TestHTTPContextCancelBeforeDuringAndAfterRequestSend(t *testing.T) {
 		conn := newDeterministicCancelTransport()
 		ac := newAgentConn(conn)
 		s.agent = ac
+		seedVersionedTestMetadata(s)
 		for range cap(ac.send) {
 			ac.send <- agentWrite{}
 		}
@@ -124,6 +125,7 @@ func TestHTTPContextCancelBeforeDuringAndAfterRequestSend(t *testing.T) {
 			}
 			ac := newAgentConn(conn)
 			s.agent = ac
+			seedVersionedTestMetadata(s)
 			go s.writeAgent(ac)
 			ctx, cancel := context.WithCancel(context.Background())
 			resultCh := make(chan agentCallResult, 1)
@@ -160,6 +162,7 @@ func TestResponseAndContextCancelSimultaneousTerminalCleanup(t *testing.T) {
 			conn := newDeterministicCancelTransport()
 			ac := newAgentConn(conn)
 			s.agent = ac
+			seedVersionedTestMetadata(s)
 			go s.writeAgent(ac)
 			readDone := make(chan struct{})
 			go func() {
@@ -228,6 +231,7 @@ func TestCancelWriteFailureClosesConnectionAndCleansTerminalState(t *testing.T) 
 	conn.writeErrors[1] = errors.New("cancel write failed")
 	ac := newAgentConn(conn)
 	s.agent = ac
+	seedVersionedTestMetadata(s)
 	go s.writeAgent(ac)
 	result := s.callAgent(context.Background(), "mutate", nil)
 	if result.Status != http.StatusGatewayTimeout {
@@ -311,4 +315,13 @@ func assertAgentCallStateEmpty(t *testing.T, ac *agentConn) {
 	if len(ac.pending) != 0 || len(ac.sendStates) != 0 {
 		t.Fatalf("pending=%d sendStates=%d", len(ac.pending), len(ac.sendStates))
 	}
+}
+
+func (c *deterministicCancelTransport) WriteTextWithDeadlineStart(payload []byte, timeout time.Duration, start func() error) error {
+	if start != nil {
+		if e := start(); e != nil {
+			return e
+		}
+	}
+	return c.WriteTextWithDeadline(payload, timeout)
 }

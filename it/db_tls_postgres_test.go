@@ -225,7 +225,7 @@ func reloadPostgresTLS(t *testing.T, ctx context.Context, admin *sql.DB) {
 
 func openPostgresTLSDB(t *testing.T, def agentpkg.DatabaseDef) *sql.DB {
 	t.Helper()
-	db, err := agentpkg.OpenDatabase(def)
+	db, err := agentpkg.OpenDatabase(snapshotIntegrationTLS(t, def))
 	if err != nil {
 		t.Fatalf("PostgreSQL %s TLS adapter creation failed", def.TLS.Mode)
 	}

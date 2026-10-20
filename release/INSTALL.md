@@ -5,7 +5,7 @@ target named in `RELEASE-MANIFEST.txt`. It does not require a source checkout,
 Go, Docker, or a native database client runtime.
 
 Checksums and GitHub artifact attestations are available for optional download
-verification; see <https://docs.onprest.viewlegacy.com/operations/deployment#binary-release-installation>.
+verification; see <https://docs.onprest.viewlegacy.com/operations/deployment#install-from-a-release>.
 
 The templates in this archive are intentionally incomplete. Add at least one
 reviewed capability to `capabilities: {}` and replace every placeholder before
@@ -30,9 +30,17 @@ After extracting the archive for production:
    in `GATEWAY_API_KEYS_JSON`. Deliver the plaintext `api_key` to its caller; do
    not put it in `gateway.env`.
 3. Replace every example URL, database address, and credential in
-   `capability.yaml`, then add at least one reviewed SQL capability. Update the
-   API key capability allow-list to match the capabilities you added.
-4. Validate the completed file against its database before starting the Agent:
+   `capability.yaml`, then add at least one reviewed capability. DB capabilities
+   use the configured database; CSV, HTTP, file and Wasm capabilities do not
+   require a database. Update the API key capability allow-list to match the
+   capabilities you added.
+4. Provide private writable spool and persistent identity directories relative
+   to the configuration, or set their runtime paths explicitly. The Agent
+   creates missing directories with the right permissions; on Windows, set the
+   permissions in
+   <https://docs.onprest.viewlegacy.com/agent/configuration#windows-permissions>
+   on directories you create yourself. Validate the completed configuration and
+   referenced resources before starting the Agent:
 
    ```sh
    ./onprest-agent validate --config /absolute/path/capability.yaml
@@ -73,3 +81,14 @@ After extracting the archive for production:
 The Gateway and Agent must come from the same release. Release acceptance and
 provenance are documented at
 <https://docs.onprest.viewlegacy.com/operations/release-gate>.
+
+For code capabilities, build and test the Wasm module on the author's
+computer, then deploy the finished module with its YAML. The Agent includes the
+runtime, so this installation needs no Go or SDK source; see
+<https://docs.onprest.viewlegacy.com/capabilities/code/go>.
+
+Keep the Agent's `spool` and `identity` directories across restarts, and keep
+business files outside the spool. Spool, transfer, and other runtime settings
+are described at <https://docs.onprest.viewlegacy.com/agent/configuration>, and
+client and proxy timeouts at
+<https://docs.onprest.viewlegacy.com/operations/deployment#timeouts-and-uploads>.

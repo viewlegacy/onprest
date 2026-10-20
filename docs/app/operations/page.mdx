@@ -1,11 +1,9 @@
 # Operations
 
-Onprest operations are built around two binaries, explicit env/YAML configuration, and verifiable release gates.
+Running Onprest means running two binaries with one environment file and one YAML file. These pages cover the tasks around them:
 
-## Topics
-
-- [Deployment](/operations/deployment)
-- [Capability Changes](/operations/capability-changes)
-- [Mutation Reconciliation](/operations/mutation-reconciliation)
-- [Release Gate](/operations/release-gate)
-- [Troubleshooting](/operations/troubleshooting)
+- [Deployment](/operations/deployment): installing release binaries, service and container setups, timeouts, certificate rotation
+- [Capability Changes](/operations/capability-changes): applying a new `capability.yaml` to a running agent safely
+- [Uncertain Outcomes](/operations/uncertain-outcomes): what to do when a call that changes data fails with `outcome: unknown`
+- [Troubleshooting](/operations/troubleshooting): common startup, connection, and call failures
+- [Release Gate](/operations/release-gate): how releases are tested before publication

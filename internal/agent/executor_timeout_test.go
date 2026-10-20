@@ -65,11 +65,11 @@ func TestRunnerWritesFixedTimeoutDetailToDetailLog(t *testing.T) {
 		Capability: "get_customer",
 		Params:     map[string]any{"id": int64(1)},
 	})
-	if resp.Error == nil || resp.Error.Code != "AGENT_QUERY_TIMEOUT" {
+	if resp.Error == nil || resp.Error.Code != "EXECUTION_TIMEOUT" {
 		t.Fatalf("response = %#v", resp)
 	}
 	logs := detail.String()
-	for _, want := range []string{"AGENT_QUERY_TIMEOUT", queryTimeoutDetail} {
+	for _, want := range []string{"EXECUTION_TIMEOUT", queryTimeoutDetail} {
 		if !strings.Contains(logs, want) {
 			t.Fatalf("detail log missing %q: %s", want, logs)
 		}

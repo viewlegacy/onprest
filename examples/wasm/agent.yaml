@@ -1,0 +1,30 @@
+schema_version: 1
+
+service: {title: Wasm file API, version: 1.0.0}
+
+gateway:
+  url: ws://127.0.0.1:8080/ws/agent
+  agent_private_key: keEk2aSPeUHiCbhK-XxleMUFj3cwzcJCFUflKSs_CiZOsybztXdoRPcyYZTMd_f9cplE8Qd7VsMz484fWauOvw
+
+capabilities:
+  wasm_copy:
+    executor:
+      type: wasm
+      module: ./module.wasm
+      effects: none
+      sandbox:
+        enabled: true
+        permissions:
+          filesystem: [{root: ./files, access: read}]
+    input:
+      properties:
+        name: {type: string, minLength: 1, maxLength: 64}
+        attachment: {type: file, max_bytes: 1MiB}
+      required: [name, attachment]
+    output:
+      properties:
+        greeting: {type: string}
+        input_bytes: {type: integer}
+      required: [greeting, input_bytes]
+      data: {}
+      files: {}

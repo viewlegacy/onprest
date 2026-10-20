@@ -2,13 +2,20 @@ package gateway
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"github.com/viewlegacy/onprest/internal/contract"
+	"github.com/viewlegacy/onprest/internal/protocol"
 	"io"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/viewlegacy/onprest/internal/buildinfo"
 )
@@ -65,7 +72,7 @@ type mcpRequest struct {
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		writeJSON(w, http.StatusMethodNotAllowed, apiError(errGatewayMethodNotAllowed, "use POST"))
+		writeJSON(w, http.StatusMethodNotAllowed, requestAPIError(r, errGatewayMethodNotAllowed, "use POST"))
 		return
 	}
 
@@ -75,16 +82,29 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !mcpJSONContentType(r.Header.Get("Content-Type")) {
 		s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "Content-Type must be application/json")
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "Content-Type must be application/json"))
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "Content-Type must be application/json"))
 		return
 	}
 	if !mcpAcceptsJSON(r.Header.Values("Accept")) {
 		s.mcpHTTPRejected(http.StatusNotAcceptable, errGatewayInvalidRequest, "Accept must allow application/json")
-		writeJSON(w, http.StatusNotAcceptable, apiError(errGatewayInvalidRequest, "Accept must allow application/json"))
+		writeJSON(w, http.StatusNotAcceptable, requestAPIError(r, errGatewayInvalidRequest, "Accept must allow application/json"))
 		return
 	}
 
-	req, err := decodeMCPRequest(w, r, s.cfg.MaxRequestBodyBytes)
+	r, lease, admitted := s.acquireBody(r)
+	if !admitted {
+		w.Header().Set("Connection", "close")
+		s.mcpHTTPRejected(503, "BUSY", "input capacity is unavailable")
+		writeJSON(w, 503, commonAPIError(authRequestID(r), "BUSY", "input capacity is unavailable", "not_started"))
+		return
+	}
+	defer lease.Close()
+	w.Header().Del("Connection")
+	finishRead := startInputBodyRead(w, r, s.inputBodyReadBudget("", &key))
+	req, err := decodeMCPRequest(w, r, s.cfg.MaxRequestBodyBytes, s.inputDecodeLimits("", &key))
+	if phaseErr := finishRead(); phaseErr != nil {
+		err = phaseErr
+	}
 	if err != nil {
 		writeMCPError(w, nil, -32700, errJSONRPCParseError, "invalid json rpc")
 		return
@@ -100,7 +120,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		protocolVersion, ok = mcpRequestProtocolVersion(r)
 		if !ok {
 			s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "unsupported MCP protocol version")
-			writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "unsupported MCP protocol version"))
+			writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "unsupported MCP protocol version"))
 			return
 		}
 	}
@@ -117,7 +137,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		}
 		if !mcpClientNotificationAllowed(protocolVersion, req.Method) {
 			s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "invalid json rpc notification")
-			writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json rpc notification"))
+			writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "invalid json rpc notification"))
 			return
 		}
 		if !validMCPNotificationParams(protocolVersion, req.Method, req.Params) {
@@ -131,7 +151,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	if !req.HasID {
 		s.mcpHTTPRejected(http.StatusBadRequest, errGatewayInvalidRequest, "invalid json rpc notification")
-		writeJSON(w, http.StatusBadRequest, apiError(errGatewayInvalidRequest, "invalid json rpc notification"))
+		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "invalid json rpc notification"))
 		return
 	}
 
@@ -145,7 +165,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeMCP(w, req.ID, map[string]any{
 			"protocolVersion": mcpNegotiatedProtocolVersion(requested),
 			"serverInfo":      map[string]any{"name": "onprest-gateway", "version": buildinfo.Current()},
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"capabilities":    map[string]any{"tools": map[string]any{}, "resources": map[string]any{"subscribe": false, "listChanged": false}},
 		}, nil)
 	case "ping":
 		if !validMCPMethodParams(protocolVersion, req.Method, req.Params) {
@@ -166,9 +186,30 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filterOpenAPI(doc, key.Capabilities)
-		writeMCP(w, req.ID, map[string]any{"tools": toolsFromOpenAPI(doc, protocolVersion)}, nil)
+		tools := toolsFromOpenAPI(doc, protocolVersion)
+		if mcpUsesStructuredContent(protocolVersion) {
+			s.agentMu.RLock()
+			for _, tool := range tools {
+				name, _ := tool["name"].(string)
+				if o := s.capabilities[name].Output; o != nil {
+					tool["outputSchema"] = cloneMap(o.MCPOutputSchema)
+				}
+			}
+			s.agentMu.RUnlock()
+		}
+		writeMCP(w, req.ID, map[string]any{"tools": tools}, nil)
+	case "resources/list":
+		if !validMCPMethodParams(protocolVersion, "tools/list", req.Params) {
+			writeMCPError(w, req.ID, -32602, errJSONRPCInvalidParams, "invalid resources/list params")
+			return
+		}
+		writeMCP(w, req.ID, map[string]any{"resources": []any{}}, nil)
+	case "resources/read":
+		s.handleMCPResourceRead(w, r, req.ID, req.Params, key, protocolVersion)
 	case "tools/call":
-		s.handleMCPToolCall(w, r, req.ID, req.Params, key, protocolVersion, newID(), time.Now())
+		raw := req.Params
+		req.Params = nil
+		s.handleMCPToolCall(w, r, req.ID, raw, key, protocolVersion, authRequestID(r), time.Now())
 	default:
 		writeMCPError(w, req.ID, -32601, errJSONRPCMethodNotFound, "unsupported MCP method")
 	}
@@ -192,7 +233,7 @@ func mcpKnownClientNotificationMethod(method string) bool {
 	return false
 }
 
-func decodeMCPRequest(w http.ResponseWriter, r *http.Request, maxBodyBytes int64) (mcpRequest, error) {
+func decodeMCPRequest(w http.ResponseWriter, r *http.Request, maxBodyBytes int64, logical ...contract.Limits) (mcpRequest, error) {
 	var raw json.RawMessage
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.UseNumber()
@@ -203,6 +244,9 @@ func decodeMCPRequest(w http.ResponseWriter, r *http.Request, maxBodyBytes int64
 		return mcpRequest{}, err
 	}
 
+	if _, err := contract.DecodeWireJSON(raw, maxBodyBytes, logical...); err != nil {
+		return mcpRequest{}, err
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
 		return mcpRequest{}, nil
@@ -728,8 +772,7 @@ func mcpJSONIntegerRawValue(raw json.RawMessage) bool {
 	if !ok {
 		return false
 	}
-	rational, ok := new(big.Rat).SetString(number.String())
-	return ok && rational.IsInt()
+	return contract.JSONNumberIsInteger(number.String())
 }
 
 func mcpNegotiatedProtocolVersion(requested string) string {
@@ -796,7 +839,8 @@ func mcpAcceptsJSON(values []string) bool {
 }
 
 func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id any, rawParams json.RawMessage, key APIKey, protocolVersion, requestID string, start time.Time) {
-	name, arguments, ok := decodeMCPToolCallParams(rawParams, protocolVersion)
+	name, arguments, ok := decodeMCPToolCallParams(rawParams, protocolVersion, s.inputDecodeLimits("", &key))
+	rawParams = nil
 	if !ok {
 		s.accessLogProtocol("mcp", requestID, key.Name, "", http.StatusOK, errJSONRPCInvalidParams, "invalid tools/call params", start)
 		writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "invalid tools/call params")
@@ -804,44 +848,76 @@ func (s *Server) handleMCPToolCall(w http.ResponseWriter, r *http.Request, id an
 	}
 	if !allowed(key, name) {
 		s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusForbidden, errGatewayCapabilityDenied, "capability not allowed", start)
-		writeJSON(w, http.StatusForbidden, apiError(errGatewayCapabilityDenied, "capability not allowed"))
+		writeJSON(w, http.StatusForbidden, commonAPIError(requestID, errGatewayCapabilityDenied, "capability not allowed", "not_started"))
 		return
 	}
-	result := s.callAgent(r.Context(), name, arguments)
-	if !result.OK() {
-		switch result.Code {
-		case errGatewayCapabilityNotFound:
-			s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusOK, errJSONRPCInvalidParams, "tool is not defined", start)
-			writeMCPError(w, id, -32602, errJSONRPCInvalidParams, "tool is not defined")
-			return
-		default:
-			s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusOK, result.Code, result.Message, start)
-			toolResult := map[string]any{
-				"content": []any{map[string]any{"type": "text", "text": result.Message}},
-				"isError": true,
-			}
-			if mcpUsesStructuredContent(protocolVersion) {
-				toolResult["structuredContent"] = map[string]any{"error": map[string]any{
-					"code": result.Code, "message": result.Message,
-				}}
-			}
-			writeMCP(w, id, toolResult, nil)
+	s.agentMu.RLock()
+	output := s.capabilities[name].Output
+	s.agentMu.RUnlock()
+	deliveryCtx := r.Context()
+	if output != nil {
+		bytes := int64(0)
+		if output.MCP == "inline" {
+			bytes = output.InlineBytes
+		}
+		release, ok := s.reserveMCPResponse(bytes, id, 0)
+		if !ok {
+			_, finish := mcpDeliveryContext(w, r, time.Second)
+			defer finish()
+			writeJSON(w, http.StatusServiceUnavailable, commonAPIError(requestID, "BUSY", "file response capacity is unavailable", "not_started"))
 			return
 		}
+		defer release()
 	}
-	var structured any
-	_ = decodeJSONNumber(result.Payload, &structured)
-	s.accessLogProtocol("mcp", requestID, key.Name, name, http.StatusOK, "", "", start, result.Count)
-	toolResult := map[string]any{
-		"content": []any{map[string]any{"type": "text", "text": string(result.Payload)}},
+	fingerprint := sha256.Sum256([]byte(key.KeyHash))
+	ctx := context.WithValue(deliveryCtx, callIdentityKey{}, callIdentity{ID: requestID, Binding: hex.EncodeToString(fingerprint[:])})
+	ctx = context.WithValue(ctx, inputConsumedKey{}, func() { arguments = nil })
+	result := s.callInput(ctx, name, arguments)
+	arguments = nil
+	if output != nil {
+		duration, _ := time.ParseDuration(output.TransferTimeout)
+		var finish func()
+		deliveryCtx, finish = mcpDeliveryContext(w, r, duration)
+		defer finish()
 	}
-	if mcpUsesStructuredContent(protocolVersion) {
-		toolResult["structuredContent"] = structured
+	if !result.OK() {
+		logged := result
+		logged.Status = http.StatusOK
+		s.accessExecutionLog("mcp", requestID, key.Name, name, logged, start)
+		toolResult := map[string]any{"content": []any{map[string]any{"type": "text", "text": string(protocol.MustJSON(resultError(requestID, result)))}}, "isError": true}
+		if mcpUsesStructuredContent(protocolVersion) {
+			toolResult["structuredContent"] = resultError(requestID, result)
+		}
+		if output != nil {
+			writeMCPDelivery(deliveryCtx, w, id, toolResult)
+		} else {
+			writeMCP(w, id, toolResult, nil)
+		}
+		return
 	}
-	writeMCP(w, id, toolResult, nil)
+	toolResult, failure := s.renderMCPFiles(deliveryCtx, id, key, name, protocolVersion, result)
+	if failure != nil {
+		result = *failure
+		toolResult = map[string]any{"content": []any{map[string]any{"type": "text", "text": string(protocol.MustJSON(resultError(requestID, result)))}}, "isError": true}
+		if mcpUsesStructuredContent(protocolVersion) {
+			toolResult["structuredContent"] = resultError(requestID, result)
+		}
+	}
+	logged := deliveryFailure("EXECUTION_TIMEOUT", "file response could not be completed", "unknown")
+	logged.RequestID = requestID
+	defer func() {
+		logged.Status = http.StatusOK
+		s.accessExecutionLog("mcp", requestID, key.Name, name, logged, start)
+	}()
+	if output != nil {
+		writeMCPDelivery(deliveryCtx, w, id, toolResult)
+	} else {
+		writeMCP(w, id, toolResult, nil)
+	}
+	logged = result
 }
 
-func decodeMCPToolCallParams(raw json.RawMessage, protocolVersion string) (string, map[string]any, bool) {
+func decodeMCPToolCallParams(raw json.RawMessage, protocolVersion string, logical ...contract.Limits) (string, map[string]any, bool) {
 	fields, ok := mcpJSONObjectFields(raw)
 	if !ok {
 		return "", nil, false
@@ -873,7 +949,12 @@ func decodeMCPToolCallParams(raw json.RawMessage, protocolVersion string) (strin
 	if _, ok := mcpJSONObjectFields(argumentsRaw); !ok {
 		return "", nil, false
 	}
-	if err := decodeJSONNumber(argumentsRaw, &arguments); err != nil || arguments == nil {
+	value, err := contract.DecodeWireJSON(argumentsRaw, int64(len(argumentsRaw)), logical...)
+	if err != nil {
+		return "", nil, false
+	}
+	arguments, ok = value.(map[string]any)
+	if !ok || arguments == nil {
 		return "", nil, false
 	}
 	return name, arguments, true
@@ -902,4 +983,150 @@ func ensureJSONEOF(dec *json.Decoder) error {
 		return io.ErrUnexpectedEOF
 	}
 	return err
+}
+
+func embeddedFile(uri string, f contract.PublicFileDescriptor, body []byte) map[string]any {
+	resource := map[string]any{"uri": uri, "mimeType": f.MIMEType}
+	if strings.HasPrefix(f.MIMEType, "text/") && utf8.Valid(body) {
+		resource["text"] = string(body)
+	} else {
+		resource["blob"] = base64.StdEncoding.EncodeToString(body)
+	}
+	return resource
+}
+func (s *Server) collectFile(ctx context.Context, v fileReference, limit int64) ([]byte, error) {
+	if v.descriptor.SizeBytes > limit {
+		return nil, errors.New("LIMIT_EXCEEDED")
+	}
+	var buffer bytes.Buffer
+	e := s.transferFile(ctx, v, func(ctx context.Context, b []byte) (int, error) {
+		if e := ctx.Err(); e != nil {
+			return 0, e
+		}
+		if int64(buffer.Len())+int64(len(b)) > limit {
+			return 0, errors.New("LIMIT_EXCEEDED")
+		}
+		return buffer.Write(b)
+	})
+	if e != nil {
+		return nil, e
+	}
+	return buffer.Bytes(), nil
+}
+func (s *Server) renderMCPFiles(ctx context.Context, id any, key APIKey, name, version string, result agentCallResult) (map[string]any, *agentCallResult) {
+	envelope, e := decodeSuccess(result)
+	if e != nil {
+		failure := invalidAgentResult(result.RequestID)
+		return nil, &failure
+	}
+	s.agentMu.RLock()
+	output := s.capabilities[name].Output
+	s.agentMu.RUnlock()
+	content := []any{}
+	if output != nil && output.MCP == "inline" {
+		duration, _ := time.ParseDuration(output.TransferTimeout)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, duration)
+		defer cancel()
+	}
+	var collected int64
+	for i, f := range envelope.Result.Files {
+		if output == nil {
+			failure := invalidAgentResult(result.RequestID)
+			return nil, &failure
+		}
+		v, e := s.fileLookup(key, f.ID, false)
+		if e != nil {
+			failure := fileTransferError(e)
+			return nil, &failure
+		}
+		if output.MCP == "inline" {
+			// Base64 cannot fit when raw bytes already exceed the whole-envelope cap.
+			body, e := s.collectFile(ctx, v, output.InlineBytes-collected)
+			if e != nil {
+				failure := fileTransferError(e)
+				if e.Error() == "LIMIT_EXCEEDED" {
+					failure = deliveryFailure("LIMIT_EXCEEDED", "MCP inline result exceeds configured limit", "unknown")
+				}
+				return nil, &failure
+			}
+			collected += int64(len(body))
+			envelope.Result.Files[i].URI = ""
+			envelope.Result.Files[i].ExpiresAt = ""
+			content = append(content, map[string]any{"type": "resource", "resource": embeddedFile("onprest-file://"+f.ID, f, body)})
+		} else if mcpUsesStructuredContent(version) {
+			content = append(content, map[string]any{"type": "resource_link", "uri": f.URI, "name": f.Name, "mimeType": f.MIMEType, "size": f.SizeBytes})
+		}
+	}
+	payload, e := json.Marshal(envelope)
+	if e != nil {
+		failure := invalidAgentResult(result.RequestID)
+		return nil, &failure
+	}
+	content = append([]any{map[string]any{"type": "text", "text": string(payload)}}, content...)
+	tool := map[string]any{"content": content}
+	if mcpUsesStructuredContent(version) {
+		tool["structuredContent"] = envelope
+	}
+	if output != nil && output.MCP == "inline" {
+		wire, e := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": tool})
+		if e != nil || int64(len(wire)+1) > output.InlineBytes {
+			failure := deliveryFailure("LIMIT_EXCEEDED", "MCP inline result exceeds configured limit", "unknown")
+			return nil, &failure
+		}
+	}
+	return tool, nil
+}
+func (s *Server) handleMCPResourceRead(w http.ResponseWriter, r *http.Request, id any, raw json.RawMessage, key APIKey, version string) {
+	// Reserve before parsing/lookup as well: error responses can echo a large
+	// JSON-RPC ID and must share the same fixed response bound.
+	var maxFileBytes int64
+	s.agentMu.RLock()
+	for _, meta := range s.capabilities {
+		if meta.Output != nil && meta.Output.MaxFileBytes > maxFileBytes {
+			maxFileBytes = meta.Output.MaxFileBytes
+		}
+	}
+	s.agentMu.RUnlock()
+	release, available := s.reserveMCPResponse(maxFileBytes, id, len(raw))
+	if !available {
+		_, finish := mcpDeliveryContext(w, r, time.Second)
+		defer finish()
+		writeJSON(w, http.StatusServiceUnavailable, requestAPIError(r, "BUSY", "file response capacity is unavailable"))
+		return
+	}
+	defer release()
+	reject := func(rpcCode int, code, message string) {
+		ctx, finish := mcpDeliveryContext(w, r, time.Second)
+		defer finish()
+		writeMCPErrorDelivery(ctx, w, id, rpcCode, code, message)
+	}
+
+	fields, ok := mcpJSONObjectFields(raw)
+	var uri string
+	if !ok || !mcpOptionalMethodMetaIsObject(version, "resources/read", fields) || !mcpJSONStringValue(fields["uri"], &uri) {
+		reject(-32602, errJSONRPCInvalidParams, "invalid resources/read params")
+		return
+	}
+	fileID := strings.TrimPrefix(uri, s.cfg.PublicBaseURL+"/api/v1/files/")
+	if s.cfg.PublicBaseURL == "" || fileID == uri || !fileIDPattern.MatchString(fileID) || uri != s.cfg.PublicBaseURL+"/api/v1/files/"+fileID {
+		reject(-32002, "NOT_FOUND", "file reference is unavailable")
+		return
+	}
+	v, e := s.fileLookup(key, fileID, true)
+	if e != nil {
+		s.chargeRejectedFileLookup(r, fileID)
+		reject(-32002, "NOT_FOUND", "file reference is unavailable")
+		return
+	}
+	duration, _ := time.ParseDuration(v.output.TransferTimeout)
+	ctx, finish := mcpDeliveryContext(w, r, duration)
+	defer finish()
+	body, e := s.collectFile(ctx, v, v.output.MaxFileBytes)
+	if e != nil {
+		failure := fileTransferError(e)
+		writeMCPErrorDelivery(ctx, w, id, -32000, failure.Code, failure.Message)
+		return
+	}
+	writeMCPDelivery(ctx, w, id, map[string]any{"contents": []any{embeddedFile(uri, v.descriptor, body)}})
 }

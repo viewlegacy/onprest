@@ -128,7 +128,7 @@ forceencryption = 0
 	verifiedDB.Close()
 
 	restartSQLServerWithCertificate(t, ctr, expiredCert, expiredKey)
-	expiredRequireDB, err := agentpkg.OpenDatabase(requireDef)
+	expiredRequireDB, err := agentpkg.OpenDatabase(snapshotIntegrationTLS(t, requireDef))
 	if err != nil {
 		t.Fatal("SQL Server require TLS adapter creation failed")
 	}
@@ -182,7 +182,7 @@ func pingSQLServerUntilSuccess(t *testing.T, db *sql.DB) {
 
 func openAndPingSQLServerTLS(t *testing.T, def agentpkg.DatabaseDef) *sql.DB {
 	t.Helper()
-	db, err := agentpkg.OpenDatabase(def)
+	db, err := agentpkg.OpenDatabase(snapshotIntegrationTLS(t, def))
 	if err != nil {
 		t.Fatalf("SQL Server %s TLS adapter creation failed", def.TLS.Mode)
 	}
@@ -210,7 +210,7 @@ func assertSQLServerConnectionEncryption(t *testing.T, db *sql.DB, want bool) {
 
 func assertSQLServerTLSPingFails(t *testing.T, def agentpkg.DatabaseDef, reason string) {
 	t.Helper()
-	db, err := agentpkg.OpenDatabase(def)
+	db, err := agentpkg.OpenDatabase(snapshotIntegrationTLS(t, def))
 	if err != nil {
 		t.Fatalf("SQL Server TLS negative-case adapter creation failed before PingContext: %s", reason)
 	}

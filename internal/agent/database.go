@@ -13,7 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	_ "github.com/denisenkom/go-mssqldb"
+	mssql "github.com/denisenkom/go-mssqldb"
+	"github.com/denisenkom/go-mssqldb/msdsn"
 	"github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -31,7 +32,19 @@ func OpenDatabase(database DatabaseDef) (*sql.DB, error) {
 	case "mysql":
 		return openMySQLDatabase(database)
 	case "sqlserver":
-		return sql.Open(driverName(database.Driver), database.DSN())
+		config, _, err := msdsn.Parse(database.DSN())
+		if err != nil {
+			return nil, err
+		}
+		if database.TLS.Snapshot && database.tlsMode() != "disable" {
+			config.TLSConfig, err = databaseTLSConfig(database)
+			if err != nil {
+				return nil, err
+			}
+			config.TLSConfig.DynamicRecordSizingDisabled = true
+			config.HostInCertificateProvided = true
+		}
+		return sql.OpenDB(mssql.NewConnectorConfig(config)), nil
 	case "oracle":
 		return openOracleDatabase(database)
 	default:
@@ -65,14 +78,63 @@ func openPostgresDatabase(database DatabaseDef) (*sql.DB, error) {
 }
 
 func postgresConnectionConfig(database DatabaseDef) (*pgx.ConnConfig, error) {
+	if database.TLS.Snapshot {
+		// pgx merges libpq environment settings before parsing the connection
+		// string, including service-file reads. Only source-snapshot settings
+		// may affect a production connection or its session behavior.
+		for _, name := range postgresUnsupportedEnvironment {
+			if os.Getenv(name) != "" {
+				return nil, fmt.Errorf("PostgreSQL ambient setting %s is unsupported; configure sources.databases instead", name)
+			}
+		}
+	}
 	config, err := pgx.ParseConfig(database.DSN())
 	if err != nil {
 		return nil, err
+	}
+	if database.TLS.Snapshot {
+		// An omitted or explicit empty password never falls back to pgpass.
+		config.Password = database.Password
+	}
+	if database.TLS.Snapshot && database.tlsMode() != "disable" {
+		tlsConfig, err := databaseTLSConfig(database)
+		if err != nil {
+			return nil, err
+		}
+		if database.tlsMode() == "verify-ca" {
+			roots := tlsConfig.RootCAs
+			tlsConfig.InsecureSkipVerify = true
+			tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+				if len(state.PeerCertificates) == 0 {
+					return errors.New("missing server certificate")
+				}
+				intermediates := x509.NewCertPool()
+				for _, cert := range state.PeerCertificates[1:] {
+					intermediates.AddCert(cert)
+				}
+				_, err := state.PeerCertificates[0].Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates})
+				return err
+			}
+		}
+		config.Config.TLSConfig = tlsConfig
+		for _, fallback := range config.Config.Fallbacks {
+			fallback.TLSConfig = tlsConfig.Clone()
+		}
 	}
 	if database.tlsMode() == "verify-full" && config.Config.TLSConfig != nil {
 		config.Config.TLSConfig.ServerName = database.tlsServerName()
 	}
 	return config, nil
+}
+
+// These pgx/libpq settings have no captured source equivalent. Reject them
+// before parsing instead of reading an external service file or admitting
+// unhashed connection, authentication, protocol, or session settings.
+var postgresUnsupportedEnvironment = [...]string{
+	"PGAPPNAME", "PGCONNECT_TIMEOUT", "PGSSLSNI", "PGSSLPASSWORD",
+	"PGSSLNEGOTIATION", "PGTARGETSESSIONATTRS", "PGSERVICE", "PGSERVICEFILE",
+	"PGTZ", "PGOPTIONS", "PGMINPROTOCOLVERSION", "PGMAXPROTOCOLVERSION",
+	"PGCHANNELBINDING", "PGREQUIREAUTH",
 }
 
 func openMySQLDatabase(database DatabaseDef) (*sql.DB, error) {
@@ -127,8 +189,14 @@ func (c *oracleTLSConnector) Driver() driver.Driver { return goora.NewConnector(
 
 func databaseTLSConfig(database DatabaseDef) (*tls.Config, error) {
 	config := &tls.Config{}
-	if database.TLS.CertFile != "" {
-		certificate, err := tls.LoadX509KeyPair(database.TLS.CertFile, database.TLS.KeyFile)
+	if database.TLS.CertFile != "" || database.TLS.CertBytes != nil {
+		var certificate tls.Certificate
+		var err error
+		if database.TLS.Snapshot {
+			certificate, err = tls.X509KeyPair(database.TLS.CertBytes, database.TLS.KeyBytes)
+		} else {
+			certificate, err = tls.LoadX509KeyPair(database.TLS.CertFile, database.TLS.KeyFile)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("load database TLS client certificate: %w", err)
 		}
@@ -139,8 +207,17 @@ func databaseTLSConfig(database DatabaseDef) (*tls.Config, error) {
 		config.InsecureSkipVerify = true //nolint:gosec -- encryption-only mode is an explicit public contract
 		return config, nil
 	}
-	if database.TLS.CAFile != "" {
-		roots, err := loadDatabaseRootCAs(database.TLS.CAFile)
+	if database.TLS.CAFile != "" || database.TLS.CABytes != nil {
+		var roots *x509.CertPool
+		var err error
+		if database.TLS.Snapshot {
+			roots = x509.NewCertPool()
+			if !roots.AppendCertsFromPEM(database.TLS.CABytes) {
+				err = errors.New("invalid database TLS CA")
+			}
+		} else {
+			roots, err = loadDatabaseRootCAs(database.TLS.CAFile)
+		}
 		if err != nil {
 			return nil, err
 		}

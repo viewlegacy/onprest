@@ -10,14 +10,15 @@
     "start": "next start"
   },
   "dependencies": {
-    "next": "^16.3.4",
+    "next": "^16.3.8",
     "nextra": "4.6.0",
     "nextra-theme-docs": "4.6.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },
   "overrides": {
-    "@xmldom/xmldom": "0.9.12"
+    "@xmldom/xmldom": "0.9.12",
+    "katex": "0.19.0"
   },
   "devDependencies": {
     "pagefind": "^1.5.2"

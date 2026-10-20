@@ -24,50 +24,77 @@ func TestPostgresPolicyAndQueryFailures(t *testing.T) {
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
 	tmp := t.TempDir()
-	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  limited_rows:
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `limited_rows:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 2
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select n::int as n from generate_series(1,5) as n
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 2
-      max_bytes: 128KB
-    result:
-      n:
-        type: integer
-  slow_query:
+  output:
+    data: {}
+    items:
+      properties:
+        n:
+          type: integer
+slow_query:
+  policy:
+    readonly: true
+    timeout: 200ms
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select 'done'::text as slept from pg_sleep(1)
-    policy:
-      readonly: true
-      timeout: 200ms
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      slept:
-        type: string
-  failing_query:
+  output:
+    data: {}
+    items:
+      properties:
+        slept:
+          type: string
+failing_query:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select (1 / :denominator::int)::int as value
-    params:
+  input:
+    properties:
       denominator:
         type: integer
-        required: true
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      value:
-        type: integer
-  too_large:
+    required:
+      - denominator
+  output:
+    data: {}
+    items:
+      properties:
+        value:
+          type: integer
+too_large:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 1KB
+  executor:
+    type: db
+    source: primary
     sql: select repeat('x', 2048)::text as payload
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 1KB
-    result:
-      payload:
-        type: string`)
+  output:
+    data: {}
+    items:
+      properties:
+        payload:
+          type: string
+`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -99,19 +126,23 @@ func TestPostgresPolicyAndQueryFailures(t *testing.T) {
 	if status != http.StatusGatewayTimeout {
 		t.Fatalf("slow_query status=%d want %d; body=%s", status, http.StatusGatewayTimeout, string(body))
 	}
-	requireAPIErrorCode(t, body, "AGENT_QUERY_TIMEOUT")
+	requireAPIErrorCode(t, body, "EXECUTION_TIMEOUT")
 
 	status, body = postCapability(t, baseURL, secrets.APIKey, "failing_query", `{"denominator":0}`)
 	if status != http.StatusBadGateway {
 		t.Fatalf("failing_query status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
 	}
-	requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+	requireAPIErrorCode(t, body, "EXECUTION_FAILED")
 
 	status, body = postCapability(t, baseURL, secrets.APIKey, "too_large", `{}`)
-	if status != http.StatusBadGateway {
-		t.Fatalf("too_large status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("too_large status=%d want %d; body=%s", status, http.StatusUnprocessableEntity, string(body))
 	}
-	requireAPIErrorCode(t, body, "AGENT_QUERY_FAILED")
+	requireAPIErrorCode(t, body, "LIMIT_EXCEEDED")
+
+	if !strings.Contains(string(body), `"outcome":"no_change"`) {
+		t.Fatalf("too_large outcome: %s", body)
+	}
 
 	cancel()
 	select {
@@ -143,16 +174,23 @@ func TestReadonlyMultiStatementIsRejectedBeforeRealPostgresExecution(t *testing.
 	})
 
 	secrets := newITSecrets(t)
-	capabilityFile := writePostgresCapability(t, t.TempDir(), dbConfig, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `  attempted_write:
+	capabilityFile := writePostgresCapability(t, t.TempDir(), dbConfig, "ws://127.0.0.1:1/ws/agent", secrets.AgentPrivateKey, `attempted_write:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: "select value from onprest_readonly_guard where id = 1; update onprest_readonly_guard set value = 99 where id = 1"
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      value:
-        type: integer`)
+  output:
+    data: {}
+    items:
+      properties:
+        value:
+          type: integer
+`)
 	if _, err := agentpkg.NewRunner(context.Background(), agentpkg.Config{CapabilityFile: capabilityFile}, nil); err == nil {
 		t.Fatal("NewRunner accepted readonly multi-statement SQL")
 	}
@@ -169,26 +207,39 @@ func TestAgentExecutesIndependentRequestsConcurrentlyAgainstPostgres(t *testing.
 	db := postgresContainerConfig(t)
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
-	capabilityFile := writePostgresCapability(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  blocking_query:
+	capabilityFile := writePostgresCapability(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `blocking_query:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: /* onprest_it_parallel_block */ select 1::int as id from pg_sleep(1)
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer
-  fast_query:
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+fast_query:
+  policy:
+    readonly: true
+    timeout: 2s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: select 2::int as id
-    policy:
-      readonly: true
-      timeout: 2s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer`)
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+`)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGateway(t, ctx, addr, secrets, 3*time.Second)
@@ -237,26 +288,39 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 	db := postgresContainerConfig(t)
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
-	capabilityFile := writePostgresCapabilityWithRuntime(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, 1, `  first_blocking_query:
+	capabilityFile := writePostgresCapabilityWithRuntime(t, t.TempDir(), db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, 1, `first_blocking_query:
+  policy:
+    readonly: true
+    timeout: 4s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: /* onprest_it_concurrency_first */ select 1::int as id from pg_sleep(2)
-    policy:
-      readonly: true
-      timeout: 4s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer
-  second_blocking_query:
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+second_blocking_query:
+  policy:
+    readonly: true
+    timeout: 4s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: /* onprest_it_concurrency_second */ select 2::int as id from pg_sleep(1)
-    policy:
-      readonly: true
-      timeout: 4s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      id:
-        type: integer`)
+  output:
+    data: {}
+    items:
+      properties:
+        id:
+          type: integer
+`)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	baseURL := startInternalGatewayWithConfig(t, ctx, addr, secrets, 5*time.Second, io.Discard, func(cfg *gateway.Config) {
@@ -303,7 +367,7 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 	if busyStatus != http.StatusServiceUnavailable {
 		t.Fatalf("REST request beyond bounded queue status=%d body=%s", busyStatus, busyBody)
 	}
-	requireAPIErrorCode(t, busyBody, "AGENT_BUSY")
+	requireAPIErrorCode(t, busyBody, "BUSY")
 	if elapsed := time.Since(busyStart); elapsed > 750*time.Millisecond {
 		t.Fatalf("REST bounded-queue rejection waited %s instead of failing promptly", elapsed)
 	}
@@ -315,7 +379,7 @@ func TestAgentYAMLMaxConcurrentRequestsSerializesRealPostgresExecutions(t *testi
 		t.Fatal("legacy MCP busy text is empty")
 	}
 	mcpBusy := postMCPPayloadWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":"busy","method":"tools/call","params":{"name":"second_blocking_query","arguments":{}}}`)
-	if modernBusyText := requireMCPToolErrorCode(t, mcpBusy, "AGENT_BUSY"); modernBusyText != legacyBusyText {
+	if modernBusyText := requireMCPToolErrorCode(t, mcpBusy, "BUSY"); modernBusyText != legacyBusyText {
 		t.Fatalf("legacy/modern MCP busy text differs: legacy=%q modern=%q", legacyBusyText, modernBusyText)
 	}
 	if elapsed := time.Since(mcpBusyStart); elapsed > 750*time.Millisecond {
@@ -369,26 +433,43 @@ func TestAgentCapabilityRateLimitRejectsBeforeRealPostgresThroughRESTAndMCP(t *t
 
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
-	capabilityFile := writePostgresCapabilityWithRuntime(t, t.TempDir(), dbConfig, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, 2, `  rest_limited:
+	capabilityFile := writePostgresCapabilityWithRuntime(t, t.TempDir(), dbConfig, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, 2, `rest_limited:
+  policy:
+    readonly: false
+    timeout: 2s
+    max_affected_rows: 1
+    rate_limit: {requests: 1, per: 1h, burst: 2}
+    max_output_bytes: 1KB
+  executor:
+    type: db
+    source: primary
     sql: insert into onprest_agent_rate_limit_probe (kind, id) values ('rest', :id)
-    params:
-      id: {type: string, required: true}
-    policy:
-      readonly: false
-      timeout: 2s
-      max_affected_rows: 1
-      max_bytes: 1KB
-      rate_limit: {requests: 1, per: 1h, burst: 2}
-  mcp_limited:
+  input:
+    properties:
+      id: {type: string}
+    required:
+      - id
+  output:
+    data: {}
+mcp_limited:
+  policy:
+    readonly: false
+    timeout: 2s
+    max_affected_rows: 1
+    rate_limit: {requests: 1, per: 1h, burst: 1}
+    max_output_bytes: 1KB
+  executor:
+    type: db
+    source: primary
     sql: insert into onprest_agent_rate_limit_probe (kind, id) values ('mcp', :id)
-    params:
-      id: {type: string, required: true}
-    policy:
-      readonly: false
-      timeout: 2s
-      max_affected_rows: 1
-      max_bytes: 1KB
-      rate_limit: {requests: 1, per: 1h, burst: 1}`)
+  input:
+    properties:
+      id: {type: string}
+    required:
+      - id
+  output:
+    data: {}
+`)
 
 	runCtx, stop := context.WithCancel(context.Background())
 	defer stop()
@@ -435,7 +516,7 @@ func TestAgentCapabilityRateLimitRejectsBeforeRealPostgresThroughRESTAndMCP(t *t
 			}
 		case http.StatusTooManyRequests:
 			limited++
-			requireAPIErrorCode(t, got.body, "AGENT_RATE_LIMITED")
+			requireAPIErrorCode(t, got.body, "RATE_LIMITED")
 		default:
 			t.Fatalf("parallel REST status=%d body=%s", got.status, got.body)
 		}
@@ -450,8 +531,8 @@ func TestAgentCapabilityRateLimitRejectsBeforeRealPostgresThroughRESTAndMCP(t *t
 		if status != http.StatusTooManyRequests {
 			t.Fatalf("REST rejection %d status=%d body=%s", i, status, body)
 		}
-		requireAPIErrorCode(t, body, "AGENT_RATE_LIMITED")
-		if !strings.Contains(string(body), "agent rate limit exceeded") || strings.Contains(string(body), secret) {
+		requireAPIErrorCode(t, body, "RATE_LIMITED")
+		if !strings.Contains(string(body), "capability rate limit exceeded") || strings.Contains(string(body), secret) {
 			t.Fatalf("REST rejection exposed params or wrong message: %s", body)
 		}
 	}
@@ -464,7 +545,7 @@ func TestAgentCapabilityRateLimitRejectsBeforeRealPostgresThroughRESTAndMCP(t *t
 	for i := 0; i < mcpRejected; i++ {
 		secret := "MCP-SECRET-SENTINEL-" + time.Duration(i).String()
 		body := postMCPPayloadWithProtocol(t, baseURL, secrets.APIKey, modernMCPProtocolVersion, `{"jsonrpc":"2.0","id":"mcp-limited","method":"tools/call","params":{"name":"mcp_limited","arguments":{"id":"`+secret+`"}}}`)
-		if text := requireMCPToolErrorCode(t, body, "AGENT_RATE_LIMITED"); !strings.Contains(text, "agent rate limit exceeded") || strings.Contains(string(body), secret) {
+		if text := requireMCPToolErrorCode(t, body, "RATE_LIMITED"); !strings.Contains(text, "capability rate limit exceeded") || strings.Contains(string(body), secret) {
 			t.Fatalf("MCP rejection exposed params or wrong message: %s", body)
 		}
 	}
@@ -497,16 +578,23 @@ func TestPostgresDBUnreachableDuringQuery(t *testing.T) {
 	secrets := newITSecrets(t)
 	addr := freeAddr(t)
 	tmp := t.TempDir()
-	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `  interrupted_sleep:
+	capabilityFile := writePostgresCapability(t, tmp, db, "ws://"+addr+"/ws/agent", secrets.AgentPrivateKey, `interrupted_sleep:
+  policy:
+    readonly: true
+    timeout: 15s
+    max_rows: 1
+    max_output_bytes: 128KB
+  executor:
+    type: db
+    source: primary
     sql: /* onprest_it_interrupted_sleep */ select 'done'::text as slept from pg_sleep(10)
-    policy:
-      readonly: true
-      timeout: 15s
-      max_rows: 1
-      max_bytes: 128KB
-    result:
-      slept:
-        type: string`)
+  output:
+    data: {}
+    items:
+      properties:
+        slept:
+          type: string
+`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -538,10 +626,10 @@ func TestPostgresDBUnreachableDuringQuery(t *testing.T) {
 		t.Fatal("interrupted_sleep request did not return after stopping DB container")
 	}
 	status, body := result.status, result.body
-	if status != http.StatusBadGateway {
-		t.Fatalf("interrupted_sleep status=%d want %d; body=%s", status, http.StatusBadGateway, string(body))
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("interrupted_sleep status=%d want %d; body=%s", status, http.StatusServiceUnavailable, string(body))
 	}
-	requireAPIErrorCode(t, body, "AGENT_DB_UNREACHABLE")
+	requireAPIErrorCode(t, body, "DEPENDENCY_UNAVAILABLE")
 
 	cancel()
 	select {

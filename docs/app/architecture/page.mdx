@@ -1,160 +1,74 @@
-# Architecture
+# How It Works
 
-Onprest is designed to expose only agent-defined capabilities, not the database itself.
-
-The agent classifies each capability as SELECT or mutation at startup. Mutations execute in explicit transactions and return native affected count only after a successful commit. An optional [affected-count limit](/agent/capability-yaml#policy) is checked before commit and triggers transaction rollback if exceeded. A gateway timeout or in-flight disconnect leaves a mutation outcome unknown even when cancellation was requested.
+Onprest separates two questions. The gateway answers "who may call what". The agent answers "what does this capability do, and what may it return". Keeping these apart is what lets the public side stay useful without holding anything sensitive.
 
 ```text
-[API user / MCP client]
+[API client / AI agent]
   |
-  | REST / MCP / OpenAPI / healthz
+  | REST / MCP / OpenAPI
   v
 [onprest-gateway]
   ^
-  | outbound connection from Agent
+  | WebSocket, opened outbound by the agent
+  |
 [onprest-agent + capability.yaml]
   |
   v
-[legacy database]
+[database / folder / internal API / Wasm module]
 ```
 
-## Mental Model
+## Components
 
-1. Define a capability on the on-prem side.
-2. Define its input contract, execution policy, and operation-specific output contract.
-3. Start the agent inside the customer network.
-4. The agent connects outbound to the gateway.
-5. REST and MCP clients call only capabilities their API key can access.
-6. The agent validates input, applies policy, executes prepared SQL, filters SELECT output or produces a mutation count, and returns the result.
+| Component | Runs | Does |
+|---|---|---|
+| `onprest-gateway` | Where callers and the agent can reach it | Authenticates API keys, authorizes capabilities, serves REST, MCP, OpenAPI, and `/healthz`, and accepts the agent's connection |
+| `onprest-agent` | Inside the on-prem network, next to the systems it uses | Loads `capability.yaml`, prepares the sources it references, runs capabilities, and keeps detailed errors in a local log |
+| `capability.yaml` | With the agent | Defines every operation that can exist, its sources, input, limits, and output |
 
-The gateway does not receive private schema knowledge, SQL, DSNs, DB credentials, or execution rules. Those stay inside the on-prem agent, where `capability.yaml` defines the only executable operations. The gateway receives only the agent-generated public capability contract needed for OpenAPI and MCP discovery.
+Both are single static binaries. Neither needs the other's configuration, and neither stores application data in a database.
 
-## Design Principle
+## A request, step by step
 
-The gateway handles "who can call what." The Agent owns "what each capability means" and the execution boundary.
+1. A client calls `POST /api/v1/capabilities/get_customer` or the MCP tool `get_customer` with an API key.
+2. The gateway checks the key and whether it may call `get_customer`, then forwards the name and input to the connected agent.
+3. The agent checks that the capability exists and validates the input against its schema and policy.
+4. The agent runs the capability's executor: the SQL statement, the folder read, the HTTP call, or the Wasm module.
+5. The agent selects and validates the declared output, and only that leaves the network.
+6. The gateway returns the result to the client and writes one log line without params or result data.
 
-This separation is the core of Onprest.
+The agent loads `capability.yaml` at startup and runs from that definition until it restarts. When the agent connects, the gateway fetches the public contract (input and output schemas, descriptions) and builds OpenAPI and the MCP tool list from it.
 
-- The gateway does not store SQL text.
-- The gateway does not store DB host, user, or password.
-- Runtime gateway requests forward only the capability name and params.
-- The agent validates params and policy, then enforces the SELECT result allow-list or DML count-only contract from `capability.yaml`.
-- OpenAPI / MCP tools are generated from the agent definition.
-
-Even if the gateway is compromised, the attacker can learn the Agent-defined public capability contract, but the Gateway has no place to create unknown SQL, holds no DB credentials, and cannot bypass the capability contract and execution policies enforced by the Agent.
-
-## Responsibility Split
+## Who holds what
 
 | Concern | Gateway | Agent |
-|---|---:|---:|
-| Public REST/MCP endpoint | Yes | No |
-| WebSocket edge | Yes | Outbound client |
+|---|:---:|:---:|
+| Public REST / MCP / OpenAPI endpoint | Yes | No |
 | API key authentication | Yes | No |
 | Capability authorization | Yes | Yes |
-| Rate limiting | Yes (per source IP) | Yes (per capability) |
-| Request observability | Yes | No |
-| OpenAPI/MCP filtering by API key | Yes | No |
-| Public capability metadata | Cache and API-key-filtered serving | Source |
-| SQL text | No | Yes |
-| Database credentials | No | Yes |
+| Rate limiting | Per source IP | Per capability |
+| Request log | Yes | No |
+| Public capability contract | Cached copy, filtered per API key | Source |
+| SQL, folder roots, upstream URLs, Wasm modules | No | Yes |
+| Database and API credentials | No | Yes |
 | Raw database schema knowledge | No | Yes |
-| Business logic and execution meaning | No | Yes |
-| Parameter validation | No | Yes |
-| Execution policy | No | Yes |
-| Prepared SQL execution | No | Yes |
-| SELECT output allow-list / mutation count-only contract | No | Yes |
-| Detailed DB errors | No | Local only |
+| Input validation | Ingress check against the contract | Full validation before execution |
+| Execution policy and output selection | No | Yes |
+| Detailed errors | No | Local log only |
 | Agent private key | No | Yes |
 | Agent public key | Yes | No |
 
-## AI / MCP Fit
+## Trust boundary
 
-This design is a natural fit for AI and MCP clients because it does not ask the cloud-facing caller or gateway to be trusted with database power. AI agents call explicit tools generated from approved capabilities, while the on-prem agent enforces the actual contract.
+Onprest assumes the gateway may be observed or compromised. An attacker who controls it learns the public contract of each capability, but cannot read SQL or credentials, cannot invent an operation outside `capability.yaml`, and cannot bypass the input validation, policy, or output selection the agent enforces.
 
-In practice, an AI agent receives a narrow tool such as `get_customer` or `search_orders`. It does not receive a DSN, unrestricted SQL executor, DB credentials, or raw schema access. The gateway can be compromised or misused and still cannot invent operations outside `capability.yaml`.
+The agent is the trust boundary. What a capability can reach is limited by the agent's configuration and its operating-system permissions; [Security](/security#what-the-agent-may-touch) explains how to keep each executor narrow.
 
-## OSS Deployment Boundary
+## One gateway per customer
 
-The OSS core is two independent binaries.
+Run a dedicated gateway process for each customer or trust domain. API keys, the agent public key, the cached contract, and logs then belong to one environment, and the operational unit matches the trust boundary. A gateway accepts one agent connection at a time.
 
-| Component | Deployment unit | Responsibility |
-|---|---|---|
-| gateway | `onprest-gateway` | REST / MCP / OpenAPI / healthz / WebSocket / API key auth / capability auth |
-| agent | `onprest-agent` | YAML lint / DB ping / EXPLAIN / params validation / SQL execution / local detail logs |
+## Network and TLS
 
-## Gateway Responsibilities
+TLS termination and the network edge are yours to choose; see [Reverse Proxy](/gateway/reverse-proxy). The agent always connects outbound and must use `wss://` unless the gateway is on the same host. Database and upstream API TLS are configured separately on the agent.
 
-The gateway is a Go single binary and does not persist application state. It reads authentication configuration at startup and keeps runtime state, such as the public capability cache and active connections, in memory. Runtime state is rebuilt after restart.
-
-- API key authentication
-- Per-API-key capability-level authorization
-- IP allow list
-- trusted proxy handling
-- per-source HTTP rate limiting
-- REST endpoint
-- MCP endpoint
-- `/openapi.json`
-- `/healthz`
-- agent WebSocket endpoint
-- stdout JSON logging
-- graceful shutdown
-- one request-body limit for both REST and MCP, configured by gateway env and defaulting to 1 MiB
-
-Agent connections are limited to one live connection. Before upgrade, the gateway issues a one-time, one-minute challenge that is included in the Ed25519-signed handshake and consumed atomically. Issued challenges do not survive a gateway restart, so a complete pre-restart handshake cannot be replayed afterward. Non-loopback agent transport requires `wss://` by default. The gateway sends WebSocket ping frames and requires timely pong traffic, so a stale TCP session is closed and a replacement may connect. If another agent tries to connect while the existing session is still live, the gateway rejects it and writes a warning log.
-
-All outbound agent messages pass through one bounded writer queue with write deadlines. Each request has independent pending state; disconnect or write failure releases affected callers immediately instead of waiting for the request timeout. Meta retrieval is retried with bounded backoff only for the current connection generation, and disconnected metadata is not served as current state.
-
-## Agent Responsibilities
-
-The agent is also a Go single binary. It is deployed on the on-prem side together with `capability.yaml`.
-
-- outbound WebSocket connection to the gateway
-- Connection signing with an Ed25519 private key
-- `capability.yaml` lint
-- DB ping
-- SQL EXPLAIN verification
-- params validation
-- policy enforcement
-- optional per-capability Agent rate limiting before execution admission
-- prepared statement execution
-- SELECT result allow-list and DML count-only response enforcement
-- OpenAPI spec generation
-- runtime detail output to the local log
-- reconnect every 30 seconds
-- up to `runtime.max_concurrent_requests` concurrent capability executions per connection (default 16), with an equally bounded waiting queue
-
-Normal startup and `onprest-agent validate` share the same configuration and database preparation. Validation closes those resources and exits without connecting to the Gateway or executing a capability. `onprest-agent doctor` reuses that preparation to diagnose Gateway connectivity and Agent-key authentication without changing the running connection. Normal startup alone transfers the prepared resources to the runtime Runner and connects.
-
-`capability.yaml` is loaded at startup, then the agent runs from the in-memory definition. Restart the agent to apply changes.
-
-## Capability Tunnel
-
-A normal gateway-to-agent request contains only a capability name and params.
-
-```json
-{
-  "id": "01J5ABCDEF1234567890ABCDEF",
-  "capability": "get_customer",
-  "params": {
-    "customer_id": 1
-  }
-}
-```
-
-The agent checks whether the capability exists, whether params match the contract, and whether policy is satisfied before querying the DB. Omitted or true `readonly` accepts one `SELECT`; explicit false also accepts one `INSERT`, `UPDATE`, or `DELETE`. The dialect-aware scanner rejects multiple statements and recognizes nested block comments in PostgreSQL and SQL Server. Integer JSON tokens remain exact through signed 64-bit conversion; SELECT values must be finite and representable by their declared result types, while DML returns only a non-negative native affected count.
-
-## Dedicated Gateway Model
-
-Onprest assumes a dedicated gateway process per customer.
-
-In this model, API keys, the agent public key, OpenAPI cache, and stdout logs are not shared across customers. Because the gateway has no persistent DB and is separated by process and environment variables, the operational unit matches the trust boundary.
-
-## TLS and Network Edge
-
-Network-edge infrastructure and TLS termination are environment-owned. The gateway can be exposed directly or placed behind an optional compatible reverse proxy or load balancer. See [Reverse Proxy](/gateway/reverse-proxy) when using one.
-
-Database TLS is independent from gateway-edge TLS. PostgreSQL, MySQL, SQL Server, and Oracle support `require` and `verify-full`; PostgreSQL additionally supports `verify-ca`. The default is `disable`. `verify-full` authenticates the trust chain and configured host name, while `require` provides encryption only. Optional client certificates are supported for PostgreSQL and MySQL. Unsupported combinations and verification failures are rejected instead of silently downgraded. See [Database configuration](/agent/capability-yaml#database) and the [database-specific guides](/databases) for field-level configuration.
-
-## Product Boundary
-
-Managed products and dashboards are outside the OSS core. They are not dependencies of either OSS binary and their product or operating policies are not defined by this repository.
+Managed products and dashboards are outside the OSS core and are not dependencies of either binary.

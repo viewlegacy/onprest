@@ -1,0 +1,95 @@
+# CSV
+
+A `csv` capability reads CSV files, keeps the rows that match the caller's arguments, and returns them as JSON rows, as a generated CSV file, or both. The files can come from a folder on the agent host or be uploaded in the call. No database is involved.
+
+```yaml
+sources:
+  folders:
+    reports: {root: ./reports, access: read}
+
+capabilities:
+  monthly_sales:
+    executor:
+      type: csv
+      read: {source: reports, selector: {name: sales.csv}}
+      csv: {columns: {amount: {type: integer}}}
+      where: [{column: month, op: eq, input: /month}]
+    input:
+      properties:
+        month: {type: string}
+      required: [month]
+    output:
+      data: {}
+      items:
+        properties:
+          id: {type: string}
+          amount: {type: integer}
+      files: {format: csv, filename: monthly-sales.csv}
+```
+
+Calling `monthly_sales` with `{"month": "2026-10"}` returns the `id` and `amount` of every row whose `month` column is `2026-10`, plus a generated CSV with the same two columns. Other columns in the file, such as an internal note, are used for filtering if you need them but never returned. The [CSV example](https://github.com/viewlegacy/onprest/tree/main/examples/csv) runs this with both a folder file and an upload.
+
+## Where the files come from
+
+`executor.read` takes one of two forms:
+
+- **A folder**: `{source: reports, selector: {...}}`. The source is a [folder source](/capabilities/files#folder-sources) and the selector chooses files by name, pattern, and order; see [Selecting files](/capabilities/files#selecting-files). When the selector matches several files, they are read in selector order.
+- **Uploaded files**: `{input: /documents}`, a JSON Pointer to a required file input. For several files, declare an array with at least one item:
+
+  ```yaml
+  input:
+    properties:
+      documents: {items: {type: file, extensions: [csv]}, minItems: 1}
+    required: [documents]
+  ```
+
+  Uploaded files are read in the order they were sent and are not saved anywhere.
+
+All files in one call must have the same header names in the same order.
+
+## Parsing
+
+`executor.csv` is optional. Without it, the file is UTF-8, comma-separated, has a header row, and every column is read as a string. Strings are kept as they are, so `00123` keeps its leading zeros.
+
+| Key | Default | Values |
+|---|---|---|
+| `header` | `true` | Whether the first row holds column names |
+| `encoding` | `utf-8` | `utf-8`, `shift_jis`, or `cp932` (Windows Japanese, including vendor extensions) |
+| `delimiter` | `,` | Any single character, such as `";"` or `"\t"` |
+| `columns` | all strings | Per-column settings, by column name |
+
+Each entry in `columns` can set:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `type` | `string` | `string`, `integer`, `number`, or `boolean` (`true` / `false`) |
+| `nullable` | `false` | Whether the column may contain null |
+| `null_values` | `[]` | Exact cell values that mean null, such as `["", "NULL"]`. In a column without `nullable: true`, such a value fails parsing |
+| `position` | none | Zero-based column index. Required for every column when `header: false` |
+
+A UTF-8 byte order mark is not removed; it stays at the start of the first header name. Files saved as "CSV UTF-8" by Excel have one, so export them without a BOM or the first column name will not match.
+
+You only need to list the columns whose type is not a string or that you want to name in a headerless file. Every row must parse, including rows that a filter later discards; a malformed file fails the call with `EXECUTION_FAILED` and returns nothing.
+
+## Filtering
+
+`where` is a list of conditions, all of which must match:
+
+```yaml
+where:
+  - {column: month, op: eq, input: /month}
+  - {column: region, op: in, input: /regions}
+```
+
+Operators are `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, and `in`. `input` points to a required input property of the same type as the column; for `in`, an array of that type. Strings compare by byte order and `false` sorts before `true`. A null cell never matches, not even with `ne`.
+
+## Results
+
+The matching rows are published as `{"rows": [...], "count": n}` and, if configured, as a generated CSV; both use the fields declared in `output`. See [Inputs and outputs](/capabilities/inputs-and-outputs#output).
+
+- No matching rows is a success with an empty list (and a CSV with only the header).
+- A folder selector that finds no file returns `NOT_FOUND`.
+- Unlike a database query, more matching rows than `policy.max_rows` fail the call with `LIMIT_EXCEEDED` instead of being cut off.
+- A column declared in `output` that is missing from the file, or whose type differs from its `csv.columns` type (string by default), fails with `OUTPUT_INVALID`.
+
+To return the original CSV file unchanged, use a [file capability](/capabilities/files) instead.

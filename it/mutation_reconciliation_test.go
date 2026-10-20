@@ -100,7 +100,7 @@ func TestContainerDBDriverMutationReconciliation(t *testing.T) {
 				if status != http.StatusServiceUnavailable {
 					t.Fatalf("read-unavailable status=%d body=%s", status, body)
 				}
-				requireAPIErrorCode(t, body, "GATEWAY_AGENT_OFFLINE")
+				requireAPIErrorCode(t, body, "AGENT_OFFLINE")
 				if got := reconciliationRowCount(t, driver, dbCfg); got != 2 {
 					t.Fatalf("read-unavailable path changed persisted row count=%d want 2", got)
 				}
@@ -301,7 +301,7 @@ func runReconciliationScenarios(t *testing.T, driver string, cfg postgresConfig,
 		if status != http.StatusConflict {
 			t.Fatalf("unique collision status=%d body=%s", status, body)
 		}
-		requireAPIErrorCode(t, body, "AGENT_CONSTRAINT_VIOLATION")
+		requireAPIErrorCode(t, body, "CONFLICT")
 		assertReconciliationAttemptDelta(t, driver, cfg, attemptsBefore, 1)
 		status, body = postCapability(t, baseURL, apiKey, "reconcile_order", fmt.Sprintf(`{"external_request_id":%q}`, collision.ExternalRequestID))
 		if status != http.StatusOK {
@@ -422,6 +422,7 @@ func assertMutationReconciliationFixtures(t *testing.T, fixtures mutationReconci
 
 func assertMutationCount(t *testing.T, status int, body []byte, want int) {
 	t.Helper()
+	body = unwrapBusinessEnvelope(t, body)
 	var response struct {
 		Count int `json:"count"`
 	}
@@ -514,6 +515,7 @@ func assertReconciliationMCPRows(t *testing.T, body []byte, want *reconciliation
 
 func assertReconciliationRows(t *testing.T, body []byte, want *reconciliationPayload) {
 	t.Helper()
+	body = unwrapBusinessEnvelope(t, body)
 	var response struct {
 		Rows  []reconciliationRow `json:"rows"`
 		Count int                 `json:"count"`
@@ -539,6 +541,7 @@ func assertReconciliationRows(t *testing.T, body []byte, want *reconciliationPay
 
 func reconciliationPayloadFromRows(t *testing.T, body []byte) reconciliationPayload {
 	t.Helper()
+	body = unwrapBusinessEnvelope(t, body)
 	var response struct {
 		Rows []reconciliationRow `json:"rows"`
 	}
@@ -559,28 +562,39 @@ func renderMutationReconciliationCapability(t *testing.T, repo, dir, driver stri
 	if err != nil {
 		t.Fatalf("read mutation reconciliation capability example: %v", err)
 	}
-	rendered := string(content)
-	start := strings.Index(rendered, "database:\n")
-	if start < 0 {
-		t.Fatal("example missing database section")
-	}
-	end := strings.Index(rendered[start:], "\ngateway:") + start
-	if end <= start {
-		t.Fatal("example missing database section")
-	}
-	database := "database:\n  driver: " + driver + "\n  host: " + yamlString(db.Host) + "\n  port: " + db.Port + "\n  name: " + yamlString(db.Name) + "\n  user: " + yamlString(db.User) + "\n  password: " + yamlString(db.Password) + "\n"
-	rendered = rendered[:start] + database + rendered[end:]
-	gatewayStart := strings.Index(rendered, "gateway:\n")
-	if gatewayStart < 0 {
-		t.Fatal("example missing gateway section")
-	}
-	gatewayEnd := strings.Index(rendered[gatewayStart:], "\ndefaults:") + gatewayStart
-	if gatewayEnd <= gatewayStart {
-		t.Fatal("example missing gateway section")
-	}
+	database := "sources:\n  databases:\n    primary:\n      driver: " + driver + "\n      host: " + yamlString(db.Host) + "\n      port: " + db.Port + "\n      name: " + yamlString(db.Name) + "\n      user: " + yamlString(db.User) + "\n      password: " + yamlString(db.Password) + "\n"
 	gateway := "gateway:\n  url: " + yamlString(gatewayURL) + "\n  agent_private_key: " + yamlString(agentPrivateKey) + "\n"
-	rendered = rendered[:gatewayStart] + gateway + rendered[gatewayEnd:]
+	rendered := replaceTopLevelYAMLSection(t, string(content), "sources", database)
+	rendered = replaceTopLevelYAMLSection(t, rendered, "gateway", gateway)
 	return writeFile(t, filepath.Join(dir, "capability.reconciliation."+driver+".yaml"), rendered)
+}
+
+// replaceTopLevelYAMLSection replaces one top-level key and its indented body,
+// up to the next line that starts in column 0, regardless of section order.
+func replaceTopLevelYAMLSection(t *testing.T, document, key, replacement string) string {
+	t.Helper()
+	lines := strings.SplitAfter(document, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimRight(line, "\n") == key+":" {
+			if start >= 0 {
+				t.Fatalf("example has duplicate %s section", key)
+			}
+			start = i
+		}
+	}
+	if start < 0 {
+		t.Fatalf("example missing %s section", key)
+	}
+	end := start + 1
+	for end < len(lines) && (strings.HasPrefix(lines[end], " ") || strings.TrimSpace(lines[end]) == "") {
+		end++
+	}
+	// Keep the blank lines that separate this section from the next one.
+	for end > start+1 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return strings.Join(lines[:start], "") + replacement + strings.Join(lines[end:], "")
 }
 
 func setupMutationReconciliationFixture(t *testing.T, repo, driver string, cfg postgresConfig) {
@@ -1073,7 +1087,7 @@ func waitForResponseCutReconciliationOutcome(t *testing.T, driver string, cfg po
 				continue
 			}
 			errorCode = entry.ErrorCode
-			if errorCode != "AGENT_QUERY_TIMEOUT" && errorCode != "AGENT_TRANSACTION_OUTCOME_UNKNOWN" {
+			if errorCode != "EXECUTION_TIMEOUT" && errorCode != "OUTCOME_UNKNOWN" {
 				t.Fatalf("response-cut reconciliation mutation ended with %s", errorCode)
 			}
 			break
@@ -1091,7 +1105,7 @@ func waitForResponseCutReconciliationOutcome(t *testing.T, driver string, cfg po
 			if rows[0] != want {
 				t.Fatalf("response-cut reconciliation payload=%#v, want %#v", rows[0], want)
 			}
-			if errorCode == "AGENT_QUERY_TIMEOUT" {
+			if errorCode == "EXECUTION_TIMEOUT" {
 				t.Fatal("mutation committed after Agent reported confirmed rollback")
 			}
 			t.Log("response-cut mutation committed; independent DB read matched the full payload")

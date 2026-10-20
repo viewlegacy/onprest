@@ -1,95 +1,40 @@
 # MCP
 
-MCP is a first-class API surface in Onprest. It exposes agent-defined capabilities as tools, so clients call named business operations instead of receiving raw database access.
+The gateway serves an MCP endpoint at `POST /mcp`. Each capability the API key may call appears as a tool with the capability's name, description, and input schema, so an AI agent works with named business operations instead of database or network access.
 
-The Gateway knows which named capabilities a caller may use, but not their SQL, database credentials, or business meaning. It builds `tools/list` from Agent-owned public metadata, applies API-key filtering, and forwards `tools/call` to the Agent. The Agent remains responsible for parameter validation, policy enforcement, SQL execution, and result validation.
+## Connect a client
 
-The MCP endpoint uses stateless JSON-RPC over HTTP. Version selection is resolved per request, and responses use JSON.
-
-## Endpoint and protocol versions
-
-The endpoint is `POST /mcp`. Supported protocol versions are `2025-03-26`, `2025-06-18`, and `2025-11-25`.
-
-An `initialize` request selects the protocol version through `params.protocolVersion`. A supported value is returned unchanged; an unknown value receives the latest supported value, `2025-11-25`. `serverInfo.version` reports the Gateway binary version.
-
-After initialization, send the selected version in `MCP-Protocol-Version`. A request without this header uses the `2025-03-26` compatibility behavior; an invalid or unsupported value returns HTTP 400. Version selection is per request rather than stored in a session.
-
-```http
-POST /mcp
-Authorization: Bearer {api_key}
-Content-Type: application/json
-MCP-Protocol-Version: 2025-11-25
-Accept: application/json, text/event-stream
-```
-
-`Content-Type` must be `application/json`, and `Accept` must allow `application/json`. The Gateway returns JSON rather than an SSE stream.
-
-Application requests other than `POST` return HTTP 405. Browser requests must use an origin allowed by `GATEWAY_CORS_ALLOWED_ORIGINS`; requests without `Origin` remain valid for non-browser clients. See [Gateway Configuration](/gateway/configuration) for CORS settings.
-
-The HTTP request body limit defaults to 1 MiB (1,048,576 bytes) and can be changed with `GATEWAY_MAX_REQUEST_BODY_BYTES`. A body larger than the active limit, malformed JSON, or multiple top-level JSON values produces a JSON-RPC parse error (`-32700`, `PARSE_ERROR`) with HTTP 200. The gateway also bounds body-read time. See [Gateway Configuration](/gateway/configuration).
-
-## Client configuration
-
-Paste this connection configuration into an MCP client that supports the `mcpServers` format:
+For clients that accept the `mcpServers` format:
 
 ```json
 {
   "mcpServers": {
     "onprest": {
+      "url": "https://gateway.example.com/mcp",
       "headers": {
         "Authorization": "Bearer <YOUR_ONPREST_API_KEY>"
-      },
-      "url": "https://gateway.example.com/mcp"
+      }
     }
   }
 }
 ```
 
-This is client connection configuration. The `initialize` JSON below is a wire-protocol request sent by an MCP client or SDK; clients normally negotiate initialization and send the subsequent protocol header themselves, so do not add a fixed `MCP-Protocol-Version` to this configuration.
+If your client asks for a transport, choose Streamable HTTP, not SSE. The endpoint uses stateless JSON-RPC over HTTP and answers with JSON, not an event stream. Supported protocol versions are `2025-03-26`, `2025-06-18`, and `2025-11-25`. Clients negotiate the version during `initialize` and send it in the `MCP-Protocol-Version` header afterwards; a request without the header is treated as `2025-03-26`.
+
+Browser-based clients must run on an origin listed in `GATEWAY_CORS_ALLOWED_ORIGINS`.
 
 ## Methods
 
 | Method | Purpose |
 |---|---|
-| `initialize` | MCP initialization and per-request version selection |
+| `initialize` | Version negotiation |
 | `ping` | Liveness check |
-| `tools/list` | Return visible capabilities as MCP tools |
-| `tools/call` | Execute a capability |
+| `tools/list` | The capabilities this API key may call |
+| `tools/call` | Run a capability |
+| `resources/read` | Fetch a file returned by a tool |
+| `resources/list` | Always empty; returned files are not browsable |
 
-## `initialize`
-
-The following is a JSON-RPC wire-protocol example, not an `mcpServers` client configuration file.
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "initialize",
-  "params": {
-    "protocolVersion": "2025-11-25",
-    "capabilities": {},
-    "clientInfo": {"name": "example-client", "version": "1.0.0"}
-  }
-}
-```
-
-The supported protocol schemas require `protocolVersion`, `capabilities`, and `clientInfo`, including the client's `name` and `version`. MCP clients and SDKs normally construct this request automatically. Invalid method parameters return JSON-RPC `INVALID_PARAMS` without invoking a capability.
-
-## `tools/list`
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/list"
-}
-```
-
-The Gateway builds the tool list from cached Agent-owned OpenAPI metadata and filters it by the caller's API key capabilities. For `2025-03-26` behavior (including a request without the version header), each tool exposes its input schema but not `outputSchema`. For `2025-06-18` and `2025-11-25`, `outputSchema` is copied from the capability's OpenAPI JSON response schema.
-
-The Gateway maps explicitly supplied `x-onprest-annotations` values to MCP's `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`; omitted values remain omitted. These hints do not change authorization or execution. OpenAPI `x-onprest-examples` are not copied into MCP tools.
-
-## `tools/call`
+## Calling a tool
 
 ```json
 {
@@ -98,23 +43,23 @@ The Gateway maps explicitly supplied `x-onprest-annotations` values to MCP's `re
   "method": "tools/call",
   "params": {
     "name": "get_customer",
-    "arguments": {"customer_id": 1}
+    "arguments": { "customer_id": 1 }
   }
 }
 ```
 
-The tool name maps to a capability name and `arguments` maps to capability params. `name` is required, and `arguments` must be a JSON object when supplied. Every successful call includes the Agent result as a text `content` item. `2025-06-18` and `2025-11-25` additionally include the same JSON value as `structuredContent`; the legacy `2025-03-26` behavior omits it. The same version distinction applies to execution-error results.
+`arguments` is the capability's input object. The tool result contains the same envelope as a [REST response](/api/rest), as a text item and, on `2025-06-18` and later, also as `structuredContent`. On those versions, `tools/list` includes an `outputSchema` for each tool.
 
-Mutation capabilities use the same `tools/call` method. A successful mutation returns its count-only result in the text fallback and, for newer versions, in `structuredContent`; `count: 0` remains success.
-
-## IDs and notifications
-
-JSON-RPC request IDs may be strings or numbers. The Gateway accepts the official client-to-server notifications defined by the selected protocol version, including `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, and `notifications/roots/list_changed`; `notifications/tasks/status` is accepted only in `2025-11-25`. Notifications are validated but do not invoke capabilities.
-
-A valid notification returns HTTP 202 with an empty body. Invalid parameters on a recognized ID-less notification return HTTP 400 with JSON-RPC `INVALID_PARAMS` and `id: null`; a notification carrying an ID is an `INVALID_REQUEST`. Other ID-less methods are rejected.
+Files are sent inline in `arguments` and returned as links or embedded resources; see [Files](/api/files). Annotations set on a capability become the tool hints `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`. They describe the tool and do not change what it may do.
 
 ## Errors
 
-JSON parse/shape errors, unsupported JSON-RPC methods, and unknown tool names are JSON-RPC errors with HTTP 200. `tools/list` without usable Agent metadata also returns HTTP 200 with JSON-RPC error `-32000` and `error.data.code: GATEWAY_AGENT_OFFLINE`.
+MCP clients see failures at three levels:
 
-Once a known tool has been invoked, an agent/runtime failure—including `AGENT_RATE_LIMITED`—is a normal JSON-RPC result with HTTP 200 and `isError: true`. Authentication, the Gateway's source-IP rate limit, origin rejection, and capability authorization happen at the HTTP boundary and retain HTTP 401/403/429 responses. Clients should distinguish HTTP failures, JSON-RPC `error`, and tool results with `isError: true`.
+| Level | Examples | Shape |
+|---|---|---|
+| HTTP | Missing or invalid API key, capability not allowed, source IP rate limit, gateway busy | HTTP 401, 403, 429, or 503 with the REST error body |
+| JSON-RPC | Malformed JSON, unknown method, invalid parameters, agent not connected during `tools/list` | HTTP 200 with a JSON-RPC `error` |
+| Tool | Input validation, execution failures, unknown tool name, capability rate limit | HTTP 200 with `isError: true` and the error envelope |
+
+A tool error carries the same `code` and `outcome` as REST; see [Errors](/api/errors). The gateway's JSON body limit (1 MiB by default) applies to every MCP request.

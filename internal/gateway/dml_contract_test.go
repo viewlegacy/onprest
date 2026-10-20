@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -43,15 +42,15 @@ func TestCallAgentResponseKindContract(t *testing.T) {
 		wantCode   string
 		wantCount  *int64
 	}{
-		{name: "known select", kind: responseKindSelect, payload: `{"rows":[],"count":2}`, wantStatus: http.StatusOK, wantCount: int64Ptr(2)},
+		{name: "known select", kind: responseKindSelect, payload: `{"rows":[{},{}],"count":2}`, wantStatus: http.StatusOK, wantCount: int64Ptr(2)},
 		{name: "known mutation", kind: responseKindMutation, payload: `{"count":0}`, wantStatus: http.StatusOK, wantCount: int64Ptr(0)},
-		{name: "unknown valid", kind: responseKindUnknown, payload: `{"count":3}`, wantStatus: http.StatusOK, wantCount: int64Ptr(3)},
-		{name: "select missing", kind: responseKindSelect, payload: `{"rows":[]}`, wantStatus: http.StatusBadGateway, wantCode: errAgentInternal},
-		{name: "mutation missing", kind: responseKindMutation, payload: `{}`, wantStatus: http.StatusBadGateway, wantCode: errAgentTransactionOutcomeUnknown},
-		{name: "unknown missing", kind: responseKindUnknown, payload: `{}`, wantStatus: http.StatusBadGateway, wantCode: errAgentTransactionOutcomeUnknown},
-		{name: "mutation negative", kind: responseKindMutation, payload: `{"count":-1}`, wantStatus: http.StatusBadGateway, wantCode: errAgentTransactionOutcomeUnknown},
-		{name: "mutation fraction", kind: responseKindMutation, payload: `{"count":1.5}`, wantStatus: http.StatusBadGateway, wantCode: errAgentTransactionOutcomeUnknown},
-		{name: "mutation overflow", kind: responseKindMutation, payload: `{"count":9223372036854775808}`, wantStatus: http.StatusBadGateway, wantCode: errAgentTransactionOutcomeUnknown},
+		{name: "unknown valid", kind: responseKindUnknown, payload: `{"count":3}`, wantStatus: http.StatusNotFound, wantCode: "NOT_FOUND"},
+		{name: "select missing", kind: responseKindSelect, payload: `{"rows":[]}`, wantStatus: http.StatusBadGateway, wantCode: "OUTPUT_INVALID"},
+		{name: "mutation missing", kind: responseKindMutation, payload: `{}`, wantStatus: http.StatusBadGateway, wantCode: "OUTPUT_INVALID"},
+		{name: "unknown missing", kind: responseKindUnknown, payload: `{}`, wantStatus: http.StatusNotFound, wantCode: "NOT_FOUND"},
+		{name: "mutation negative", kind: responseKindMutation, payload: `{"count":-1}`, wantStatus: http.StatusBadGateway, wantCode: "OUTPUT_INVALID"},
+		{name: "mutation fraction", kind: responseKindMutation, payload: `{"count":1.5}`, wantStatus: http.StatusBadGateway, wantCode: "OUTPUT_INVALID"},
+		{name: "mutation overflow", kind: responseKindMutation, payload: `{"count":9223372036854775808}`, wantStatus: http.StatusBadGateway, wantCode: "OUTPUT_INVALID"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,6 +60,7 @@ func TestCallAgentResponseKindContract(t *testing.T) {
 			defer cleanup()
 			if tc.kind != responseKindUnknown {
 				s.responseKinds = map[string]responseKind{"cap": tc.kind}
+				setVersionedTestKind(s, "cap", tc.kind)
 			}
 			result := s.callAgent(context.Background(), "cap", nil)
 			if result.Status != tc.wantStatus || result.Code != tc.wantCode {
@@ -91,7 +91,7 @@ func TestAffectedRowsExceededErrorPreservesRESTAndMCPNullCount(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 				rec := httptest.NewRecorder()
 				s.httpSrv.Handler.ServeHTTP(rec, req)
-				if rec.Code != http.StatusConflict {
+				if rec.Code != http.StatusUnprocessableEntity {
 					t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 				}
 				assertAPIErrorMessage(t, rec.Body.Bytes(), errAgentAffectedRowsExceeded, message)
@@ -146,12 +146,13 @@ func TestRESTAndMCPMutationPayloadPassThroughAndCountLog(t *testing.T) {
 			})
 			defer cleanup()
 			s.responseKinds = map[string]responseKind{"get_customer": tc.kind}
+			setVersionedTestKind(s, "get_customer", tc.kind)
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{}`))
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 			s.httpSrv.Handler.ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK || rec.Body.String() != tc.payload {
+			if rec.Code != http.StatusOK || !equivalentTestBusiness(t, rec.Body.String(), tc.payload) {
 				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 			}
 			if count := lastLogEntry(t, logs)["count"]; count != tc.count {
@@ -164,13 +165,14 @@ func TestRESTAndMCPMutationPayloadPassThroughAndCountLog(t *testing.T) {
 			})
 			defer cleanup()
 			s.responseKinds = map[string]responseKind{"get_customer": tc.kind}
+			setVersionedTestKind(s, "get_customer", tc.kind)
 			req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`))
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 			rec := httptest.NewRecorder()
 			s.httpSrv.Handler.ServeHTTP(rec, req)
-			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"text":`+strconv.Quote(tc.payload)) {
+			if rec.Code != http.StatusOK || !equivalentTestBusiness(t, decodeMCPToolCallEnvelope(t, rec.Body.Bytes()).Result.Content[0].Text, tc.payload) {
 				t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 			}
 			if count := lastLogEntry(t, logs)["count"]; count != tc.count {
@@ -186,9 +188,9 @@ func TestMissingCountClassificationThroughRESTAndMCPHandlers(t *testing.T) {
 		kind     responseKind
 		wantCode string
 	}{
-		{name: "known select", kind: responseKindSelect, wantCode: errAgentInternal},
-		{name: "known mutation", kind: responseKindMutation, wantCode: errAgentTransactionOutcomeUnknown},
-		{name: "unknown", kind: responseKindUnknown, wantCode: errAgentTransactionOutcomeUnknown},
+		{name: "known select", kind: responseKindSelect, wantCode: "OUTPUT_INVALID"},
+		{name: "known mutation", kind: responseKindMutation, wantCode: "OUTPUT_INVALID"},
+		{name: "unknown", kind: responseKindUnknown, wantCode: "OUTPUT_INVALID"},
 	} {
 		for _, protocolName := range []string{"REST", "MCP"} {
 			t.Run(tc.name+" "+protocolName, func(t *testing.T) {
@@ -198,6 +200,7 @@ func TestMissingCountClassificationThroughRESTAndMCPHandlers(t *testing.T) {
 				defer cleanup()
 				if tc.kind != responseKindUnknown {
 					s.responseKinds = map[string]responseKind{"get_customer": tc.kind}
+					setVersionedTestKind(s, "get_customer", tc.kind)
 				}
 				if protocolName == "REST" {
 					req := httptest.NewRequest(http.MethodPost, "/api/v1/capabilities/get_customer", strings.NewReader(`{}`))
@@ -208,7 +211,7 @@ func TestMissingCountClassificationThroughRESTAndMCPHandlers(t *testing.T) {
 					if rec.Code != http.StatusBadGateway {
 						t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 					}
-					assertAPIErrorMessage(t, rec.Body.Bytes(), tc.wantCode, map[string]string{errAgentInternal: "agent internal error", errAgentTransactionOutcomeUnknown: "transaction outcome is unknown"}[tc.wantCode])
+					assertAPIErrorMessage(t, rec.Body.Bytes(), tc.wantCode, "agent output does not satisfy the protocol contract")
 				} else {
 					req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_customer","arguments":{}}}`))
 					req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -216,7 +219,7 @@ func TestMissingCountClassificationThroughRESTAndMCPHandlers(t *testing.T) {
 					req.Header.Set(mcpProtocolHeader, mcpProtocolVersion20251125)
 					rec := httptest.NewRecorder()
 					s.httpSrv.Handler.ServeHTTP(rec, req)
-					assertMCPToolError(t, rec.Body.Bytes(), tc.wantCode, map[string]string{errAgentInternal: "agent internal error", errAgentTransactionOutcomeUnknown: "transaction outcome is unknown"}[tc.wantCode])
+					assertMCPToolError(t, rec.Body.Bytes(), tc.wantCode, "agent output does not satisfy the protocol contract")
 				}
 				entry := lastLogEntry(t, logs)
 				if entry["count"] != nil || entry["error_code"] != tc.wantCode {

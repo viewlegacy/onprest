@@ -1,125 +1,64 @@
 # Errors
 
-Onprest returns stable error codes with public client-facing messages, and keeps sensitive detail out of external responses.
-
-## HTTP Boundary Errors
-
-These errors reject a request at the HTTP layer instead of returning a REST result or MCP JSON-RPC result.
-
-| HTTP | Code | Applies to | Meaning |
-|---:|---|---|---|
-| 401 | `GATEWAY_AUTH_FAILED` | REST / MCP / OpenAPI | API key is missing or invalid |
-| 403 | `GATEWAY_CAPABILITY_DENIED` | REST / MCP | API key cannot call the capability |
-| 403 | `GATEWAY_INVALID_REQUEST` | MCP | `Origin` is not allowed by `GATEWAY_CORS_ALLOWED_ORIGINS`; requests without `Origin` are permitted |
-| 403 | `GATEWAY_IP_DENIED` | All HTTP routes | Source IP is not allowed |
-| 406 | `GATEWAY_INVALID_REQUEST` | MCP | `Accept` does not allow `application/json` |
-| 429 | `GATEWAY_RATE_LIMITED` | All HTTP routes | Rate limit exceeded |
-| 500 | `GATEWAY_INTERNAL_ERROR` | All HTTP routes | Unexpected gateway error |
-
-## REST Error Status Mappings
-
-REST capability execution returns these errors as HTTP statuses. OpenAPI also uses `GATEWAY_AGENT_OFFLINE` when agent metadata is unavailable.
-
-The same Agent error codes apply to MCP `tools/call` execution failures, but their HTTP status is 200 with `result.isError: true`, not the REST status below. See [MCP Errors](/api/mcp#errors) for the response shape.
-
-| HTTP | Code | Applies to | Meaning |
-|---:|---|---|---|
-| 503 | `GATEWAY_AGENT_OFFLINE` | REST / OpenAPI | Agent is not connected or metadata is unavailable |
-| 503 | `AGENT_BUSY` | REST | Agent execution slots and bounded waiting queue are full |
-| 429 | `AGENT_RATE_LIMITED` | REST | Agent capability `policy.rate_limit` is exhausted |
-| 504 | `GATEWAY_TIMEOUT` | REST | Agent response timed out |
-| 400 | `AGENT_VALIDATION_FAILED` | REST | Agent rejected params |
-| 409 | `AGENT_CONSTRAINT_VIOLATION` | REST | SELECT or DML hit a typed database integrity constraint; DML rollback was confirmed |
-| 409 | `AGENT_AFFECTED_ROWS_EXCEEDED` | REST | DML `RowsAffected()` exceeded `policy.max_affected_rows`; rollback was confirmed |
-| 502 | `AGENT_QUERY_FAILED` | REST | SQL execution failed |
-| 502 | `AGENT_TRANSACTION_OUTCOME_UNKNOWN` | REST | A mutation's commit, rollback, or committed success response could not be confirmed |
-| 504 | `AGENT_QUERY_TIMEOUT` | REST | Query exceeded timeout |
-| 502 | `AGENT_DB_UNREACHABLE` | REST | Agent cannot reach the DB |
-| 502 | `AGENT_INTERNAL_ERROR` | REST | Unexpected agent error |
-
-For mutations, `AGENT_CONSTRAINT_VIOLATION` and `AGENT_AFFECTED_ROWS_EXCEEDED` mean rollback was confirmed. Constraint violations can also occur on SELECT. If the transaction outcome cannot be confirmed, the Agent returns `AGENT_TRANSACTION_OUTCOME_UNKNOWN` instead: the change may have committed or rolled back. `AGENT_QUERY_TIMEOUT` indicates the agent observed its policy timeout; mutation rollback was confirmed.
-
-Do not automatically retry a mutation after `GATEWAY_TIMEOUT`, an in-flight agent disconnect, or `AGENT_TRANSACTION_OUTCOME_UNKNOWN`. Check DB state through an independent read capability. This no-auto-retry rule is mutation-specific. Constraint names, SQLSTATE/error numbers, SQL, and row data remain in the agent-local detail log only.
-
-## Endpoint HTTP Errors
-
-| HTTP | Code | Applies to | Meaning |
-|---:|---|---|---|
-| 400 | `GATEWAY_INVALID_REQUEST` | REST / MCP | Invalid REST JSON/content type, or an invalid MCP HTTP/protocol boundary |
-| 404 | `GATEWAY_CAPABILITY_NOT_FOUND` | REST | capability path does not exist |
-| 405 | `GATEWAY_METHOD_NOT_ALLOWED` | REST / MCP | HTTP method is not allowed |
-| 409 | `GATEWAY_AGENT_ALREADY_CONNECTED` | WebSocket | another agent is already connected |
-
-## MCP JSON-RPC Errors
-
-These are normally returned as JSON-RPC errors with HTTP 200. The exception is a recognized id-less client-to-server notification whose parameters fail its schema: it returns HTTP 400 with JSON-RPC `-32602` (`INVALID_PARAMS`) and `id: null`.
-
-| JSON-RPC code | Code | Meaning |
-|---:|---|---|
-| -32700 | `PARSE_ERROR` | JSON cannot be parsed |
-| -32600 | `INVALID_REQUEST` | Invalid JSON-RPC shape |
-| -32601 | `METHOD_NOT_FOUND` | Unsupported method |
-| -32602 | `INVALID_PARAMS` | Invalid method parameters or an unknown tool name |
-| -32000 | `GATEWAY_AGENT_OFFLINE` | `tools/list` metadata is unavailable |
-
-Known-tool execution failures are not JSON-RPC errors. They are MCP results whose `isError` is `true` and one text content item. For `2025-06-18` and `2025-11-25`, the stable agent code/message is also under `structuredContent.error`; legacy `2025-03-26` responses omit structured content. A valid notification returns HTTP 202 with an empty body.
-
-## Public Error Body
-
-REST and HTTP-level MCP errors include `error.code` and public `error.message`.
+Failed calls return an error envelope instead of `result`:
 
 ```json
 {
+  "request_id": "01J5ABCDEF1234567890ABCDEF01",
   "error": {
-    "code": "AGENT_QUERY_FAILED",
-    "message": "database query failed"
+    "code": "VALIDATION_FAILED",
+    "message": "input validation failed",
+    "outcome": "not_started"
   }
 }
 ```
 
-`message` is part of the public API contract. Agent validation messages may identify the invalid field and reason so callers can fix their request. Clients should still branch on `code`.
+Branch on `code` and `outcome`. `message` is a fixed, safe text for people; it never contains SQL, driver errors, paths, credentials, or the values you sent. Some errors add a fixed `reason`, such as `UPSTREAM_HTTP_STATUS`. The detail behind an error is in the agent's [local log](/agent/local-logs).
 
-Agent-originated DB-specific diagnostic detail is written only to the applicable on-prem local log when needed. It is not sent to the Gateway or included in Gateway stdout or HTTP responses. Credentials, Agent keys, API keys, authorization values, and submitted param values are not public diagnostics. See [Agent Local Logs](/agent/local-logs).
+## Codes
 
-## Agent-Originated Messages
+| HTTP | Code | Meaning |
+|---:|---|---|
+| 400 | `INVALID_REQUEST` | The request is malformed: bad JSON, bad Base64, broken multipart |
+| 400 | `VALIDATION_FAILED` | The input does not match the capability's schema |
+| 401 | `AUTH_FAILED` | Missing or invalid API key |
+| 403 | `CAPABILITY_DENIED` | The API key may not call this capability |
+| 403 | `PERMISSION_DENIED` | The source IP or browser origin is not allowed, or the agent may not access a file it needs |
+| 404 | `NOT_FOUND` | Unknown capability, no matching file, or an expired download link |
+| 409 | `CONFLICT` | A database constraint was violated, a file to save already exists, or the agent was restarted with a different configuration while the call was in flight |
+| 409 | `SOURCE_CHANGED` | A file or folder changed while it was being read |
+| 413 | `LIMIT_EXCEEDED` | The request body is larger than the gateway allows |
+| 415 | `INVALID_REQUEST` | Unsupported `Content-Type` |
+| 422 | `LIMIT_EXCEEDED` | A capability limit was exceeded: input size, rows, output size, files |
+| 422 | `APP_*` | A business error returned by a code capability |
+| 429 | `RATE_LIMITED` | A gateway, authentication, or capability rate limit was reached |
+| 500 | `INTERNAL_ERROR` | An unexpected failure |
+| 502 | `EXECUTION_FAILED` | The database, upstream API, file operation, or code failed |
+| 502 | `OUTPUT_INVALID` | The result did not match the declared output |
+| 502 | `OUTCOME_UNKNOWN` | The agent could not confirm whether a commit or rollback happened |
+| 503 | `BUSY` | The gateway or agent is at capacity; nothing was run |
+| 503 | `AGENT_OFFLINE` | No agent is connected |
+| 503 | `DEPENDENCY_UNAVAILABLE` | A database, upstream API, or required gateway setting is unavailable |
+| 504 | `EXECUTION_TIMEOUT` | The capability's timeout or the caller's deadline was reached |
 
-For agent errors, gateway returns the agent's public `code` and `message` unchanged. Secret detail stays in the agent local log.
+Download failures follow the same table, except that a range request gets HTTP 416. MCP tool errors carry the same codes inside a successful HTTP response; see [MCP](/api/mcp#errors).
 
-| Code | Public message |
-|---|---|
-| `GATEWAY_CAPABILITY_NOT_FOUND` | `capability is not defined` |
-| `AGENT_VALIDATION_FAILED` | one of the validation messages below |
-| `AGENT_QUERY_FAILED` | `database query failed` or `response exceeds policy.max_bytes` |
-| `AGENT_QUERY_TIMEOUT` | `query exceeded policy.timeout` |
-| `AGENT_CONSTRAINT_VIOLATION` | `database constraint violation` |
-| `AGENT_AFFECTED_ROWS_EXCEEDED` | `affected rows exceed policy.max_affected_rows` |
-| `AGENT_TRANSACTION_OUTCOME_UNKNOWN` | `transaction outcome is unknown` |
-| `AGENT_DB_UNREACHABLE` | `database is unreachable` |
-| `AGENT_INTERNAL_ERROR` | `agent internal error` |
-| `AGENT_BUSY` | `agent request queue is full` |
-| `AGENT_RATE_LIMITED` | `agent rate limit exceeded` |
+For `RATE_LIMITED`, the message tells you which limit was hit; see [Troubleshooting](/operations/troubleshooting#rate-limited).
 
-Validation messages use the parameter name but never the submitted value.
+## Outcome
 
-| Condition | Public message |
-|---|---|
-| unknown parameter | `unknown param: {name}` |
-| missing required parameter | `required param missing: {name}` |
-| string type mismatch | `{name}: must be string` |
-| string pattern mismatch | `{name}: does not match pattern` |
-| string too short | `{name}: below minLength` |
-| string too long | `{name}: above maxLength` |
-| invalid email | `{name}: must be email` |
-| invalid UUID | `{name}: must be uuid` |
-| invalid date | `{name}: must be date` |
-| invalid date-time | `{name}: must be date-time` |
-| invalid URI | `{name}: must be uri` |
-| URI without scheme | `{name}: must include URI scheme` |
-| integer type mismatch | `{name}: must be integer` |
-| integer below minimum | `{name}: below minimum` |
-| integer above maximum | `{name}: above maximum` |
-| number type mismatch | `{name}: must be number` |
-| number below minimum | `{name}: below minimum` |
-| number above maximum | `{name}: above maximum` |
-| boolean type mismatch | `{name}: must be boolean` |
-| enum mismatch | `{name}: not in enum` |
+`outcome` says what happened on the on-prem side, independent of the code:
+
+| Outcome | Meaning | What to do |
+|---|---|---|
+| `not_started` | Nothing ran | Safe to try again |
+| `no_change` | It ran and changed nothing, for example a failed read | Safe to try again |
+| `rolled_back` | It made changes, and they were all rolled back | Fix the cause, then try again |
+| `committed` | All changes were completed | Do not repeat it; the change is done |
+| `unknown` | Changes may or may not have happened | Check the real state first |
+
+Trust `outcome`, not the code or the capability's annotations. `EXECUTION_TIMEOUT`, for example, can come with `not_started` or `unknown`. Treat a call whose response you never received as `unknown`. Never retry an operation with `unknown` automatically: check the real state first, as described in [Uncertain outcomes](/operations/uncertain-outcomes).
+
+## Application errors
+
+A code capability can return its own business error with `onprest.PublicError(code, message)` in the [Go SDK](/capabilities/code/go). The code must look like `APP_CUSTOMER_NOT_FOUND`: `APP_`, an uppercase letter, then up to 59 uppercase letters, digits, or underscores. The message is 1 to 1024 bytes of UTF-8 without control characters and is returned exactly as written, so write it for the caller. Anything else, including an invalid code, becomes `EXECUTION_FAILED` with a generic message.
