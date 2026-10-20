@@ -346,7 +346,7 @@ func (s *Server) inputResponse(ctx context.Context, ac *agentConn, name string, 
 		s.log("agent_output_rejected", map[string]any{"request_id": identity.ID, "reason": e.Error()})
 		return invalidAgentResult(identity.ID)
 	}
-	result := agentCallResult{RequestID: identity.ID, Status: 200, Payload: payload, Metrics: metrics}
+	result := successfulAgentResult(identity.ID, payload, metrics)
 	return s.registerFiles(ac, identity, name, meta, result)
 }
 

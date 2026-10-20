@@ -36,6 +36,14 @@ type agentCallResult struct {
 
 func (r agentCallResult) OK() bool { return r.Status == http.StatusOK }
 
+func successfulAgentResult(id string, payload []byte, metrics *protocol.Metrics) agentCallResult {
+	count := metrics.ReturnedRows
+	if count == nil {
+		count = metrics.AffectedRows
+	}
+	return agentCallResult{RequestID: id, Payload: payload, Status: http.StatusOK, Count: count, Metrics: metrics}
+}
+
 func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	if len(r.Header.Values(protocol.MajorHeader)) != 1 || r.Header.Get(protocol.MajorHeader) != protocol.Major {
 		writeJSON(w, http.StatusBadRequest, requestAPIError(r, errGatewayInvalidRequest, "unsupported protocol major; require 1"))
@@ -235,11 +243,7 @@ func (s *Server) callAgentOn(ctx context.Context, ac *agentConn, capability stri
 			s.log("agent_output_rejected", map[string]any{"request_id": id, "reason": err.Error()})
 			return invalidAgentResult(id)
 		}
-		count := metrics.ReturnedRows
-		if count == nil {
-			count = metrics.AffectedRows
-		}
-		result := agentCallResult{RequestID: id, Payload: envelope, Status: http.StatusOK, Count: count, Metrics: metrics}
+		result := successfulAgentResult(id, envelope, metrics)
 		if known && metadata.Output != nil {
 			return s.registerFiles(ac, identity, capability, metadata, result)
 		}

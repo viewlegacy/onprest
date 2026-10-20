@@ -254,6 +254,7 @@ func TestCSVDeliveryProductionFolderUploadRESTAndMCP(t *testing.T) {
 			}
 		}
 	}
+	assertCSVExecutionCounts(t, f.logs.String())
 	entries, _ := os.ReadDir(filepath.Join(f.dir, "exchange"))
 	if len(entries) != 2 {
 		t.Fatal("CSV upload saved into business folder", entries)
@@ -264,6 +265,7 @@ func TestCSVDeliveryProductionFolderUploadRESTAndMCP(t *testing.T) {
 }
 func TestCSVDeliveryZeroMultipleLimitAndLateFailureNonpublication(t *testing.T) {
 	f := productionCSVHTTP(t)
+	defer func() { assertCSVExecutionCounts(t, f.logs.String()) }()
 	good := []byte("id,amount,secret\n00123,7,allow\n")
 	cases := []struct {
 		name  string
@@ -332,5 +334,33 @@ func TestCSVDeliveryZeroMultipleLimitAndLateFailureNonpublication(t *testing.T) 
 	var failure contract.ErrorEnvelope
 	if status != 502 || json.Unmarshal(raw, &failure) != nil || failure.Error.Code != "EXECUTION_FAILED" || f.runner.store.Usage() != before {
 		t.Fatal(status, string(raw), f.runner.store.Usage(), before)
+	}
+}
+
+// These events are emitted by the real HTTP/WS Gateway path, after result
+// validation and file registration; checking response data alone misses count loss.
+func assertCSVExecutionCounts(t *testing.T, logs string) {
+	t.Helper()
+	requests := 0
+	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+		event := csvEnvelope(t, []byte(line))
+		capability, _ := event["capability"].(string)
+		if event["event"] != "request" || !strings.HasPrefix(capability, "csv_") {
+			continue
+		}
+		requests++
+		if _, present := event["count"]; !present {
+			t.Fatal("missing count", event)
+		}
+		if event["error_code"] != nil {
+			if event["count"] != nil {
+				t.Fatal("failed CSV count must stay null", event)
+			}
+		} else if event["returned_rows"] == nil || event["count"] != event["returned_rows"] {
+			t.Fatal("CSV log count differs from measured rows", event)
+		}
+	}
+	if requests == 0 {
+		t.Fatal("no CSV request logs")
 	}
 }
