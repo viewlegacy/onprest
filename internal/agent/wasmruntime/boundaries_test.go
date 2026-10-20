@@ -336,33 +336,54 @@ func TestWasmModuleValidationBudgetRefusesUnfinishedValidation(t *testing.T) {
 	if ModuleValidationBudget != 60*time.Second {
 		t.Fatal("module validation budget changed without updating its record", ModuleValidationBudget)
 	}
-	r, _, _ := setup(t)
-	fresh := func() *Runner {
-		copy := *r
-		copy.Cache = NewCache()
-		return &copy
-	}
-	runner := fresh()
-	// One budget expires before the worker starts, the other while the worker
-	// compiles; both refuse the module with a diagnostic naming the budget.
+	runner := &Runner{Binary: binaryPath, Cache: NewCache()}
+	// Hold validation until its context expires. A real compile can consume its
+	// independent CPU budget before a short wall deadline, especially on Windows.
+	// Real worker deadlines and OS limits are exercised separately in worker_test.go.
 	for _, budget := range []time.Duration{time.Nanosecond, 50 * time.Millisecond} {
-		validationBudget = budget
-		m, e := runner.Prepare(context.Background(), modulePath, "", DefaultLimits())
-		validationBudget = ModuleValidationBudget
-		var w *Error
-		if m != nil || e == nil || !errors.As(e, &w) || w.Code != "EXECUTION_TIMEOUT" || !strings.Contains(e.Error(), "Wasm module validation did not finish within "+budget.String()) {
-			t.Fatal("unfinished validation was not refused with the budget diagnostic", budget, m, e)
-		}
+		t.Run(budget.String(), func(t *testing.T) {
+			calls := 0
+			unfinished := func(ctx context.Context, m *Module, l Limits) (Metadata, error) {
+				calls++
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > budget || !bytes.Equal(m.bytes, fixtureBytes) || l != DefaultLimits() {
+					t.Fatal("validation lost its budget or module snapshot", deadline, ok)
+				}
+				<-ctx.Done()
+				return Metadata{}, failure("EXECUTION_TIMEOUT", ctx.Err().Error())
+			}
+			m, e := runner.prepareWithValidation(context.Background(), modulePath, "", DefaultLimits(), budget, unfinished)
+			var w *Error
+			if m != nil || e == nil || !errors.As(e, &w) || w.Code != "EXECUTION_TIMEOUT" || !strings.Contains(e.Error(), "Wasm module validation did not finish within "+budget.String()) {
+				t.Fatal("unfinished validation was not refused with the budget diagnostic", budget, m != nil, e)
+			}
+			if entries, size := runner.Cache.Usage(); calls != 1 || entries != 0 || size != 0 {
+				t.Fatal("refused validation was cached or not attempted", calls, entries, size)
+			}
+		})
 	}
-	// A refusal is not cached: the fixed budget then validates the same module.
-	if m, e := runner.Prepare(context.Background(), modulePath, "", DefaultLimits()); e != nil || m == nil {
+	// The public entry point validates the same bytes in a real worker using the
+	// fixed product budget after the refusals, then caches that successful result.
+	validations := 0
+	runner.Observe = func(Observation) { validations++ }
+	m, e := runner.Prepare(context.Background(), modulePath, "", DefaultLimits())
+	if e != nil || m == nil || validations != 1 {
 		t.Fatal("module refused after a budget refusal", e)
+	}
+	if cached, e := runner.Prepare(context.Background(), modulePath, "", DefaultLimits()); e != nil || cached != m || validations != 1 {
+		t.Fatal("successful validation was not cached", e, validations)
 	}
 	// A caller deadline that ends first is the caller's, not the budget's.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
 	<-ctx.Done()
-	if _, e := fresh().Prepare(ctx, modulePath, "", DefaultLimits()); e == nil || strings.Contains(e.Error(), "did not finish within") {
+	caller := &Runner{Binary: binaryPath, Cache: NewCache()}
+	_, e = caller.Prepare(ctx, modulePath, "", DefaultLimits())
+	var w *Error
+	if !errors.As(e, &w) || w.Code != "EXECUTION_TIMEOUT" || strings.Contains(e.Error(), "did not finish within") {
 		t.Fatal("caller deadline reported as the validation budget", e)
+	}
+	if entries, size := caller.Cache.Usage(); entries != 0 || size != 0 {
+		t.Fatal("caller deadline refusal was cached", entries, size)
 	}
 }

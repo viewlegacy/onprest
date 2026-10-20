@@ -32,10 +32,6 @@ const EnvelopeLimit = 32 << 20
 // refused, so the Agent does not start and code build/validate/test fail.
 const ModuleValidationBudget = 60 * time.Second
 
-// validationBudget is ModuleValidationBudget; package tests shorten it to
-// exercise the refusal without a slow host.
-var validationBudget = ModuleValidationBudget
-
 type Limits struct {
 	MemoryBytes                                            int64 `json:"memory_bytes"`
 	ModuleBytes                                            int64 `json:"module_bytes"`
@@ -131,6 +127,12 @@ func (c *Cache) Usage() (int, int64) {
 // Prepare reads once and validates without running either a Wasm start section
 // or _start. Compilation occurs in the same isolated binary as execution.
 func (r *Runner) Prepare(ctx context.Context, path, expected string, l Limits) (*Module, error) {
+	return r.prepareWithValidation(ctx, path, expected, l, ModuleValidationBudget, r.validate)
+}
+
+// prepareWithValidation keeps the validation deadline and cache policy separate
+// from the worker's independent CPU and memory limits.
+func (r *Runner) prepareWithValidation(ctx context.Context, path, expected string, l Limits, budget time.Duration, validate func(context.Context, *Module, Limits) (Metadata, error)) (*Module, error) {
 	if _, e := l.rssLimit(); e != nil {
 		return nil, e
 	}
@@ -165,12 +167,12 @@ func (r *Runner) Prepare(ctx context.Context, path, expected string, l Limits) (
 		}
 	}
 	m := &Module{bytes: b, digest: d}
-	validation, cancel := context.WithTimeout(ctx, validationBudget)
+	validation, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	metadata, e := r.validate(validation, m, l)
+	metadata, e := validate(validation, m, l)
 	if e != nil {
 		if ctx.Err() == nil && errors.Is(validation.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("Wasm module validation did not finish within %s: %w", validationBudget, e)
+			return nil, fmt.Errorf("Wasm module validation did not finish within %s: %w", budget, e)
 		}
 		return nil, e
 	}

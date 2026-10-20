@@ -89,6 +89,62 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 	buildWasmErrorFixture(t, repo, filepath.Join(tmp, "error.wasm"))
 	addr := freeAddr(t)
 	base := "http://" + addr
+	key := "orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM"
+	waitForReady := func(url, key string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+		defer cancel()
+		var last string
+		for ctx.Err() == nil {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key != "" {
+				req.Header.Set("Authorization", "Bearer "+key)
+			}
+			res, err := http.DefaultClient.Do(req)
+			if err == nil {
+				body, readErr := io.ReadAll(res.Body)
+				res.Body.Close()
+				if readErr == nil && res.StatusCode == http.StatusOK {
+					return
+				}
+				last = fmt.Sprintf("status=%d body=%s read_error=%v", res.StatusCode, body, readErr)
+			} else {
+				last = err.Error()
+			}
+			select {
+			case <-ctx.Done():
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		t.Fatalf("timed out waiting for %s: %v; %s", url, ctx.Err(), last)
+	}
+	post := func(t *testing.T, route, protocolVersion string, payload []byte) (int, []byte) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+route, bytes.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		req.Header.Set("Content-Type", "application/json")
+		if protocolVersion != "" {
+			req.Header.Set("MCP-Protocol-Version", protocolVersion)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			t.Fatalf("read %s response: %v (context: %v)", route, err, ctx.Err())
+		}
+		return res.StatusCode, body
+	}
 	read := func(name string) string {
 		b, e := os.ReadFile(filepath.Join(repo, "examples/wasm", name))
 		if e != nil {
@@ -118,19 +174,21 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 	writeFile(t, envFile, strings.ReplaceAll(strings.ReplaceAll(read("gateway.env"), "wasm_copy", "wasm_error"), "127.0.0.1:8080", addr))
 	gateway, _ := startShellProcessWithOutput(t, tmp, "set -a; . "+shellQuote(envFile)+"; set +a; exec "+shellQuote(gatewayBin))
 	defer stopProcess(t, gateway)
-	waitForHTTP(t, base+"/healthz", "", 200)
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-	validate := exec.CommandContext(ctx, agentBin, "validate", "--config", path)
+	waitForReady(base+"/healthz", "")
+	validateCtx, cancelValidate := context.WithTimeout(t.Context(), 120*time.Second)
+	validate := exec.CommandContext(validateCtx, agentBin, "validate", "--config", path)
 	validate.Dir = tmp
-	if raw, e := validate.CombinedOutput(); e != nil {
+	raw, validateErr := validate.CombinedOutput()
+	cancelValidate()
+	if validateErr != nil {
 		detail, _ := os.ReadFile(filepath.Join(tmp, "onprest-agent.validate.log"))
-		t.Fatal(e, string(raw), string(detail))
+		t.Fatal(validateErr, string(raw), string(detail))
 	}
-	agent := startProcessInDir(t, ctx, tmp, agentBin, []string{"--config", path}, nil)
+	// The Agent serves every case; individual operation deadlines must not
+	// terminate it when their cumulative duration exceeds one operation's budget.
+	agent := startProcessInDir(t, t.Context(), tmp, agentBin, []string{"--config", path}, nil)
 	defer stopProcess(t, agent)
-	key := "orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM"
-	waitForHTTP(t, base+"/openapi.json", key, 200)
+	waitForReady(base+"/openapi.json", key)
 	message := "  業務上の拒否: " + strings.Repeat("a", 30) + "  "
 	public := func(code, message string) string {
 		b, _ := json.Marshal(map[string]any{"error": map[string]any{"kind": "public", "code": code, "message": message}})
@@ -243,25 +301,17 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 			prepare()
 			params := map[string]any{"scenario": tc.scenario, "envelope": tc.envelope, "path": "data/" + businessPath}
 			b, _ := json.Marshal(params)
-			q, _ := http.NewRequestWithContext(ctx, "POST", base+"/api/v1/capabilities/wasm_error", bytes.NewReader(b))
-			q.Header.Set("Authorization", "Bearer "+key)
-			q.Header.Set("Content-Type", "application/json")
-			res, e := http.DefaultClient.Do(q)
-			if e != nil {
-				t.Fatal(e)
-			}
-			raw, _ := io.ReadAll(res.Body)
-			res.Body.Close()
-			if res.StatusCode != tc.status {
+			status, raw := post(t, "/api/v1/capabilities/wasm_error", "", b)
+			if status != tc.status {
 				detail, _ := os.ReadFile(filepath.Join(tmp, "onprest-agent.log"))
-				t.Fatal(res.StatusCode, string(raw), string(detail))
+				t.Fatal(status, string(raw), string(detail))
 			}
 			check(t, raw, tc)
 			assertBody()
 			for _, version := range []string{"2025-03-26", "2025-06-18", "2025-11-25"} {
 				prepare()
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wasm_error","arguments":%s}}`, b)
-				status, raw := postMCPStatusWithProtocol(t, base, key, version, body)
+				status, raw := post(t, "/mcp", version, []byte(body))
 				if status != 200 {
 					t.Fatal(status, string(raw))
 				}
