@@ -57,7 +57,7 @@ Release. It never overwrites an existing Release.
 
 ## Requirements
 
-Release gate commands require Go 1.26.9 or later as declared in `go.mod`. Schema validation also needs Node.js and npm to install the pinned validator. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.9 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
+Release gate commands require Go 1.26.10 or later as declared in `go.mod`. Schema validation also needs Node.js and npm to install the pinned validator. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.10 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
 
 Container-backed tests require Docker daemon access. To make container availability mandatory, use:
 
