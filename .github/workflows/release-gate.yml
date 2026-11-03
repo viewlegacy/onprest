@@ -2,34 +2,75 @@ name: release-gate
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '17 18 * * 1'
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  package-candidate:
+  changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 2
+    outputs:
+      core: ${{ steps.scope.outputs.core }}
+      native: ${{ steps.scope.outputs.native }}
+      docs: ${{ steps.scope.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'ci_*_test.py'
+      - id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci_changes.py
+
+  ci:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - working-directory: docs
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+  package-candidate:
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # The candidate carries the Wasm compatibility version
-      # (wasmruntime.CompatibilityVersion). Agents reject modules whose
-      # minimum_agent_version is newer than their own release version, so a
-      # lower placeholder could not run the Wasm modules it builds.
+          cache-dependency-path: '**/go.sum'
+      # Agents must accept the minimum_agent_version of generated Wasm modules.
       - name: Build and scan the canonical archive matrix
         env:
           VERSION: 2.0.0
@@ -47,17 +88,28 @@ jobs:
   integration-linux:
     needs: package-candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [postgres-1, postgres-2, postgres-3, postgres-4, db-postgres, db-mysql, db-sqlserver, db-oracle, docker, quickstart, stability]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: internal/contract/testdata/schema-validator/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
       - uses: actions/download-artifact@v5
         with:
           name: release-candidate-${{ github.sha }}
           path: release-dist
-      - name: Run the canonical gate with extracted distribution binaries
+      - name: Run one integration partition with extracted distribution binaries
         env:
           RELEASE_SHA: ${{ github.sha }}
           RELEASE_READY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -75,7 +127,15 @@ jobs:
             ONPREST_IT_AGENT_BINARY="$install_dir/onprest-agent" \
             ONPREST_IT_QUICKSTART_DIR="$quickstart_root/onprest-2.0.0-quickstart" \
             ONPREST_IT_DISTRIBUTION_VERSION=2.0.0 \
-            make test-it-release-gate
+            ONPREST_IT_GATE_LOG_DIR="$PWD/test-results" \
+            bash scripts/it_release_gate.sh '${{ matrix.suite }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7
 
   service-lifecycle:
     needs: package-candidate
@@ -87,55 +147,52 @@ jobs:
       release-sha: ${{ github.sha }}
       release-ready-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-  # Agent filesystem, spool, save/recovery, worker and author CLI guarantees
-  # depend on the host OS. Linux amd64 runs them inside integration-linux; these
-  # hosts run the same packages natively, and a skipped test fails the job.
   native-tests:
-    name: native-tests (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    name: native-tests (${{ matrix.os }}, ${{ matrix.suite }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 100
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04-arm, macos-latest, windows-latest]
+        suite: [filesystem, author-cli, wasm-1, wasm-2]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Run agent native tests without skips
+          cache-dependency-path: '**/go.sum'
+      - name: Native OS boundary tests without skips
         shell: bash
-        run: |
-          status=0
-          go test -json -count=1 -timeout 80m ./internal/agent/... ./cmd/agent/... >native-tests.jsonl || status=$?
-          if grep -Eq '"Action":"skip".*"Test":"[^"]+"' native-tests.jsonl; then
-            grep -E '"Action":"skip".*"Test":"[^"]+"' native-tests.jsonl
-            exit 1
-          fi
-          if [ "$status" -ne 0 ]; then
-            bash scripts/go_test_json_failures.sh native-tests.jsonl || true
-            echo "--- last 200 fail/output records ---"
-            grep -E '"Action":"(fail|output)"' native-tests.jsonl | tail -n 200
-            exit "$status"
-          fi
+        run: bash scripts/ci_native_tests.sh '${{ matrix.suite }}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7
 
-  release-ready:
+  checks:
     if: always()
     runs-on: ubuntu-latest
-    needs:
-      - integration-linux
-      - native-tests
-      - package-candidate
-      - service-lifecycle
+    needs: [changes, ci, docs, package-candidate, integration-linux, native-tests, service-lifecycle]
     steps:
-      - name: Require Linux integration, native tests and every service lifecycle job
+      - uses: actions/checkout@v7
+      - name: Require every selected check
         env:
-          INTEGRATION_RESULT: ${{ needs.integration-linux.result }}
-          NATIVE_RESULT: ${{ needs.native-tests.result }}
-          PACKAGE_RESULT: ${{ needs.package-candidate.result }}
-          SERVICE_RESULT: ${{ needs.service-lifecycle.result }}
-        run: |
-          test "$INTEGRATION_RESULT" = success
-          test "$NATIVE_RESULT" = success
-          test "$PACKAGE_RESULT" = success
-          test "$SERVICE_RESULT" = success
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci_results.py
+
+  # PR checks validate the merge result, not a taggable source-head SHA.
+  # Only a full non-PR checkout can supply exact-SHA publication evidence.
+  release-ready:
+    if: always() && github.event_name != 'pull_request' && needs.changes.outputs.core == 'true' && needs.changes.outputs.native == 'true'
+    runs-on: ubuntu-latest
+    needs: [changes, checks]
+    steps:
+      - env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+        run: test "$CHECKS_RESULT" = success

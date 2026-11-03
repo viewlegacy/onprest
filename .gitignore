@@ -10,3 +10,5 @@ it/**/*.local.yaml
 it/local/*
 !it/local/.gitignore
 coverage.out
+
+test-results/

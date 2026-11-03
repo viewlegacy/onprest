@@ -1,24 +1,153 @@
 name: ci
 
 on:
-  push:
-  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go test -timeout 60m ./...
-      - run: go vet ./...
-      - name: Independent Go SDK
-        working-directory: sdk/go
+          cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: internal/contract/testdata/schema-validator/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
+      - name: Unit tests with public schema validation
         run: |
-          go test ./...
-          go test -race ./...
+          packages=$(go list ./... | grep -Ev '/internal/(agent($|/wasmruntime$)|project$)')
+          go run ./internal/citest -tags=schema_validator -log=test-results/unit.jsonl -- $packages
+      - run: go vet -tags=schema_validator ./...
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7
+
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: internal/contract/testdata/schema-validator/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
+      - name: Agent tests, excluding the separately run author workflow
+        run: go run ./internal/citest -package=./internal/agent -tags=schema_validator -exclude='^TestCodeCLIRealAuthorWorkflow' -shard=${{ matrix.shard }} -shards=2 -log=test-results/agent.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7
+
+  author-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - run: go run ./internal/citest -package=./internal/agent -include='^TestCodeCLIRealAuthorWorkflow' -shard=${{ matrix.shard }} -shards=3 -log=test-results/author-cli.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7
+
+  wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - run: go run ./internal/citest -package=./internal/agent/wasmruntime -shard=${{ matrix.shard }} -shards=6 -log=test-results/wasm.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7
+
+  repository:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - run: go run ./internal/citest -log=test-results/repository.jsonl -- ./internal/project
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7
+
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - name: Independent SDK race, vet, module and WASI build checks
+        run: |
+          runner="$RUNNER_TEMP/citest"
+          go build -o "$runner" ./internal/citest
+          cd sdk/go
+          "$runner" -log=../../test-results/sdk.jsonl -- -race ./...
           go vet ./...
           go mod verify
           GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./...
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 7

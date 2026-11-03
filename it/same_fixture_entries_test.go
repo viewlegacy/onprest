@@ -36,7 +36,7 @@ type sameFixtureFile struct {
 }
 
 // sameFixtureResult is one call reduced to the public contract shared by REST,
-// multipart, every MCP version and the author CLI.
+// multipart, MCP and the author CLI; DB covers protocol-version compatibility.
 type sameFixtureResult struct {
 	Data  string
 	Files []sameFixtureFile
@@ -476,7 +476,8 @@ capabilities:
 			"REST JSON":      restJSON(capability, params),
 			"REST multipart": restMultipart(capability, sameFixtureMonth, name, mimeType, content),
 		}
-		for _, version := range []string{"2025-03-26", "2025-06-18", "2025-11-25"} {
+		// Protocol compatibility is exercised by the DB case below.
+		for _, version := range []string{"2025-11-25"} {
 			results["MCP "+version] = mcpCall(version, capability, params)
 		}
 		if withCLI {
@@ -546,7 +547,7 @@ capabilities:
 		if got.Data != observed || len(got.Files) != 0 {
 			t.Fatalf("http result %#v", got)
 		}
-		if calls := upstreamCalls.Load() - before; calls != 5 {
+		if calls := upstreamCalls.Load() - before; calls != 3 {
 			t.Fatalf("upstream calls %d want one per entry", calls)
 		}
 	})

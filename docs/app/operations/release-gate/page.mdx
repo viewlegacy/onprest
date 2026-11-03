@@ -10,10 +10,8 @@ make test-it-release-gate
 
 This gate verifies:
 
-- Go vulnerability analysis reports zero reachable known vulnerabilities for `./...`
-- unit tests
-- PostgreSQL integration tests 3 consecutive times
-- public schema validation: the unit and PostgreSQL integration tests check real values against the published OpenAPI and MCP schemas
+- PostgreSQL integration tests
+- public schema validation: the PostgreSQL integration tests check real values against the published OpenAPI and MCP schemas
 - PostgreSQL DB interruption stability 5 consecutive times
 - all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
 - MySQL special-character credential connection
@@ -28,21 +26,24 @@ This gate verifies:
 
 ## GitHub Actions
 
-Every push and pull request runs `go test ./...` and `go vet ./...`.
-
-Pull requests targeting `main` and pushes to `main` also run these checks:
+Pull requests targeting `main` and pushes to `main` run these checks:
 
 | Check | Scope |
 |---|---|
+| `release-gate / ci / *` | Runs `go test ./...` and `go vet ./...` |
 | `release-gate / package-candidate` | Builds the five OS/CPU archives and the Quick Start archive, scans the ten distributed binaries, and verifies checksums |
 | `release-gate / integration-linux` | Runs `make test-it-release-gate` once on Linux with the binaries extracted from the Linux amd64 archive |
 | `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
 | `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
 | `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
 | `release-gate / native-tests` | Runs the agent's OS-dependent tests natively on Linux arm64, macOS, and Windows; a skipped test fails the check |
-| `release-gate / release-ready` | Requires packaging, Linux integration, the native tests, and the complete reusable service lifecycle workflow to succeed |
+| `release-gate / docs` | Builds the documentation site |
+| `release-gate / checks` | Requires every job in the run to succeed |
+| `release-gate / release-ready` | Runs outside pull requests; requires every check to succeed |
 
 The three service checks run the binaries from the release archives under the native OS service manager, against a real gateway and PostgreSQL.
+
+A pull request that changes only documentation runs only `docs`.
 
 Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-platforms); results from a newer OS do not establish minimum-version support.
 
