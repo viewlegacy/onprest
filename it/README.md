@@ -8,7 +8,7 @@ The four-database matrix includes SELECT compatibility plus INSERT/UPDATE/DELETE
 
 ## Main Commands
 
-Run affected tests locally; complete release decisions use the GitHub gate.
+Use these for normal development and release decisions.
 
 ```bash
 make test-it
@@ -20,13 +20,13 @@ Development IT check. This runs the PostgreSQL integration path by default. It s
 make test-it-postgres-ci
 ```
 
-PostgreSQL schema-enabled check. Install the pinned Ajv dependencies first; this runs the PostgreSQL integration suite once with `ONPREST_IT_REQUIRE_CONTAINERS=1`, so a PostgreSQL container startup failure is a test failure instead of a skip.
+PostgreSQL operation-readiness gate. This runs the PostgreSQL integration suite with public schema validation and `ONPREST_IT_REQUIRE_CONTAINERS=1`, so a PostgreSQL container startup failure is a test failure instead of a skip.
 
 ```bash
 make test-it-release-gate
 ```
 
-Maintainer integration convenience command, not a local PR prerequisite. It runs PostgreSQL E2E once, interruption stability, all-DB conformance, all four real-DB TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. Unit tests, SDK checks and vulnerability scans are separate GitHub jobs. The canonical coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
+Linux integration part of the OSS core release gate. In addition to PostgreSQL CI and interruption stability checks, it runs all-DB conformance, all four real-DB TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. The canonical step-by-step coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
 
 ## Support Commands
 
@@ -96,7 +96,7 @@ It also does not cover:
 
 ## Release Gate Details
 
-`make test-it-release-gate` executes the steps documented in [Release Gate](../docs/app/operations/release-gate/page.mdx). Notably, `all-db-conformance` uses the selection above, while the four TLS steps run the exact tests listed under `make test-it-database-tls`. The gate reads Go test JSON output and fails on test/subtest skips, then checks for leftover testcontainers resources. Logs are temporary by default; `ONPREST_IT_GATE_KEEP_LOGS=1` retains them and `ONPREST_IT_GATE_LOG_DIR` selects their directory.
+`make test-it-release-gate` executes the steps documented in [Release Gate](../docs/app/operations/release-gate/page.mdx). Each `db-<driver>` partition runs the selection above for one driver together with that driver's TLS test from `make test-it-database-tls`. The gate reads Go test JSON output and fails on test/subtest skips, then checks for leftover testcontainers resources. Logs are temporary by default; `ONPREST_IT_GATE_KEEP_LOGS=1` retains them and `ONPREST_IT_GATE_LOG_DIR` selects their directory.
 
 ## Skip Policy
 
