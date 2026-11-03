@@ -26,6 +26,7 @@ permissions:
 jobs:
   linux-systemd:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Validate release version input
@@ -91,6 +92,7 @@ jobs:
 
   macos-launchd:
     runs-on: macos-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Validate release version input
@@ -141,6 +143,7 @@ jobs:
 
   windows-service:
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Validate release version input

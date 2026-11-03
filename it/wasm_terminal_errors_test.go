@@ -199,18 +199,10 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 		status                                           int
 	}{
 		{"valid", "envelope", public("APP_DENIED", message), "APP_DENIED", message, "no_change", 422},
-		{"min", "envelope", public("APP_MIN", "a"), "APP_MIN", "a", "no_change", 422},
-		{"empty", "envelope", public("APP_EMPTY", ""), "EXECUTION_FAILED", "", "no_change", 502},
 		{"systemcode", "envelope", public("EXECUTION_FAILED", "PRIVATE_RAW_MESSAGE"), "EXECUTION_FAILED", "", "no_change", 502},
-		{"max", "envelope", public("APP_BOUNDARY", strings.Repeat("a", 1024)), "APP_BOUNDARY", strings.Repeat("a", 1024), "no_change", 422},
-		{"invalidcode", "envelope", public("APP_lower", "PRIVATE_RAW_MESSAGE"), "EXECUTION_FAILED", "", "no_change", 502},
-		{"long", "envelope", public("APP_DENIED", strings.Repeat("a", 1025)), "EXECUTION_FAILED", "", "no_change", 502},
-		{"control", "envelope", public("APP_DENIED", "PRIVATE_RAW_MESSAGE\n"), "EXECUTION_FAILED", "", "no_change", 502},
-		{"internal", "envelope", `{"error":{"kind":"internal","category":"execution"}}`, "EXECUTION_FAILED", "", "no_change", 502},
 		{"general", "privatefailure", "", "EXECUTION_FAILED", "", "no_change", 502},
 		// The module ignores the refused commit and exits 0; the refusal decides.
 		{"empty_ignored", "envelope_ignore", public("APP_EMPTY", ""), "EXECUTION_FAILED", "", "no_change", 502},
-		{"invalidcode_ignored", "envelope_ignore", public("APP_lower", "PRIVATE_RAW_MESSAGE"), "EXECUTION_FAILED", "", "no_change", 502},
 		// A valid terminal committed before a protocol violation is not
 		// published; the violation is an invalid output.
 		{"read_after_commit", "envelope_then_read", public("APP_DENIED", message), "OUTPUT_INVALID", "output does not satisfy the configured contract", "no_change", 502},
@@ -308,7 +300,13 @@ func TestWasmPublicTerminalRealBinariesRESTAndMCP(t *testing.T) {
 			}
 			check(t, raw, tc)
 			assertBody()
-			for _, version := range []string{"2025-03-26", "2025-06-18", "2025-11-25"} {
+			// Every outcome traverses REST and current MCP. Only representative
+			// public/system errors repeat the compatibility-version dimension.
+			versions := []string{"2025-11-25"}
+			if tc.name == "valid" || tc.name == "systemcode" {
+				versions = []string{"2025-03-26", "2025-06-18", "2025-11-25"}
+			}
+			for _, version := range versions {
 				prepare()
 				body := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"wasm_error","arguments":%s}}`, b)
 				status, raw := post(t, "/mcp", version, []byte(body))

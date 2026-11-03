@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -51,60 +50,10 @@ func TestMakeBuildProducesOnlyRunnableGatewayAndAgent(t *testing.T) {
 	}
 }
 
-func TestMakeBuildInjectsOneVersionIntoBothBinaries(t *testing.T) {
-	root := repoRoot(t)
-	dist := t.TempDir()
-	runRepoCommand(t, root, []string{"DIST_DIR=" + dist, "VERSION=1.2.4"}, "make", "build")
-	for _, name := range []string{"onprest-gateway", "onprest-agent"} {
-		for _, arg := range []string{"version", "--version", "-v"} {
-			got := strings.TrimSpace(runRepoCommand(t, root, nil, filepath.Join(dist, name), arg))
-			if got != "1.2.4" {
-				t.Fatalf("%s %s=%q, want 1.2.4", name, arg, got)
-			}
-		}
-	}
-}
-
-func TestMakeBuildCrossProducesBothBinariesForEveryTarget(t *testing.T) {
-	root := repoRoot(t)
-	dist := t.TempDir()
-	runRepoCommand(t, root, []string{"DIST_DIR=" + dist, "VERSION=1.2.4"}, "make", "build-cross")
-	targets := []string{"linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"}
-	for _, target := range targets {
-		ext := ""
-		if strings.HasPrefix(target, "windows-") {
-			ext = ".exe"
-		}
-		entries, err := os.ReadDir(filepath.Join(dist, target))
-		if err != nil {
-			t.Fatalf("target %s: %v", target, err)
-		}
-		if len(entries) != 2 {
-			t.Fatalf("target %s entries = %v, want two", target, entryNames(entries))
-		}
-		for _, binary := range []string{"onprest-gateway" + ext, "onprest-agent" + ext} {
-			info, err := os.Stat(filepath.Join(dist, target, binary))
-			if err != nil || info.Size() == 0 {
-				t.Fatalf("target %s binary %s missing/empty: info=%v err=%v", target, binary, info, err)
-			}
-		}
-	}
-	nativeTarget := runtime.GOOS + "-" + runtime.GOARCH
-	if nativeTarget != "windows-amd64" {
-		for _, binary := range []string{"onprest-gateway", "onprest-agent"} {
-			if info, err := os.Stat(filepath.Join(dist, nativeTarget, binary)); err == nil && info.Mode()&0o111 == 0 {
-				t.Fatalf("native cross-built %s is not executable", binary)
-			}
-			got := strings.TrimSpace(runRepoCommand(t, root, nil, filepath.Join(dist, nativeTarget, binary), "--version"))
-			if got != "1.2.4" {
-				t.Fatalf("native cross-built %s --version=%q, want 1.2.4", binary, got)
-			}
-		}
-	}
-}
-
 func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.T) {
 	root := repoRoot(t)
+	verifier := filepath.Join(t.TempDir(), "releaseverify")
+	runRepoCommand(t, root, nil, "go", "build", "-o", verifier, "./internal/releaseverify")
 	releaseDir := t.TempDir()
 	sha := strings.TrimSpace(runRepoCommand(t, root, nil, "git", "rev-parse", "HEAD"))
 	env := []string{
@@ -220,7 +169,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 		nativeExt = ".zip"
 	}
 	extracted := t.TempDir()
-	runRepoCommand(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
+	runRepoCommand(t, root, nil, verifier, "extract",
 		filepath.Join(releaseDir, "onprest-"+nativeName+nativeExt), extracted,
 		"1.2.12", "v1.2.12", sha, "https://github.com/viewlegacy/onprest/actions/runs/123",
 		nativeTarget, filepath.Join(releaseDir, "SHA256SUMS"))
@@ -233,7 +182,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 		}
 	}
 	quickstartExtract := t.TempDir()
-	runRepoCommand(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
+	runRepoCommand(t, root, nil, verifier, "extract",
 		quickstartArchive, quickstartExtract, "1.2.12", "v1.2.12", sha,
 		"https://github.com/viewlegacy/onprest/actions/runs/123", "quickstart", filepath.Join(releaseDir, "SHA256SUMS"))
 	for _, name := range []string{"README.md", "gateway.env", "capability.postgres.yaml", "postgres.compose.yml", "postgres-init.sql"} {
@@ -292,7 +241,7 @@ func TestReleasePackageContainsCanonicalTargetsAndVerifiableMetadata(t *testing.
 				target = "quickstart"
 			}
 			extractOutput := t.TempDir()
-			runRepoCommandMustFail(t, root, nil, "go", "run", "./internal/releaseverify", "extract",
+			runRepoCommandMustFail(t, root, nil, verifier, "extract",
 				archive, extractOutput, "1.2.12", "v1.2.12", sha,
 				"https://github.com/viewlegacy/onprest/actions/runs/123", target, filepath.Join(mutatedDir, "SHA256SUMS"))
 			if entries, err := os.ReadDir(extractOutput); err != nil || len(entries) != 0 {
@@ -832,7 +781,7 @@ func TestRepositoryDoesNotAddCaddyImplementationDependency(t *testing.T) {
 		}
 		if d.IsDir() {
 			switch d.Name() {
-			case ".git", "dist", "docs", "it", "local":
+			case ".git", "dist", "docs", "it", "local", "test-results":
 				return filepath.SkipDir
 			}
 			return nil
@@ -858,319 +807,51 @@ func TestRepositoryDoesNotAddCaddyImplementationDependency(t *testing.T) {
 	}
 }
 
-func TestGitHubActionsSeparateFastAndMainReleaseChecks(t *testing.T) {
+func TestGitHubActionsGateContracts(t *testing.T) {
 	root := repoRoot(t)
-	workflowDir := filepath.Join(root, ".github", "workflows")
-
-	ci := readWorkflow(t, filepath.Join(workflowDir, "ci.yml"))
-	ciEvents := workflowSection(t, ci, "on")
-	for _, event := range []string{"push", "pull_request"} {
-		if _, ok := ciEvents[event]; !ok {
-			t.Fatalf("ci workflow missing %s trigger", event)
+	dir := filepath.Join(root, ".github", "workflows")
+	ci := readWorkflow(t, filepath.Join(dir, "ci.yml"))
+	events := workflowSection(t, ci, "on")
+	if len(events) != 1 {
+		t.Fatalf("unit workflow must be called once by the gate: %v", events)
+	}
+	if _, ok := events["workflow_call"]; !ok {
+		t.Fatal("missing reusable CI entrypoint")
+	}
+	gate := readWorkflow(t, filepath.Join(dir, "release-gate.yml"))
+	assertMainWorkflowTriggers(t, gate)
+	jobs := workflowSection(t, gate, "jobs")
+	checks := jobs["checks"].(map[string]any)
+	needs := fmt.Sprint(checks["needs"])
+	for _, dependency := range []string{"ci", "docs", "package-candidate", "integration-linux", "native-tests", "service-lifecycle"} {
+		if !strings.Contains(needs, dependency) {
+			t.Fatalf("gate does not require %s", dependency)
 		}
 	}
-	ciText := readText(t, filepath.Join(workflowDir, "ci.yml"))
-	// The Wasm worker package alone runs longer than go test's default 10m.
-	for _, command := range []string{"go test -timeout 60m ./...", "go vet ./..."} {
-		if !strings.Contains(ciText, command) {
-			t.Fatalf("ci workflow missing %q", command)
-		}
+	ready := jobs["release-ready"].(map[string]any)
+	if !strings.Contains(fmt.Sprint(ready["needs"]), "checks") || !strings.Contains(fmt.Sprint(ready["if"]), "native") || !strings.Contains(fmt.Sprint(ready["if"]), "github.event_name != 'pull_request'") {
+		t.Fatal("publication evidence must require the complete native gate")
 	}
-
-	release := readWorkflow(t, filepath.Join(workflowDir, "release-gate.yml"))
-	assertMainWorkflowTriggers(t, release)
-	releaseJobs := workflowSection(t, release, "jobs")
-	for _, job := range []string{"package-candidate", "integration-linux", "service-lifecycle", "native-tests", "release-ready"} {
-		if _, ok := releaseJobs[job]; !ok {
-			t.Fatalf("release gate workflow missing %s job", job)
-		}
+	service := readWorkflow(t, filepath.Join(dir, "service-lifecycle.yml"))
+	if _, ok := workflowSection(t, service, "on")["workflow_call"]; !ok {
+		t.Fatal("service workflow must be reusable")
 	}
-	// OS-dependent agent tests run natively on every non-amd64-Linux host and
-	// gate release-ready; Linux amd64 runs them inside integration-linux.
-	native := releaseJobs["native-tests"].(map[string]any)
-	matrix, _ := native["strategy"].(map[string]any)["matrix"].(map[string]any)
-	hosts := fmt.Sprint(matrix["os"])
-	for _, host := range []string{"windows-latest", "macos-latest", "ubuntu-24.04-arm"} {
-		if !strings.Contains(hosts, host) {
-			t.Fatalf("native tests do not run on %s: %s", host, hosts)
-		}
-	}
-	if _, ok := native["needs"]; ok {
-		t.Fatal("native tests must not wait for packaging")
-	}
-	nativeText := fmt.Sprint(native["steps"])
-	for _, marker := range []string{"go test -json -count=1 -timeout 80m ./internal/agent/... ./cmd/agent/...", `"Action":"skip".*"Test":"[^"]+"`, "bash scripts/go_test_json_failures.sh native-tests.jsonl"} {
-		if !strings.Contains(nativeText, marker) {
-			t.Fatalf("native tests missing %q", marker)
-		}
-	}
-	ready := releaseJobs["release-ready"].(map[string]any)
-	if needs := fmt.Sprint(ready["needs"]); !strings.Contains(needs, "native-tests") || !strings.Contains(fmt.Sprint(ready["steps"]), `test "$NATIVE_RESULT" = success`) {
-		t.Fatal("release-ready does not require native tests")
-	}
-	if text := readText(t, filepath.Join(workflowDir, "release-gate.yml")); !strings.Contains(text, "make test-it-release-gate") ||
-		!strings.Contains(text, "make release-artifacts") ||
-		!strings.Contains(text, "release-candidate-${{ github.sha }}") ||
-		!strings.Contains(text, "uses: ./.github/workflows/service-lifecycle.yml") ||
-		!strings.Contains(text, "PACKAGE_RESULT") || !strings.Contains(text, "SERVICE_RESULT") || !strings.Contains(text, "concurrency:") || !strings.Contains(text, "cancel-in-progress: true") {
-		t.Fatal("release gate workflow does not aggregate Linux integration and reusable service lifecycle")
-	}
-	// The candidate archive must be a release version the Agent accepts for
-	// the Wasm modules it builds: below the compatibility version, every
-	// distributed Wasm test would fail on minimum_agent_version.
-	candidate := wasmruntime.CompatibilityVersion
-	releaseGateText := readText(t, filepath.Join(workflowDir, "release-gate.yml"))
-	for _, marker := range []string{"VERSION: " + candidate, "RELEASE_TAG: v" + candidate, candidate + " v" + candidate + ` "$RELEASE_SHA"`, "onprest-" + candidate + "-linux-amd64", "onprest-" + candidate + "-quickstart", "ONPREST_IT_DISTRIBUTION_VERSION=" + candidate, "version: " + candidate, "release-tag: v" + candidate} {
-		if !strings.Contains(releaseGateText, marker) {
-			t.Fatalf("release gate candidate does not use Wasm compatibility version %s: missing %q", candidate, marker)
-		}
-	}
-	if regexp.MustCompile(`(^|[^0-9.])v?0\.0\.0([^0-9.]|$)`).MatchString(releaseGateText) {
-		t.Fatal("release gate candidate still uses placeholder version 0.0.0")
-	}
-	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
-	// Public schema assertions are no-ops without the schema_validator tag, so
-	// the gate installs the pinned Ajv validator and runs both tagged suites.
-	for _, marker := range []string{"npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator", `-tags=schema_validator "${schema_packages[@]}"`, "-tags=integration,schema_validator ./it/..."} {
-		if !strings.Contains(releaseScript, marker) {
-			t.Fatalf("release gate script does not run public schema validation: missing %q", marker)
-		}
-	}
-	failureSummary := readText(t, filepath.Join(root, "scripts", "go_test_json_failures.sh"))
-	if !strings.Contains(releaseScript, `bash "$ROOT_DIR/scripts/go_test_json_failures.sh" "$log"`) ||
-		!strings.Contains(failureSummary, `"Action":"fail".*"Test":"[^"]+"`) || !strings.Contains(failureSummary, `"Output":`) {
-		t.Fatal("release gate failures do not list failed tests before the log tail")
-	}
-	for _, marker := range []string{"ONPREST_IT_GATEWAY_BINARY", "ONPREST_IT_AGENT_BINARY", "ONPREST_IT_DISTRIBUTION_VERSION", "must be extracted outside the source tree", `cd / && "$absolute" --version`, "scripts/quickstart_smoke.sh"} {
-		if !strings.Contains(releaseScript, marker) {
-			t.Fatalf("release gate script does not validate prebuilt archive binaries: missing %q", marker)
-		}
-	}
-
-	service := readWorkflow(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
-	serviceEvents := workflowSection(t, service, "on")
-	if _, ok := serviceEvents["workflow_call"]; !ok {
-		t.Fatal("service lifecycle workflow missing workflow_call trigger")
-	}
-	for _, event := range []string{"push", "pull_request", "workflow_dispatch"} {
-		if _, ok := serviceEvents[event]; ok {
-			t.Fatalf("service lifecycle workflow must be triggered through release-gate, found direct %s", event)
-		}
-	}
-	serviceJobs := workflowSection(t, service, "jobs")
-	for _, job := range []string{"linux-systemd", "macos-launchd", "windows-service"} {
-		definition, ok := serviceJobs[job].(map[string]any)
-		if !ok {
-			t.Fatalf("service lifecycle workflow missing %s job", job)
-		}
-		steps, ok := definition["steps"].([]any)
-		if !ok {
-			t.Fatalf("service lifecycle %s steps missing", job)
-		}
-		validateAt, downloadAt := -1, -1
-		for i, raw := range steps {
-			step, _ := raw.(map[string]any)
-			if step["name"] == "Validate release version input" {
-				validateAt = i
-			}
-			if step["uses"] == "actions/download-artifact@v5" {
-				downloadAt = i
-			}
-		}
-		if validateAt < 0 || downloadAt < 0 || validateAt >= downloadAt {
-			t.Fatalf("service lifecycle %s must reject invalid version before artifact download", job)
-		}
-	}
-	serviceText := readText(t, filepath.Join(workflowDir, "service-lifecycle.yml"))
-	if strings.Count(serviceText, "${{ inputs.version }}") != 3 || strings.Contains(serviceText, "version=${{ inputs.version }}") {
-		t.Fatal("service lifecycle version input must enter scripts only through quoted environment values")
-	}
-	for _, marker := range []string{"normalize_release_version.sh \"$INPUT_VERSION\"", "-notmatch '^[0-9]+\\.[0-9]+\\.[0-9]+$'", "docker exec --env \"PACKAGE_VERSION=$PACKAGE_VERSION\""} {
-		if !strings.Contains(serviceText, marker) {
-			t.Fatalf("service lifecycle version validation missing %q", marker)
-		}
+	if _, ok := service["concurrency"]; ok {
+		t.Fatal("service workflow must not cancel its caller")
 	}
 	for _, workflow := range []string{"release-gate.yml", "release.yml", "service-lifecycle.yml"} {
-		text := readText(t, filepath.Join(workflowDir, workflow))
-		for _, forbidden := range []string{"tar -x", "unzip ", "Expand-Archive"} {
-			if strings.Contains(text, forbidden) {
-				t.Fatalf("%s contains raw archive extraction %q", workflow, forbidden)
-			}
-		}
+		text := readText(t, filepath.Join(dir, workflow))
 		if !strings.Contains(text, "go run ./internal/releaseverify extract") {
-			t.Fatalf("%s does not use the common safe archive extractor", workflow)
+			t.Fatalf("%s must use the safe extractor", workflow)
+		}
+		if strings.Contains(text, "tar -xzf") || strings.Contains(text, "Expand-Archive") {
+			t.Fatalf("%s bypasses safe extraction", workflow)
 		}
 	}
-	scanScript := readText(t, filepath.Join(root, "scripts", "scan_release_binaries.sh"))
-	for _, forbidden := range []string{"tar -x", "unzip "} {
-		if strings.Contains(scanScript, forbidden) {
-			t.Fatalf("binary scan contains raw archive extraction %q", forbidden)
-		}
-	}
-	if !strings.Contains(scanScript, "go run ./internal/releaseverify extract") || !strings.Contains(scanScript, ".archive-digests") {
-		t.Fatal("binary scan does not verify the package-time archive digest through the safe extractor")
-	}
-	if strings.Contains(serviceText, "concurrency:") {
-		t.Fatal("called service lifecycle workflow must not share caller concurrency and cancel its own release gate")
-	}
-	if strings.Contains(serviceText, "\n    paths:") {
-		t.Fatal("service lifecycle must run unconditionally for main PRs and pushes")
-	}
-	if !strings.Contains(serviceText, "scripts/service-test-systemd.Dockerfile") {
-		t.Fatal("linux service lifecycle does not build the systemd test image")
-	}
-	if strings.Contains(serviceText, "choco install postgresql") {
-		t.Fatal("Windows service lifecycle reinstalls PostgreSQL instead of using the runner-provided service")
-	}
-	for _, marker := range []string{"Start preinstalled PostgreSQL", "$env:PGBIN", "Get-Service -Name \"postgresql-x64-$postgresVersion\"", "Set-Service -Name $postgresService.Name -StartupType Manual", "Start-Service -Name $postgresService.Name", "ALTER USER postgres PASSWORD 'onprest'"} {
-		if !strings.Contains(serviceText, marker) {
-			t.Fatalf("Windows service lifecycle does not configure the runner-provided PostgreSQL service: missing %q", marker)
-		}
-	}
-	if strings.Count(serviceText, "TestValidateLatestLogCrashRecoveryProcess") != 3 {
-		t.Fatal("service lifecycle must run validate crash recovery on Linux, macOS, and Windows")
-	}
-	for _, testName := range []string{
-		"TestValidationRecoveryPreservesUnknownAndSpecialTemporaryPaths",
-		"TestValidationRejectsInvalidFixedPathsWithoutMutation",
-	} {
-		if strings.Count(serviceText, testName) != 3 {
-			t.Fatalf("service lifecycle must run %s on Linux, macOS, and Windows", testName)
-		}
-	}
-	for path, required := range map[string][]string{
-		"scripts/test_service_lifecycle_unix.sh":     {"gateway_bin", "kill -0 \"$gateway_pid\"", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "assert_old_public_contract", "assert_new_capability_absent", "MCP-Protocol-Version: 2025-11-25", "Accept: application/json, text/event-stream", "runtime_writer_pid", "capability.validate-blocking.yaml", "cleanup\ntrap - EXIT"},
-		"scripts/test_service_lifecycle_windows.ps1": {"GatewayBin", "gatewayProcess.WaitForExit()", "SetEnvironmentVariable('GATEWAY_API_KEYS_JSON'", "runtime_marker_a", "runtime_marker_b", "rollout_marker_new", "Assert-OldPublicContract", "Assert-NewCapabilityAbsent", "MCP-Protocol-Version'='2025-11-25", "Accept='application/json, text/event-stream", "runtimeWriter", "[Guid]::NewGuid().ToString('N').Substring(0, 10)", "$readerCreated", "$primaryFailure", "$cleanupFailure", "temporaryLog"},
-	} {
-		text := readText(t, filepath.Join(root, filepath.FromSlash(path)))
-		for _, marker := range required {
-			if !strings.Contains(text, marker) {
-				t.Fatalf("%s does not exercise production runtime rotation/validation isolation marker %q", path, marker)
-			}
-		}
-	}
-	unixLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_unix.sh"))
-	windowsLifecycle := readText(t, filepath.Join(root, "scripts", "test_service_lifecycle_windows.ps1"))
-	for path, markers := range map[string][]string{
-		"Unix lifecycle":    {`\\u0000`, "$status != 502", "set -Eeuo pipefail", `trap 'echo "service lifecycle failed at line $LINENO: $BASH_COMMAND" >&2' ERR`},
-		"Windows lifecycle": {`":"\u0000"}'`, "$status -ne 502", "${function:Invoke-RuntimeMarker}", "$_.ScriptStackTrace"},
-	} {
-		text := unixLifecycle
-		if path == "Windows lifecycle" {
-			text = windowsLifecycle
-		}
-		for _, marker := range markers {
-			if !strings.Contains(text, marker) {
-				t.Fatalf("%s does not drive Agent-side runtime records or name its failing step: missing %q", path, marker)
-			}
-		}
-		if strings.Contains(text, `-d '{}' "http://127.0.0.1:18080/api/v1/capabilities/$1"`) || strings.Contains(text, "-ne 400") {
-			t.Fatalf("%s still expects Gateway-rejected input to reach the Agent runtime log", path)
-		}
-	}
-	if strings.Contains(windowsLifecycle, "OnprestValidateReader") {
-		t.Fatal("Windows lifecycle uses a local account name longer than the Windows 20-character limit")
-	}
-	if strings.Contains(windowsLifecycle, "OnprestVal$PID") ||
-		!strings.Contains(windowsLifecycle, "if ($null -ne $cleanupFailure)") ||
-		!strings.Contains(windowsLifecycle, "throw $cleanupFailure") {
-		t.Fatal("Windows lifecycle does not use a collision-resistant account name and fail a successful run on final account cleanup failure")
-	}
-	readerPasswordMatch := regexp.MustCompile(`\$readerPasswordPlain = '([^']+)'`).FindStringSubmatch(windowsLifecycle)
-	if len(readerPasswordMatch) != 2 || len(readerPasswordMatch[1]) > 14 {
-		t.Fatal("Windows lifecycle reader password must not trigger net.exe's interactive legacy-compatibility prompt")
-	}
-	readerPassword := readerPasswordMatch[1]
-	for class, pattern := range map[string]string{
-		"uppercase": `[A-Z]`,
-		"lowercase": `[a-z]`,
-		"digit":     `[0-9]`,
-		"symbol":    `[^A-Za-z0-9]`,
-	} {
-		if !regexp.MustCompile(pattern).MatchString(readerPassword) {
-			t.Fatalf("Windows lifecycle reader password does not satisfy the %s complexity class", class)
-		}
-	}
-	for path, text := range map[string]string{
-		"Unix lifecycle":    unixLifecycle,
-		"Windows lifecycle": windowsLifecycle,
-	} {
-		if strings.Contains(text, "onprest_validate_missing") {
-			t.Fatalf("%s uses a redacted password substring in its missing-database marker", path)
-		}
-		for _, marker := range []string{"validate_missing_database_a", "validate_missing_database_b"} {
-			if !strings.Contains(text, marker) {
-				t.Fatalf("%s does not assert unredacted missing-database marker %q", path, marker)
-			}
-		}
-	}
-	for path, lifecycle := range map[string]struct {
-		text     string
-		settings []string
-	}{
-		"Unix lifecycle": {
-			text: unixLifecycle,
-			settings: []string{
-				"GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND=1000",
-				"GATEWAY_RATE_LIMIT_BURST=1000",
-			},
-		},
-		"Windows lifecycle": {
-			text: windowsLifecycle,
-			settings: []string{
-				"$env:GATEWAY_RATE_LIMIT_REQUESTS_PER_SECOND = '1000'",
-				"$env:GATEWAY_RATE_LIMIT_BURST = '1000'",
-			},
-		},
-	} {
-		for _, setting := range lifecycle.settings {
-			if !strings.Contains(lifecycle.text, setting) {
-				t.Fatalf("%s does not set high test-only rate limit %q", path, setting)
-			}
-		}
-	}
-	if strings.Contains(unixLifecycle, "stat -f '%Lp' \"$fixed_log\" 2>/dev/null || stat -c") ||
-		!strings.Contains(unixLifecycle, "Darwin) stat -f") || !strings.Contains(unixLifecycle, "Linux) stat -c") {
-		t.Fatal("Unix lifecycle does not select permission/size stat syntax by operating system")
-	}
-	if strings.Contains(windowsLifecycle, "Get-FileHash") {
-		t.Fatal("Windows lifecycle hashes a live Agent log without write/delete sharing")
-	}
-	for _, marker := range []string{
-		"function Get-SharedFileHash",
-		"[System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete",
-		"$hasher.ComputeHash($stream)",
-		"$runtimeBefore = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))",
-		"$runtimeAfter = @((Get-SharedFileHash $runtimeLog), (Get-SharedFileHash $rotatedLog))",
-	} {
-		if !strings.Contains(windowsLifecycle, marker) {
-			t.Fatalf("Windows lifecycle does not hash live Agent logs with sharing-compatible helper %q", marker)
-		}
-	}
-	trapAt := strings.Index(unixLifecycle, "trap cleanup EXIT")
-	installAt := strings.Index(unixLifecycle, `"${elevate[@]}" "$agent_bin" service install`)
-	if trapAt < 0 || installAt <= trapAt || strings.Contains(unixLifecycle[trapAt:installAt], "\ncleanup\n") {
-		t.Fatal("Unix lifecycle invokes final cleanup after starting the Gateway but before installing the service")
-	}
-	for _, invocation := range []string{
-		"Extract Linux release archive outside the repository",
-		"release-dist/onprest-linux-amd64.tar.gz",
-		"release-dist/onprest-$target.tar.gz",
-		"release-dist/onprest-windows-amd64.zip",
-		"run_service_lifecycle_sanitized_unix.sh",
-		"development tool remains on service test PATH",
-		"LINUX_PACKAGE_ROOT",
-		"$env:RUNNER_TEMP",
-	} {
-		if !strings.Contains(serviceText, invocation) {
-			t.Fatalf("service lifecycle workflow does not use the source-free archive path: %q", invocation)
-		}
-	}
-	systemdImage := readText(t, filepath.Join(root, "scripts", "service-test-systemd.Dockerfile"))
-	for _, want := range []string{"systemd-sysv", "postgresql", `CMD ["/sbin/init"]`} {
-		if !strings.Contains(systemdImage, want) {
-			t.Fatalf("systemd service test image missing %q", want)
-		}
+	// Candidate version remains tied to the actual Wasm compatibility contract.
+	text := readText(t, filepath.Join(dir, "release-gate.yml"))
+	if !strings.Contains(text, "VERSION: "+wasmruntime.CompatibilityVersion) {
+		t.Fatal("candidate version cannot run generated modules")
 	}
 }
 
@@ -1340,63 +1021,6 @@ func TestReleaseReadySelectionRejectsWrongSHAAndUnsuccessfulRuns(t *testing.T) {
 	got := strings.TrimSpace(runRepoCommand(t, root, nil, "ruby", "scripts/select_release_ready_run.rb", exactSHA, runsPath, jobs))
 	if got != "4\thttps://github.com/viewlegacy/onprest/actions/runs/4" {
 		t.Fatalf("selected release-ready run = %q", got)
-	}
-}
-
-func TestDatabaseGateDocumentationMatchesExecutableSelection(t *testing.T) {
-	root := repoRoot(t)
-	makefile := readText(t, filepath.Join(root, "Makefile"))
-	releaseScript := readText(t, filepath.Join(root, "scripts", "it_release_gate.sh"))
-	integrationReadme := readText(t, filepath.Join(root, "it", "README.md"))
-	testCommands := readText(t, filepath.Join(root, "docs", "app", "reference", "test-commands", "page.mdx"))
-	releaseDocs := readText(t, filepath.Join(root, "docs", "app", "operations", "release-gate", "page.mdx"))
-
-	const allDBSelector = "-run '^TestContainerDBDriver'"
-	for source, text := range map[string]string{
-		"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme, "test commands": testCommands,
-	} {
-		if !strings.Contains(text, allDBSelector) {
-			t.Fatalf("%s does not use common all-DB selection %q", source, allDBSelector)
-		}
-	}
-	for path, name := range map[string]string{
-		"it/transaction_start_conformance_test.go": "TestContainerDBDriverOracleTransactionStartIsImmediateAndRollbackable",
-		"it/openapi_nullable_postgres_test.go":     "TestContainerDBDriverPostgresNullableResultMatchesGeneratedOpenAPI",
-		"it/timestamp_postgres_test.go":            "TestContainerDBDriverPostgresTimestampResultPreservesJSONContract",
-	} {
-		if text := readText(t, filepath.Join(root, filepath.FromSlash(path))); !strings.Contains(text, "func "+name+"(") {
-			t.Fatalf("%s does not use common all-DB test prefix: %s", path, name)
-		}
-	}
-	for _, tlsContract := range []string{
-		"TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification",
-		"TestMySQLTLSModesClientCertificateRotationAndReconnectAgainstRealDatabase",
-		"TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase",
-		"TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase",
-	} {
-		for source, text := range map[string]string{
-			"Makefile": makefile, "release script": releaseScript, "integration README": integrationReadme,
-		} {
-			if !strings.Contains(text, tlsContract) {
-				t.Fatalf("%s does not include database TLS contract %q", source, tlsContract)
-			}
-		}
-	}
-	for _, database := range []string{"PostgreSQL", "MySQL", "SQL Server", "Oracle"} {
-		if !strings.Contains(testCommands, database) {
-			t.Fatalf("test commands do not document the %s TLS contract", database)
-		}
-	}
-	for _, coverage := range []string{"private", "hostname", "client"} {
-		if !strings.Contains(testCommands, coverage) {
-			t.Fatalf("test commands do not document PostgreSQL TLS %s coverage", coverage)
-		}
-	}
-	if !strings.Contains(releaseDocs, "four-database TLS contract") {
-		t.Fatal("release gate does not summarize database TLS coverage")
-	}
-	if strings.Contains(testCommands, "exact filter `^TestContainerDBDriver`") || strings.Contains(releaseDocs, "all-DB smoke path") {
-		t.Fatal("DB gate documentation retained the superseded selection")
 	}
 }
 

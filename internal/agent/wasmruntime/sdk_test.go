@@ -104,10 +104,12 @@ func TestSDKRealWasmDecodePrecisionNullAndMismatch(t *testing.T) {
 	if v["i64"] != int64(9007199254740993) || v["uint"] != int64(9223372036854775807) || v["int"] != int64(9223372036854775807) || v["bits"] != int64(64) || v["pointer"] != nil || v["raw"] != nil || v["custom"] != int64(5) || v["embedded"] != "value" || v["any"].(map[string]any)["n"] != int64(9007199254740993) {
 		t.Fatal(v)
 	}
+	// Detailed number/null/custom-decoder cases live in sdk/go/decode_test.go.
+	// Keep real-Wasm overflow, handler-entry refusal and opaque-file privacy.
 	for _, test := range []struct {
 		key   string
 		value any
-	}{{"i32", int64(2147483648)}, {"uint", int64(-1)}, {"i64", float64(1.5)}, {"float", float64(1e100)}, {"i32", nil}, {"unknown", "private-value"}, {"I64", int64(1)}, {"custom", int64(2147483648)}, {"any", map[string]any{"__onprest_input_file_v1": map[string]any{"file_id": "private-id"}}}} {
+	}{{"i32", int64(2147483648)}, {"unknown", "private-value"}, {"any", map[string]any{"__onprest_input_file_v1": map[string]any{"file_id": "private-id"}}}} {
 		t.Run(test.key+fmt.Sprint(test.value), func(t *testing.T) {
 			logs = nil
 			_, e := sdkRun(t, r, m, c, map[string]any{"scenario": "decode", test.key: test.value}, DefaultLimits())

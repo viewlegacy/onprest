@@ -8,7 +8,7 @@ The four-database matrix includes SELECT compatibility plus INSERT/UPDATE/DELETE
 
 ## Main Commands
 
-Use these for normal development and release decisions.
+Run affected tests locally; complete release decisions use the GitHub gate.
 
 ```bash
 make test-it
@@ -20,13 +20,13 @@ Development IT check. This runs the PostgreSQL integration path by default. It s
 make test-it-postgres-ci
 ```
 
-PostgreSQL operation-readiness gate. This runs the PostgreSQL integration suite three times with `ONPREST_IT_REQUIRE_CONTAINERS=1`, so a PostgreSQL container startup failure is a test failure instead of a skip.
+PostgreSQL schema-enabled check. Install the pinned Ajv dependencies first; this runs the PostgreSQL integration suite once with `ONPREST_IT_REQUIRE_CONTAINERS=1`, so a PostgreSQL container startup failure is a test failure instead of a skip.
 
 ```bash
 make test-it-release-gate
 ```
 
-Final OSS core release gate. In addition to unit, PostgreSQL CI, and interruption stability checks, it runs all-DB conformance, all four real-DB TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. The canonical step-by-step coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
+Maintainer integration convenience command, not a local PR prerequisite. It runs PostgreSQL E2E once, interruption stability, all-DB conformance, all four real-DB TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. Unit tests, SDK checks and vulnerability scans are separate GitHub jobs. The canonical coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
 
 ## Support Commands
 

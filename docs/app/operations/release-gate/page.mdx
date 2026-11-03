@@ -1,79 +1,58 @@
 # Release Gate
 
-Maintainers use the release gate before treating an OSS core change as operationally ready. Users install published releases without Go or the source repository; see [Install from a release](/operations/deployment#install-from-a-release).
-
-## Release Gate Command
-
-```bash
-make test-it-release-gate
-```
-
-This gate verifies:
-
-- Go vulnerability analysis reports zero reachable known vulnerabilities for `./...`
-- unit tests
-- PostgreSQL integration tests 3 consecutive times
-- public schema validation: the unit and PostgreSQL integration tests check real values against the published OpenAPI and MCP schemas
-- PostgreSQL DB interruption stability 5 consecutive times
-- all-DB conformance: every `TestContainerDBDriver*` case, including Oracle immediate transaction start/cancel, PostgreSQL nullable Agent response/OpenAPI 3.1 validation, and PostgreSQL timestamp JSON/timezone compatibility
-- MySQL special-character credential connection
-- the four-database TLS contract against real databases: `disable`, `require`, and `verify-full` for PostgreSQL, MySQL, SQL Server, and Oracle, plus PostgreSQL `verify-ca`
-- encryption observation, private/wrong CA, hostname and `server_name`, expiry, certificate replacement/pool recreation, reconnect without plaintext downgrade, and supported PostgreSQL/MySQL client-certificate authentication
-- Oracle TCPS through the pure-Go driver without Oracle Instant Client
-- Docker image operational tests
-- Docker Compose env-file operational tests
-- test/subtest skip count is zero in required mode
-- testcontainers residue is zero
-- when given extracted release binaries, the Quick Start runs against those binaries outside the source tree
+Contributors run tests affected by their changes locally. The complete gate runs in GitHub Actions; a full local release gate is not required before opening or updating a PR. Users install the two published binaries without Go or a source checkout; see [Install from a release](/operations/deployment#install-from-a-release).
 
 ## GitHub Actions
 
-Every push and pull request runs `go test ./...` and `go vet ./...`.
-
-Pull requests targeting `main` and pushes to `main` also run these checks:
+Pull requests to `main` run one gate per update. Feature-branch pushes do not start a second copy. A new PR commit cancels its previous gate. Pushes to `main`, manual runs and weekly runs validate the complete commit, independent of changed paths.
 
 | Check | Scope |
 |---|---|
-| `release-gate / package-candidate` | Builds the five OS/CPU archives and the Quick Start archive, scans the ten distributed binaries, and verifies checksums |
-| `release-gate / integration-linux` | Runs `make test-it-release-gate` once on Linux with the binaries extracted from the Linux amd64 archive |
-| `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
-| `service-lifecycle / macos-launchd` | Runs the same lifecycle with launchd |
-| `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
-| `release-gate / native-tests` | Runs the agent's OS-dependent tests natively on Linux arm64, macOS, and Windows; a skipped test fails the check |
-| `release-gate / release-ready` | Requires packaging, Linux integration, the native tests, and the complete reusable service lifecycle workflow to succeed |
+| `ci / unit` and `ci / agent` | Common tests with pinned public OpenAPI/MCP schema validation enabled once, plus vet; Agent tests use two partitions |
+| `ci / author-cli` | Independent real author workflows for build, execution and file handling |
+| `ci / wasm` | Six disjoint partitions of the Wasm suite |
+| `ci / repository` | Repository contracts, archive verification and rejection of unsafe/corrupt archives |
+| `ci / sdk` | Independent SDK race tests, vet, module verification and WASI build |
+| `package-candidate` | Five OS/CPU binary archives, Quick Start archive, source and ten-binary vulnerability scans and checksums |
+| `integration-linux` | Four PostgreSQL E2E partitions, four database-specific conformance/TLS jobs, Docker/Compose, extracted Quick Start, and DB interruption stability |
+| `native-tests` | Filesystem, spool, OS permissions, recovery, author CLI, real WASI and process/resource boundaries on Linux arm64, macOS and Windows |
+| `service-lifecycle` | Actual systemd, launchd and Windows Service lifecycle using archived binaries, a real gateway and PostgreSQL |
+| `docs` | Documentation site build when applicable |
+| `checks` | Requires every selected job to succeed; rejects failures and cancellations |
+| `release-ready` | Publication evidence from a complete non-PR run of the exact commit |
 
-The three service checks run the binaries from the release archives under the native OS service manager, against a real gateway and PostgreSQL.
+Docs-only PRs run the documentation build. Gateway-only changes can omit unrelated native Agent tests. Unknown paths and shared dependencies conservatively select native tests. PRs validate the merge result. They do not produce tag-commit `release-ready` evidence; the full `main` or manual run supplies it. Configure the required PR status check as `checks`.
 
-Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-platforms); results from a newer OS do not establish minimum-version support.
+Regular suites run once. Only the DB interruption stability case repeats five times. The four-database TLS contract covers PostgreSQL, MySQL, SQL Server and Oracle, including trust/hostname errors, supported client certificates, rotation and reconnect without plaintext downgrade. Container-backed partitions require Docker, reject skipped tests and check for leftover Testcontainers resources.
+
+Go test jobs retain JSONL logs and elapsed-time summaries even when successful. Their timeout budget is ten minutes, with an eight-minute test timeout; these budgets do not guarantee wall time including runner queues and downloads. The PR target is five minutes, with ten minutes as the upper target. Cross-builds do not prove native runtime compatibility or minimum-version OS support; see [supported platforms](/operations/deployment#supported-platforms).
+
+## Targeted Local Checks
+
+Use the relevant commands in [Test Commands](/reference/test-commands). For example:
+
+```bash
+go test ./internal/contract -run '^TestPublic' -count=1
+go test ./internal/agent -run '^TestCodeCLIRealAuthorWorkflowBuild$' -count=1
+```
+
+Maintainers can run integration partitions explicitly:
+
+```bash
+bash scripts/it_release_gate.sh postgres-1
+bash scripts/it_release_gate.sh db-mysql
+```
+
+Partitions need Go, Docker, and, for schema validation, Node.js with the pinned Ajv dependencies installed:
+
+```bash
+npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
+```
+
+`make test-it-release-gate` runs all integration partitions sequentially as a maintainer convenience. It does not rerun unit tests or vulnerability scans and does not establish full release readiness. `quickstart` additionally requires extracted distribution binaries and the Quick Start archive, which CI supplies.
 
 ## Release Publication
 
-A semantic version tag (`vX.Y.Z`) starts the release workflow. Publication
-requires a successful `release-ready` result for the exact tagged commit SHA;
-missing, failed, canceled, or different-SHA results block the release. The
-workflow rebuilds and checks the tagged assets, attaches a GitHub artifact
-attestation to each asset, publishes `SHA256SUMS`, and creates the GitHub
-Release. It never overwrites an existing Release.
+A semantic version tag (`vX.Y.Z`) starts publication. It requires a successful `release-ready` for the exact tagged commit SHA. A missing, failed, canceled, partial or different-SHA gate cannot authorize publication. The workflow checks the final tagged archive bytes with Linux distribution integration and all three service managers, attests that byte set, publishes `SHA256SUMS`, and refuses to overwrite an existing Release.
 
-## Requirements
-
-Release gate commands require Go 1.26.10 or later as declared in `go.mod`. Schema validation also needs Node.js and npm to install the pinned validator. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.10 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the release gate.
-
-Container-backed tests require Docker daemon access. To make container availability mandatory, use:
-
-```bash
-ONPREST_IT_REQUIRE_CONTAINERS=1
-```
-
-If Docker is unavailable and mandatory mode is not enabled, container-backed tests may skip. Required release gates should run with no skipped integration or operational cases.
-
-## Acceptance Criteria
-
-A release candidate should pass `integration-linux`, the native tests, all three native service checks, and the final `release-ready` aggregation for the exact candidate commit, and preserve the architecture boundaries:
-
-- zero reachable known vulnerabilities reported by `govulncheck ./...`
-- two deployable binaries: `onprest-gateway` and `onprest-agent`
-- no gateway SQL construction
-- no gateway DB credentials
-- direct and reverse-proxy deployment both remain valid
-- error detail redaction remains intact
+Release packaging requires Go 1.26.10 or later as declared in `go.mod`. CI uses that file for the Go toolchain. The vulnerability scanner is pinned as a Go tool dependency, and packaging rejects reachable known source or distributed-binary vulnerabilities.

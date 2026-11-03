@@ -49,32 +49,6 @@ cleanup_logs() {
 }
 trap cleanup_logs EXIT
 
-run_go_json_no_skip() {
-	local label="$1"
-	shift
-	local log="$LOG_DIR/${label}.jsonl"
-	echo "==> $label"
-	set +e
-	"$@" >"$log" 2>&1
-	local status=$?
-	set -e
-	# Package-level skip records have no Test field and are emitted for packages
-	# without test files. Only an actual test/subtest skip invalidates the gate.
-	if grep -Eq '"Action":"skip".*"Test":"[^"]+"' "$log"; then
-		echo "skip detected in $label; full log: $log" >&2
-		grep -E '"Action":"skip".*"Test":"[^"]+"' "$log" >&2 || true
-		exit 1
-	fi
-	if [[ "$status" -ne 0 ]]; then
-		echo "$label failed with exit status $status; full log: $log" >&2
-		bash "$ROOT_DIR/scripts/go_test_json_failures.sh" "$log" || true
-		echo "--- last 200 log lines of $label ---" >&2
-		tail -n 200 "$log" >&2 || true
-		exit "$status"
-	fi
-	echo "PASS: $label"
-}
-
 assert_docker_available() {
 	if ! command -v docker >/dev/null 2>&1; then
 		echo "docker command is required for the integration release gate" >&2
@@ -102,99 +76,61 @@ assert_no_testcontainers_left() {
 }
 
 mkdir -p "$LOG_DIR"
-echo "integration release gate logs: $LOG_DIR"
-
 assert_prebuilt_distribution
 assert_docker_available
 
-if [[ -n "${ONPREST_IT_GATEWAY_BINARY:-}" ]]; then
-	if [[ -z "${ONPREST_IT_QUICKSTART_DIR:-}" ]]; then
-		echo "ONPREST_IT_QUICKSTART_DIR is required with distribution binaries" >&2
-		exit 1
-	fi
-	bash scripts/quickstart_smoke.sh "$(dirname "$ONPREST_IT_GATEWAY_BINARY")" "$ONPREST_IT_QUICKSTART_DIR"
-fi
-
-echo "==> govulncheck"
-make vulncheck
-echo "PASS: govulncheck"
-
-# Public schema checks need the pinned Ajv validator; without the
-# schema_validator tag the response-schema assertions compile to no-ops.
-echo "==> pinned schema validator"
-npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator
-echo "PASS: pinned schema validator"
-
-run_go_json_no_skip "unit" go test -json -timeout 60m ./...
-
-# Only tests whose own files or dependencies change under the tag are rerun.
-schema_validator_packages() {
-	local lib own
-	changed() {
-		diff <(go list -f "{{.ImportPath}} $1" ./internal/...) <(go list -tags=schema_validator -f "{{.ImportPath}} $1" ./internal/...) |
-			sed -n 's/^> \([^ ]*\) .*/\1/p' || true
-	}
-	lib=$(changed '{{.GoFiles}}' | paste -sd'|' -)
-	own=$(changed '{{.TestGoFiles}} {{.XTestGoFiles}}')
-	{
-		printf '%s\n' "$own"
-		if [[ -n $lib ]]; then
-			go list -tags=schema_validator -test -f '{{.ImportPath}}{{range .Deps}}|{{.}}{{end}}' ./internal/... |
-				grep -E "^[^|]+\.test\|" | grep -E "\|($lib)( \[|\||$)" | sed -E 's/\.test\|.*//' || true
-		fi
-	} | sed '/^$/d' | sort -u
+# Each named partition runs once. The only repeated case is DB interruption.
+# No untagged/schema-tagged unit reruns: ci.yml owns the tagged unit suite.
+run_suite() {
+  local suite="$1"
+  local args=()
+  case "$suite" in
+    postgres-[1-4])
+      args=(-package=./it -tags=integration,schema_validator
+        -exclude='^Test(ContainerDBDriver|Docker|MySQL|SQLServerTLS|OracleTLS|PostgresTLS|PostgresDBUnreachableDuringQuery)'
+        -shard="${suite#postgres-}" -shards=4 -- -args -onprest-it-db=postgres)
+      ;;
+    db-postgres)
+      args=(-package=./it -tags=integration,schema_validator -include='^Test(ContainerDBDriver|PostgresTLS)' -- -args -onprest-it-db=postgres)
+      ;;
+    db-mysql)
+      args=(-package=./it -tags=integration,schema_validator -include='^Test(ContainerDBDriver|MySQL)' -- -args -onprest-it-db=mysql)
+      ;;
+    db-sqlserver)
+      args=(-package=./it -tags=integration,schema_validator -include='^Test(ContainerDBDriver|SQLServerTLS)' -- -args -onprest-it-db=sqlserver)
+      ;;
+    db-oracle)
+      args=(-package=./it -tags=integration,schema_validator -include='^Test(ContainerDBDriver|OracleTLS)' -- -args -onprest-it-db=oracle)
+      ;;
+    docker)
+      export ONPREST_IT_DOCKER=1 ONPREST_IT_DOCKER_COMPOSE=1
+      args=(-package=./it -tags=integration -include='^TestDocker')
+      ;;
+    stability)
+      args=(-package=./it -tags=integration -include='^TestPostgresDBUnreachableDuringQuery$' -- -count=5 -args -onprest-it-db=postgres)
+      ;;
+    quickstart)
+      # This smoke always consumes the candidate archive, outside the checkout.
+      : "${ONPREST_IT_GATEWAY_BINARY:?quickstart requires distribution binaries}"
+      : "${ONPREST_IT_QUICKSTART_DIR:?quickstart archive is required}"
+      bash scripts/quickstart_smoke.sh "$(dirname "$ONPREST_IT_GATEWAY_BINARY")" "$ONPREST_IT_QUICKSTART_DIR" 2>&1 | tee "$LOG_DIR/quickstart.log"
+      return
+      ;;
+    *) echo "unknown integration suite: $suite" >&2; exit 1 ;;
+  esac
+  ONPREST_IT_REQUIRE_CONTAINERS=1 go run ./internal/citest -log="$LOG_DIR/$suite.jsonl" "${args[@]}"
 }
-schema_packages=()
-while IFS= read -r package; do
-	schema_packages+=("$package")
-done < <(schema_validator_packages)
-if [[ ${#schema_packages[@]} -eq 0 ]]; then
-	echo "no packages change under the schema_validator tag" >&2
-	exit 1
+
+suite="${1:-all}"
+if [[ "$suite" == all ]]; then
+  # Maintainer convenience only; ordinary local development runs affected tests.
+  npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
+  for part in postgres-{1..4} db-postgres db-mysql db-sqlserver db-oracle docker stability; do
+    run_suite "$part"
+  done
+  if [[ -n "${ONPREST_IT_GATEWAY_BINARY:-}" ]]; then run_suite quickstart; fi
+else
+  run_suite "$suite"
 fi
-echo "schema_validator packages: ${schema_packages[*]}"
-run_go_json_no_skip "unit-schema-validator" go test -json -timeout 60m -tags=schema_validator "${schema_packages[@]}"
-
-run_go_json_no_skip "postgres-ci" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -timeout 90m -tags=integration,schema_validator ./it/... -skip '^TestDocker' -count=3 -args -onprest-it-db=postgres
-
-run_go_json_no_skip "postgres-db-interruption-stability" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^TestPostgresDBUnreachableDuringQuery$' -count=5 -args -onprest-it-db=postgres
-
-run_go_json_no_skip "all-db-conformance" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^TestContainerDBDriver' -timeout 30m -count=1 -args -onprest-it-db=all
-
-run_go_json_no_skip "postgres-tls-contract" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^TestPostgresTLSModesPrivateCAClientCertificateAndHostnameVerification$' -timeout 10m -count=1 -args -onprest-it-db=postgres
-
-run_go_json_no_skip "mysql-special-credentials" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^TestMySQLDSNSpecialCredentialsConnectToRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=mysql
-
-run_go_json_no_skip "mysql-tls-contract" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^TestMySQLTLSModesClientCertificateRotationAndReconnectAgainstRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=mysql
-
-run_go_json_no_skip "sqlserver-tls" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^TestSQLServerTLSRequireAndVerifyFullAgainstRealDatabase$' -timeout 10m -count=1 -args -onprest-it-db=sqlserver
-
-run_go_json_no_skip "oracle-tls-contract" \
-	env ONPREST_IT_REQUIRE_CONTAINERS=1 \
-	go test -json -tags=integration ./it/... -run '^TestOracleTLSModesVerificationRotationAndReconnectAgainstRealDatabase$' -timeout 15m -count=1 -args -onprest-it-db=oracle
-
-run_go_json_no_skip "docker-image-ops" \
-	env ONPREST_IT_DOCKER=1 \
-	go test -json -tags=integration ./it/... -run '^TestDockerTargetsBuildWhenDockerIntegrationEnabled$' -count=1
-
-run_go_json_no_skip "docker-compose-ops" \
-	env ONPREST_IT_DOCKER_COMPOSE=1 \
-	go test -json -tags=integration ./it/... -run '^TestDockerComposeEnvFilePreservesGatewayAPIKeysJSON$' -count=1
-
 assert_no_testcontainers_left
-
-echo "PASS: integration release gate"
+echo "PASS: integration partition $suite"

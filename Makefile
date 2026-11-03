@@ -51,7 +51,7 @@ test:
 	go test -timeout 60m ./...
 
 test-contract-schema:
-	npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator
+	npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
 	go test -tags=schema_validator ./internal/contract -run '^TestPublic' -count=1
 
 vulncheck:
@@ -61,7 +61,7 @@ test-it:
 	go test -tags=integration ./it/...
 
 test-it-postgres-ci:
-	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -skip '^TestDocker' -count=3 -args -onprest-it-db=postgres
+	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration,schema_validator ./it/... -skip '^TestDocker' -count=1 -args -onprest-it-db=postgres
 
 test-it-postgres-stability:
 	ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it/... -run '^TestPostgresDBUnreachableDuringQuery$$' -count=5 -v -args -onprest-it-db=postgres

@@ -1,6 +1,6 @@
 # Test Commands
 
-Run these commands from a source checkout to test Onprest.
+Run affected tests from a source checkout during development. GitHub Actions runs the complete gate; a full local release gate is not a prerequisite for a PR.
 
 Test commands require Go 1.26.10 or later as declared in `go.mod`.
 
@@ -8,15 +8,15 @@ Test commands require Go 1.26.10 or later as declared in `go.mod`.
 
 | Command | What it runs |
 |---|---|
-| `go test -timeout 60m ./...` / `make test` | Unit tests only. No database or Docker required. |
+| `go test -timeout 60m ./...` / `make test` | All tests without the integration tag, including real Wasm/process and packaging checks. No database or Docker required; use targeted tests locally. |
 | `make vulncheck` | Runs the `govulncheck` version pinned in `go.mod` and fails on reachable known vulnerabilities in `./...`. Release packaging additionally scans each of the ten distributed binaries with `govulncheck -mode=binary`. |
 | `go test -tags=integration ./it/...` / `make test-it` | Full integration suite against a database. Requires Docker for Testcontainers-backed databases. |
-| `make test-it-postgres-ci` | PostgreSQL integration tests, excluding Docker image build tests, run 3 times in a row to catch flakiness. Containers are mandatory. |
+| `make test-it-postgres-ci` | PostgreSQL integration tests, excluding Docker image build tests, run once with public schema validation. Install the pinned Ajv dependencies first. Containers are mandatory. |
 | `make test-it-postgres-stability` | DB-interruption stability test (`TestPostgresDBUnreachableDuringQuery`) run 5 times in a row to confirm the agent handles a database that drops mid-query. |
 | `make test-it-all-db` | Every `TestContainerDBDriver*` test across PostgreSQL, MySQL, SQL Server, and Oracle, with a 30-minute timeout. The common prefix includes the Oracle transaction-start contract and the PostgreSQL nullable OpenAPI and timestamp compatibility cases. Covers real mutation REST/MCP, constraints, timeout/cancel, permissions, transaction-start cancellation, persisted state, OpenAPI 3.1 response validation, and exact timestamp JSON/timezone coercion. |
 | `make test-it-database-tls` | Runs the four real-database TLS contracts for PostgreSQL, MySQL, SQL Server, and Oracle. Covers private CA trust, hostname verification, supported client certificates, rotation, and reconnect without plaintext downgrade. Containers are mandatory and the combined timeout is 30 minutes. |
 | `make test-it-docker-ops` | Operational tests for the Docker image build and Docker Compose env-file handling (verifies `GATEWAY_API_KEYS_JSON` and bcrypt `$` survive env-file loading). |
-| `make test-it-release-gate` | Linux integration component of the full release gate. Runs vulnerability analysis, unit, unit and PostgreSQL integration tests with public schema validation (pinned Ajv, needs Node.js), stability, all-DB conformance, MySQL special-credential, all four DB TLS contracts, and Docker operational checks, and asserts zero reachable vulnerabilities, zero test/subtest skips, and zero leftover Testcontainers resources. Full release readiness additionally requires all native service jobs and `release-ready`; see [Release Gate](/operations/release-gate). |
+| `make test-it-release-gate` | All integration partitions sequentially: PostgreSQL E2E once with pinned public schema validation, DB interruption stability, all-DB conformance, MySQL special credentials, four DB TLS contracts, and Docker operations; rejects test/subtest skips and leftover Testcontainers resources. Unit tests and vulnerability scans are separate GitHub jobs. Full release readiness additionally requires all native service jobs and `release-ready`; see [Release Gate](/operations/release-gate). |
 | `make release-artifacts VERSION=X.Y.Z RELEASE_TAG=vX.Y.Z RELEASE_SHA=<sha> RELEASE_READY_URL=<url>` | Maintainer command: builds five OS/CPU binary archives and one Quick Start archive, records binary dependencies, runs source and binary vulnerability checks, writes `SHA256SUMS`, and verifies the complete release asset set. |
 
 ## Unit
@@ -25,7 +25,7 @@ Test commands require Go 1.26.10 or later as declared in `go.mod`.
 go test -timeout 60m ./...
 ```
 
-`make test` runs the same command. Keep the explicit timeout: the code worker tests alone take longer than `go test`'s default of 10 minutes.
+`make test` runs the same command. This is a broad maintainer command. For local changes, select the affected packages/tests; CI partitions the real worker and process tests into separate jobs.
 
 ## Author CLI contracts
 
@@ -65,7 +65,7 @@ go test -tags=integration ./it/... -args -onprest-it-db=all
 make test                        # unit tests
 make vulncheck                   # reachable vulnerability analysis
 make test-it                     # integration suite
-make test-it-postgres-ci         # PostgreSQL CI run, 3x, no Docker build tests
+make test-it-postgres-ci         # PostgreSQL schema-enabled run, once, no Docker build tests
 make test-it-postgres-stability  # DB-interruption stability, 5x
 make test-it-all-db              # all-DB + Oracle start + nullable OpenAPI + timestamp, 30m
 make test-it-database-tls        # PostgreSQL/MySQL/SQL Server/Oracle real-DB TLS contracts

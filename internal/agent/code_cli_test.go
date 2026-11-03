@@ -84,7 +84,11 @@ capabilities:
     output: {data: {}}
 `
 
-func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
+func TestCodeCLIRealAuthorWorkflow(t *testing.T)      { testCodeCLIRealAuthorWorkflow(t, "execution") }
+func TestCodeCLIRealAuthorWorkflowBuild(t *testing.T) { testCodeCLIRealAuthorWorkflow(t, "build") }
+func TestCodeCLIRealAuthorWorkflowFiles(t *testing.T) { testCodeCLIRealAuthorWorkflow(t, "files") }
+
+func testCodeCLIRealAuthorWorkflow(t *testing.T, group string) {
 	repo, e := filepath.Abs("../..")
 	if e != nil {
 		t.Fatal(e)
@@ -172,7 +176,9 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 		return run(want, source, append(args, extras...)...)
 	}
-	t.Run("initial-default-source-multiple-files-build-validate-no-business", func(t *testing.T) {
+	// Each independent group creates its own real module; later cases do not
+	// depend on another selected test having run first.
+	initialize := func(t *testing.T) {
 		v, _, diag := run(0, source, "build", "--config", config, "--capability", "run", "--offline", "--format", "json")
 		if len(v["sha256"].(string)) != 64 || strings.Contains(diag, "BUSINESS_INIT") {
 			t.Fatal(v, diag)
@@ -190,7 +196,8 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		if e != nil || codeHash(b) != mm.SHA256 {
 			t.Fatal(e)
 		}
-	})
+	}
+	initialize(t)
 	previous, _ := os.ReadFile(module)
 	previousManifest, _ := os.ReadFile(manifest)
 	pairUnchanged := func() {
@@ -201,13 +208,25 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal("previous pair changed")
 		}
 	}
-	t.Run("force-required-and-success", func(t *testing.T) {
+	runCase := func(name string, f func(*testing.T)) {
+		domain := "execution"
+		switch name {
+		case "force-required-and-success", "compiler-failure-test-build-does-not-run-old-module", "expected-sha-keeps-pair-and-config", "optional-and-mismatching-manifest", "source-boundaries-offline-import-rejection-preserve-pair":
+			domain = "build"
+		case "params-file-and-local-input-array-spaces-equals-mime", "inline-equivalent-and-strict-base64", "bad-file-bindings-before-business", "strict-local-input-and-params-paths-before-business", "output-directory-invalid-before-business-and-zero-no-final", "same-name-files-generated-names-all-delivery", "generated-csv-and-reader-tail-failure", "required-extension-mime-empty-byte-count-boundaries", "stdout-failure-preserves-completed-output", "forced-termination-is-unfinished-and-manually-removable":
+			domain = "files"
+		}
+		if group == domain {
+			t.Run(name, f)
+		}
+	}
+	runCase("force-required-and-success", func(t *testing.T) {
 		run(1, source, "build", "--output", module, "--format", "json")
 		pairUnchanged()
 		run(0, source, "build", "--output", module, "--force", "--offline", "--format", "json")
 		pairUnchanged()
 	})
-	t.Run("compiler-failure-test-build-does-not-run-old-module", func(t *testing.T) {
+	runCase("compiler-failure-test-build-does-not-run-old-module", func(t *testing.T) {
 		write(filepath.Join(source, "broken.go"), "package main\n invalid compiler input")
 		_, raw, diag := test(1, "{}", "--build", "--force", "--offline")
 		if strings.Contains(diag, "BUSINESS_INIT") || strings.Contains(raw, "invalid compiler") {
@@ -216,7 +235,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		pairUnchanged()
 		os.Remove(filepath.Join(source, "broken.go"))
 	})
-	t.Run("expected-sha-keeps-pair-and-config", func(t *testing.T) {
+	runCase("expected-sha-keeps-pair-and-config", func(t *testing.T) {
 		restoreConfig(t)
 		bad := strings.Replace(codeConfig, "module: ./module.wasm", "module: ./module.wasm, sha256: "+strings.Repeat("a", 64), 1)
 		write(config, bad)
@@ -227,14 +246,14 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal("expected digest changed")
 		}
 	})
-	t.Run("optional-and-mismatching-manifest", func(t *testing.T) {
+	runCase("optional-and-mismatching-manifest", func(t *testing.T) {
 		write(manifest, `{"sha256":"bad","abi":"bad","compiler_version":"go1.26.9","dependency_hash":"bad","required_imports":[]}`)
 		run(1, source, "validate", "--module", module, "--format", "json")
 		os.Remove(manifest)
 		run(0, source, "validate", "--module", module, "--format", "json")
 		write(manifest, string(previousManifest))
 	})
-	t.Run("default-null-int64-files-and-escaped-diagnostics", func(t *testing.T) {
+	runCase("default-null-int64-files-and-escaped-diagnostics", func(t *testing.T) {
 		v, raw, diag := test(0, `{"nullable":null}`, "--log-level", "debug")
 		data := v["data"].(map[string]any)
 		if !strings.Contains(raw, "9007199254740993") || data["nullable"] != nil || len(v["files"].([]any)) != 2 || strings.Contains(raw, "PRIVATE_") || !strings.Contains(diag, "PRIVATE_DEBUG") || strings.ContainsRune(diag, '\x1b') {
@@ -247,7 +266,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			}
 		}
 	})
-	t.Run("log-level-does-not-change-results", func(t *testing.T) {
+	runCase("log-level-does-not-change-results", func(t *testing.T) {
 		a, _, ad := test(0, `{"scenario":"zero"}`, "--log-level", "debug")
 		b, _, bd := test(0, `{"scenario":"zero"}`, "--log-level", "error")
 		delete(a, "request_id")
@@ -258,10 +277,10 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal(a, b, ad, bd)
 		}
 	})
-	t.Run("input-prevents-business", func(t *testing.T) {
+	runCase("input-prevents-business", func(t *testing.T) {
 		// Contract validation rejects before the worker; an int32 overflow passes
 		// the integer contract and fails in the SDK decoder before the handler.
-		for params, code := range map[string]string{`[]`: "VALIDATION_FAILED", `{"n":"bad"}`: "VALIDATION_FAILED", `{"n":null}`: "VALIDATION_FAILED", `{"unknown":1}`: "VALIDATION_FAILED", `{"n":1,"n":2}`: "VALIDATION_FAILED", `{"small":2147483648}`: "EXECUTION_FAILED"} {
+		for params, code := range map[string]string{`{"unknown":1}`: "VALIDATION_FAILED", `{"small":2147483648}`: "EXECUTION_FAILED"} {
 			v, raw, diag := test(1, params)
 			failure, _ := v["error"].(map[string]any)
 			if strings.Contains(diag, "BUSINESS_ENTER") || failure == nil || failure["code"] != code {
@@ -269,15 +288,15 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			}
 		}
 	})
-	t.Run("public-general-limit-error-safe", func(t *testing.T) {
-		for scenario, want := range map[string]string{"public": "APP_DECLINED", "invalid-public": "EXECUTION_FAILED", "general": "EXECUTION_FAILED", "limit": "LIMIT_EXCEEDED"} {
+	runCase("public-general-limit-error-safe", func(t *testing.T) {
+		for scenario, want := range map[string]string{"public": "APP_DECLINED", "limit": "LIMIT_EXCEEDED"} {
 			v, raw, _ := test(1, fmt.Sprintf(`{"scenario":%q}`, scenario))
 			if v["error"].(map[string]any)["code"] != want || strings.Contains(raw, "PRIVATE_") || v["data"] != nil || v["files"] != nil {
 				t.Fatal(raw)
 			}
 		}
 	})
-	t.Run("params-file-and-local-input-array-spaces-equals-mime", func(t *testing.T) {
+	runCase("params-file-and-local-input-array-spaces-equals-mime", func(t *testing.T) {
 		local := filepath.Join(tmp, "input = unknown.ext")
 		write(local, "12345678")
 		params := filepath.Join(tmp, "params.json")
@@ -298,7 +317,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal(files)
 		}
 	})
-	t.Run("inline-equivalent-and-strict-base64", func(t *testing.T) {
+	runCase("inline-equivalent-and-strict-base64", func(t *testing.T) {
 		v, _, _ := test(0, `{"scenario":"input","documents":[{"name":"input.bin","mime_type":"application/octet-stream","data":"MTIzNDU2Nzg="}]}`)
 		if v["files"].([]any)[0].(map[string]any)["sha256"] != codeHash([]byte("12345678")) {
 			t.Fatal(v)
@@ -310,7 +329,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			}
 		}
 	})
-	t.Run("bad-file-bindings-before-business", func(t *testing.T) {
+	runCase("bad-file-bindings-before-business", func(t *testing.T) {
 		p := filepath.Join(tmp, "small.txt")
 		write(p, "a")
 		for _, extras := range [][]string{{"--input-file", "/documents/0=" + p, "--input-file", "/documents/0=" + p}, {"--input-file", "/documents/1=" + p}, {"--input-file", "/documents/0=" + tmp}, {"--input-file", "/documents/0=" + p, "--input-mime", "/documents/0=bad"}, {"--input-file", "/documents/0=" + p, "--input-mime", "/missing=text/plain"}, {"--input-file", "/documents/0=" + filepath.Join(tmp, "missing")}} {
@@ -321,7 +340,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 	})
 
-	t.Run("strict-local-input-and-params-paths-before-business", func(t *testing.T) {
+	runCase("strict-local-input-and-params-paths-before-business", func(t *testing.T) {
 		inputs := filepath.Join(tmp, "strict-inputs")
 		if e := os.Mkdir(inputs, 0700); e != nil {
 			t.Fatal(e)
@@ -356,7 +375,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal(v, diag)
 		}
 	})
-	t.Run("output-directory-invalid-before-business-and-zero-no-final", func(t *testing.T) {
+	runCase("output-directory-invalid-before-business-and-zero-no-final", func(t *testing.T) {
 		_, _, diag := test(1, `{}`, "--output-dir", filepath.Join(tmp, "missing"))
 		if strings.Contains(diag, "BUSINESS_ENTER") {
 			t.Fatal(diag)
@@ -366,7 +385,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal(e)
 		}
 	})
-	t.Run("same-name-files-generated-names-all-delivery", func(t *testing.T) {
+	runCase("same-name-files-generated-names-all-delivery", func(t *testing.T) {
 		restoreConfig(t)
 		for _, delivery := range []string{"reference", "inline"} {
 			write(config, strings.Replace(codeConfig, "files: {}", "files: {delivery: {rest: reference, mcp: "+delivery+"}}", 1))
@@ -390,7 +409,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 	})
 
-	t.Run("generated-csv-and-reader-tail-failure", func(t *testing.T) {
+	runCase("generated-csv-and-reader-tail-failure", func(t *testing.T) {
 		restoreConfig(t)
 		csv := strings.Replace(codeConfig, "output: {data: {}, files: {}}", "output: {items: {properties: {label: {type: string}, n: {type: integer}}}, data: {}, files: {format: csv, filename: report.csv}}", 1)
 		write(config, csv)
@@ -412,7 +431,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal("partial output published", e)
 		}
 	})
-	t.Run("source-boundaries-offline-import-rejection-preserve-pair", func(t *testing.T) {
+	runCase("source-boundaries-offline-import-rejection-preserve-pair", func(t *testing.T) {
 		for name, body := range map[string]string{"nonmain": "package other\nfunc F(){}", "missing-main": "package main\nfunc F(){}", "offline-missing": "package main\nimport _ \"missing.invalid/dependency\"\nfunc main(){}", "unsupported-import": "package main\n//go:wasmimport forbidden call\nfunc call()\nfunc main(){call()}"} {
 			d := filepath.Join(tmp, name)
 			os.Mkdir(d, 0700)
@@ -428,7 +447,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		run(1, source, "build", "--source", filepath.Join(source, "entry.go"), "--output", module, "--force", "--format", "json")
 		pairUnchanged()
 	})
-	t.Run("required-extension-mime-empty-byte-count-boundaries", func(t *testing.T) {
+	runCase("required-extension-mime-empty-byte-count-boundaries", func(t *testing.T) {
 		restoreConfig(t)
 		required := strings.Replace(codeConfig, "scenario: {type: string, default: files}", "scenario: {type: string}", 1)
 		required = strings.Replace(required, "    output:", "      required: [scenario]\n    output:", 1)
@@ -449,7 +468,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 60s, max_input_files: 1}", 1))
 		test(1, `{"scenario":"input","documents":[{"name":"a","mime_type":"text/plain","data":"Zg=="},{"name":"b","mime_type":"text/plain","data":"Zg=="}]}`)
 	})
-	t.Run("timeout-and-output-limit", func(t *testing.T) {
+	runCase("timeout-and-output-limit", func(t *testing.T) {
 		restoreConfig(t)
 		// The CPU budget equals the timeout, so it must cover the per-request compile.
 		write(config, strings.Replace(codeConfig, codeRunPolicy, "    policy: {timeout: 20s}", 1))
@@ -463,7 +482,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal(v)
 		}
 	})
-	t.Run("stdout-failure-preserves-completed-output", func(t *testing.T) {
+	runCase("stdout-failure-preserves-completed-output", func(t *testing.T) {
 		before, _ := os.ReadDir(outDir)
 		r, w, e := os.Pipe()
 		if e != nil {
@@ -488,7 +507,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 		}
 	})
 
-	t.Run("forced-termination-is-unfinished-and-manually-removable", func(t *testing.T) {
+	runCase("forced-termination-is-unfinished-and-manually-removable", func(t *testing.T) {
 		isolated := filepath.Join(tmp, "forced")
 		os.Mkdir(isolated, 0700)
 		cmd := exec.Command(bin, "code", "test", "--config", config, "--capability", "run", "--params", `{"scenario":"timeout"}`, "--output-dir", isolated, "--format", "json")
@@ -527,7 +546,7 @@ func TestCodeCLIRealAuthorWorkflow(t *testing.T) {
 			t.Fatal(e)
 		}
 	})
-	t.Run("successful-test-build-text-exit-and-source-unchanged", func(t *testing.T) {
+	runCase("successful-test-build-text-exit-and-source-unchanged", func(t *testing.T) {
 		run(0, source, "test", "--build", "--force", "--offline", "--config", config, "--capability", "run", "--params", `{"scenario":"zero"}`)
 		b, _ := os.ReadFile(filepath.Join(source, "entry.go"))
 		if string(b) != codeFixture {

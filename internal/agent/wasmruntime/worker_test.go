@@ -273,7 +273,12 @@ func TestWasmRealWorkerTerminalFailuresAndIsolation(t *testing.T) {
 }
 func TestWasmRealWorkerTerminalErrors(t *testing.T) {
 	r, m, c := setup(t)
-	for _, test := range []struct{ envelope, code string }{{`{"error":{"kind":"internal","category":"execution"}}`, "EXECUTION_FAILED"}, {`{"error":{"kind":"internal","category":"output"}}`, "OUTPUT_INVALID"}, {`{"error":{"kind":"internal","category":"limit"}}`, "LIMIT_EXCEEDED"}, {`{"error":{"kind":"internal","category":"bogus"}}`, "EXECUTION_FAILED"}, {`{"error":{"kind":"public","code":"APP_DOCUMENT_INVALID","message":"safe"}}`, "APP_DOCUMENT_INVALID"}, {`{"error":{"kind":"public","code":"APP_DOCUMENT_INVALID","message":"unsafe\n"}}`, "EXECUTION_FAILED"}, {`{"data":null,"files":[],"error":{}}`, "EXECUTION_FAILED"}, {`{"data":1,"data":2,"files":[]}`, "EXECUTION_FAILED"}, {`{"data":"\ud800","files":[]}`, "EXECUTION_FAILED"}} {
+	// Exhaustive terminal-envelope decisions are tested without starting workers.
+	for _, test := range []struct{ envelope, code string }{
+		{`{"error":{"kind":"internal","category":"execution"}}`, "EXECUTION_FAILED"},
+		{`{"error":{"kind":"public","code":"APP_DOCUMENT_INVALID","message":"safe"}}`, "APP_DOCUMENT_INVALID"},
+		{`{"data":1,"data":2,"files":[]}`, "EXECUTION_FAILED"},
+	} {
 		t.Run(test.envelope, func(t *testing.T) {
 			out, e := run(t, r, m, c, map[string]any{"scenario": "envelope", "envelope": test.envelope}, runBudget)
 			if out != nil {
@@ -540,10 +545,12 @@ func TestWasmRealWorkerProjectionLimitsAndReclamation(t *testing.T) {
 
 func TestWasmRealWorkerShortLivedMonitoringAndMidrunFailure(t *testing.T) {
 	r, m, c := setup(t)
-	for i := 0; i < 8; i++ {
+	// One short-lived worker proves reclamation; repeating identical calls does
+	// not make the monitor race deterministic. The injected midrun failure below does.
+	{
 		out, err := run(t, r, m, c, map[string]any{"scenario": "unreferenced"}, runBudget)
 		if err != nil {
-			t.Fatalf("short worker %d: %v", i, err)
+			t.Fatalf("short worker: %v", err)
 		}
 		out.Close()
 		if r.Store.Usage() != 0 {
