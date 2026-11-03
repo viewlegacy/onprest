@@ -38,7 +38,7 @@ Pull requests targeting `main` and pushes to `main` run these checks:
 | `service-lifecycle / windows-service` | Runs the same lifecycle with Windows Service |
 | `release-gate / native-tests` | Runs the agent's OS-dependent tests natively on Linux arm64, macOS, and Windows; a skipped test fails the check |
 | `release-gate / docs` | Builds the documentation site |
-| `release-gate / checks` | Requires every job selected for the run to succeed; use it as the required status check for pull requests |
+| `release-gate / checks` | Requires every job in the run to succeed |
 | `release-gate / release-ready` | Runs outside pull requests; requires every check to succeed |
 
 The three service checks run the binaries from the release archives under the native OS service manager, against a real gateway and PostgreSQL.
