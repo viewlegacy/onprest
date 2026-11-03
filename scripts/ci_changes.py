@@ -1,13 +1,11 @@
-"""Select broad CI domains; non-PR runs always validate the complete commit."""
+"""Skip the Go gate for documentation-only PRs; other runs validate everything."""
 import os
 import subprocess
 
 
 def scope(paths):
     core = any(not (p.startswith("docs/") or p in ("README.md", "it/README.md")) for p in paths)
-    # Gateway-only and repository-verifier changes do not change native Agent
-    # behavior. Unknown paths and shared dependencies conservatively run it.
-    native = core and any(not p.startswith(("docs/", "internal/gateway/", "cmd/gateway/", "internal/project/", "internal/releaseverify/", "it/", "release/")) and p not in ("README.md", "it/README.md") for p in paths)
+    native = core
     docs = any(p.startswith("docs/") for p in paths)
     return dict(core=core, native=native, docs=docs)
 
