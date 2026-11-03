@@ -11,7 +11,7 @@ Test commands require Go 1.26.10 or later as declared in `go.mod`.
 | `go test -timeout 60m ./...` / `make test` | Unit tests only. No database or Docker required. |
 | `make vulncheck` | Runs the `govulncheck` version pinned in `go.mod` and fails on reachable known vulnerabilities in `./...`. Release packaging additionally scans each of the ten distributed binaries with `govulncheck -mode=binary`. |
 | `go test -tags=integration ./it/...` / `make test-it` | Full integration suite against a database. Requires Docker for Testcontainers-backed databases. |
-| `make test-it-postgres-ci` | PostgreSQL integration tests, excluding Docker image build tests, with public schema validation. Install the pinned validator first (see [Release Gate requirements](/operations/release-gate#requirements)). Containers are mandatory. |
+| `make test-it-postgres-ci` | PostgreSQL integration tests, excluding Docker image build tests, with public schema validation (pinned Ajv, needs Node.js). Containers are mandatory. |
 | `make test-it-postgres-stability` | DB-interruption stability test (`TestPostgresDBUnreachableDuringQuery`) run 5 times in a row to confirm the agent handles a database that drops mid-query. |
 | `make test-it-all-db` | Every `TestContainerDBDriver*` test across PostgreSQL, MySQL, SQL Server, and Oracle, with a 30-minute timeout. The common prefix includes the Oracle transaction-start contract and the PostgreSQL nullable OpenAPI and timestamp compatibility cases. Covers real mutation REST/MCP, constraints, timeout/cancel, permissions, transaction-start cancellation, persisted state, OpenAPI 3.1 response validation, and exact timestamp JSON/timezone coercion. |
 | `make test-it-database-tls` | Runs the four real-database TLS contracts for PostgreSQL, MySQL, SQL Server, and Oracle. Covers private CA trust, hostname verification, supported client certificates, rotation, and reconnect without plaintext downgrade. Containers are mandatory and the combined timeout is 30 minutes. |
@@ -65,7 +65,7 @@ go test -tags=integration ./it/... -args -onprest-it-db=all
 make test                        # unit tests
 make vulncheck                   # reachable vulnerability analysis
 make test-it                     # integration suite
-make test-it-postgres-ci         # PostgreSQL with schema validation, no Docker build tests
+make test-it-postgres-ci         # PostgreSQL CI run, no Docker build tests
 make test-it-postgres-stability  # DB-interruption stability, 5x
 make test-it-all-db              # all-DB + Oracle start + nullable OpenAPI + timestamp, 30m
 make test-it-database-tls        # PostgreSQL/MySQL/SQL Server/Oracle real-DB TLS contracts

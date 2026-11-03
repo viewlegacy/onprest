@@ -20,13 +20,13 @@ Development IT check. This runs the PostgreSQL integration path by default. It s
 make test-it-postgres-ci
 ```
 
-PostgreSQL operation-readiness gate. This runs the PostgreSQL integration suite with public schema validation and `ONPREST_IT_REQUIRE_CONTAINERS=1`, so a PostgreSQL container startup failure is a test failure instead of a skip.
+PostgreSQL operation-readiness gate. This runs the PostgreSQL integration suite with `ONPREST_IT_REQUIRE_CONTAINERS=1`, so a PostgreSQL container startup failure is a test failure instead of a skip.
 
 ```bash
 make test-it-release-gate
 ```
 
-Linux integration part of the OSS core release gate. In addition to PostgreSQL CI and interruption stability checks, it runs all-DB conformance, all four real-DB TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. The canonical step-by-step coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
+Final OSS core release gate. In addition to PostgreSQL CI and interruption stability checks, it runs all-DB conformance, all four real-DB TLS contracts, MySQL special credentials, Docker operations, skip detection, and testcontainers residue detection. The canonical step-by-step coverage is maintained in [Test Commands](../docs/app/reference/test-commands/page.mdx) and [Release Gate](../docs/app/operations/release-gate/page.mdx).
 
 ## Support Commands
 
@@ -96,7 +96,7 @@ It also does not cover:
 
 ## Release Gate Details
 
-`make test-it-release-gate` executes the steps documented in [Release Gate](../docs/app/operations/release-gate/page.mdx). The gate reads Go test JSON output and fails on test/subtest skips, then checks for leftover testcontainers resources. Logs are temporary by default; `ONPREST_IT_GATE_KEEP_LOGS=1` retains them and `ONPREST_IT_GATE_LOG_DIR` selects their directory.
+`make test-it-release-gate` executes the steps documented in [Release Gate](../docs/app/operations/release-gate/page.mdx). Notably, all-DB conformance uses the selection above, while the four TLS checks run the exact tests listed under `make test-it-database-tls`. The gate reads Go test JSON output and fails on test/subtest skips, then checks for leftover testcontainers resources. Logs are temporary by default; `ONPREST_IT_GATE_KEEP_LOGS=1` retains them and `ONPREST_IT_GATE_LOG_DIR` selects their directory.
 
 ## Skip Policy
 
