@@ -2,7 +2,7 @@
 
 Maintainers use the release gate before treating an OSS core change as operationally ready. Users install published releases without Go or the source repository; see [Install from a release](/operations/deployment#install-from-a-release).
 
-Contributors run only the tests their change affects locally. Every pull request to `main` runs the gate in GitHub Actions, so a full local run is not required.
+Locally, run only the tests your change affects. Every pull request to `main` runs the full gate in GitHub Actions.
 
 ## Release Gate Command
 
@@ -10,7 +10,7 @@ Contributors run only the tests their change affects locally. Every pull request
 make test-it-release-gate
 ```
 
-This command runs the Linux integration partitions one after another and verifies:
+This command runs the Linux integration tests and verifies:
 
 - PostgreSQL integration tests
 - public schema validation: the PostgreSQL integration tests check real values against the published OpenAPI and MCP schemas
@@ -26,7 +26,7 @@ This command runs the Linux integration partitions one after another and verifie
 - testcontainers residue is zero
 - when given extracted release binaries, the Quick Start runs against those binaries outside the source tree
 
-Unit tests and vulnerability analysis run as separate checks; see [GitHub Actions](#github-actions). To run a single partition, pass its name: `postgres-1` to `postgres-4`, `db-postgres`, `db-mysql`, `db-sqlserver`, `db-oracle`, `docker`, `stability`, or `quickstart`.
+To rerun one failed `integration-linux` job locally, pass its partition name:
 
 ```bash
 bash scripts/it_release_gate.sh db-mysql
@@ -34,11 +34,11 @@ bash scripts/it_release_gate.sh db-mysql
 
 ## GitHub Actions
 
-Pull requests targeting `main`, pushes to `main`, manual runs, and a weekly schedule run these checks. A new commit on a pull request cancels the previous run.
+Pull requests and pushes to `main` run these checks.
 
 | Check | Scope |
 |---|---|
-| `release-gate / ci / *` | Runs `go test` with public schema validation and `go vet`, split into parallel jobs, plus race tests, vet, and the WASI build for the Go SDK |
+| `release-gate / ci / *` | Unit tests and `go vet`, including the Go SDK |
 | `release-gate / package-candidate` | Builds the five OS/CPU archives and the Quick Start archive, scans the source and the ten distributed binaries for vulnerabilities, and verifies checksums |
 | `release-gate / integration-linux` | Runs the `make test-it-release-gate` partitions in parallel on Linux with the binaries extracted from the Linux amd64 archive |
 | `service-lifecycle / linux-systemd` | Installs, starts, inspects, stops, and removes the agent with systemd |
@@ -47,11 +47,11 @@ Pull requests targeting `main`, pushes to `main`, manual runs, and a weekly sche
 | `release-gate / native-tests` | Runs the agent's OS-dependent tests natively on Linux arm64, macOS, and Windows; a skipped test fails the check |
 | `release-gate / docs` | Builds the documentation site |
 | `release-gate / checks` | Requires every job selected for the run to succeed; use it as the required status check for pull requests |
-| `release-gate / release-ready` | Runs only outside pull requests; requires `checks` to succeed with every job selected |
+| `release-gate / release-ready` | Runs outside pull requests; requires every check to succeed |
 
 The three service checks run the binaries from the release archives under the native OS service manager, against a real gateway and PostgreSQL.
 
-A pull request runs only the checks its changes can affect. A documentation-only change runs `docs`, and a change limited to the gateway, integration tests, or release tooling skips `native-tests`. Pushes to `main`, manual runs, and scheduled runs execute every check.
+A pull request runs only the checks its changes can affect; a documentation-only change, for example, runs only `docs`.
 
 Cross-builds do not prove native runtime compatibility. Before release, verify the exact candidate on each [supported OS baseline](/operations/deployment#supported-platforms); results from a newer OS do not establish minimum-version support.
 
@@ -66,7 +66,7 @@ Release. It never overwrites an existing Release.
 
 ## Requirements
 
-Release gate commands require Go 1.26.10 or later as declared in `go.mod`. Schema validation also needs Node.js and npm to install the pinned validator. `make test-it-release-gate` installs it; before running a single partition or `make test-it-postgres-ci`, run `npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator`. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.10 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the `package-candidate` check.
+Release gate commands require Go 1.26.10 or later as declared in `go.mod`. Schema validation also needs Node.js and npm to install the pinned validator. `make test-it-release-gate` installs it. For a single partition or `make test-it-postgres-ci`, install it first with `npm ci --ignore-scripts --prefix internal/contract/testdata/schema-validator`. CI reads `go.mod` as the Go version source of truth, and Docker builds use the same Go 1.26.10 builder image pinned by digest. The `govulncheck` scanner version is pinned as a Go tool dependency and is executed by the `package-candidate` check.
 
 Container-backed tests require Docker daemon access. To make container availability mandatory, use:
 
