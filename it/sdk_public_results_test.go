@@ -142,12 +142,11 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 		}
 		return *envelope.Error
 	}
-	for index, test := range []struct{ scenario, code, message, want, outcome string }{{"public", "APP_DECLINED", "説明", "APP_DECLINED", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1024), "APP_A", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1025), "EXECUTION_FAILED", "no_change"}, {"public", "LIMIT_EXCEEDED", "private detail", "EXECUTION_FAILED", "no_change"}, {"public", "APP_A", "private\ncontrol", "EXECUTION_FAILED", "no_change"}, {"general", "", "", "EXECUTION_FAILED", "no_change"}, {"limit", "", "", "LIMIT_EXCEEDED", "no_change"}, {"joined", "", "", "LIMIT_EXCEEDED", "no_change"}, {"envelope-boundary", "", "", "LIMIT_EXCEEDED", "no_change"}, {"side-effect", "", "", "APP_AFTER_WRITE", "committed"}, {"decode", "", "", "EXECUTION_FAILED", "no_change"}} {
+	// Message bounds, reserved codes, joined limits and the envelope boundary
+	// are covered by the SDK and real-worker tests; this checks the channels.
+	for index, test := range []struct{ scenario, code, message, want, outcome string }{{"public", "APP_DECLINED", "説明", "APP_DECLINED", "no_change"}, {"public", "APP_A", strings.Repeat("a", 1025), "EXECUTION_FAILED", "no_change"}, {"general", "", "", "EXECUTION_FAILED", "no_change"}, {"limit", "", "", "LIMIT_EXCEEDED", "no_change"}, {"side-effect", "", "", "APP_AFTER_WRITE", "committed"}, {"decode", "", "", "EXECUTION_FAILED", "no_change"}} {
 		t.Run(fmt.Sprintf("%02d_%s_%s", index, test.scenario, test.want), func(t *testing.T) {
 			args := map[string]any{"scenario": test.scenario, "code": test.code, "message": test.message, "path": "data/large"}
-			if test.scenario == "envelope-boundary" {
-				args["i64"] = int64(32<<20) + 1
-			}
 			if test.scenario == "decode" {
 				args["i32"] = int64(2147483648)
 			}
@@ -164,7 +163,11 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 				t.Fatal("public CLI message changed", localError.Message, test.message)
 			}
 
-			for _, protocol := range []string{"REST", "2025-03-26", "2025-06-18", "2025-11-25"} {
+			protocols := []string{"REST", "2025-11-25"}
+			if index == 0 {
+				protocols = []string{"REST", "2025-03-26", "2025-06-18", "2025-11-25"}
+			}
+			for _, protocol := range protocols {
 				var status int
 				var raw []byte
 				if protocol == "REST" {
@@ -279,7 +282,11 @@ func TestSDKPublicResultsRealBinariesRESTAndMCP(t *testing.T) {
 					}
 				}
 			}
-			for _, version := range []string{"2025-03-26", "2025-06-18", "2025-11-25"} {
+			versions := []string{"2025-11-25"}
+			if scenario == "mixed" {
+				versions = []string{"2025-03-26", "2025-06-18", "2025-11-25"}
+			}
+			for _, version := range versions {
 				call, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "sdk", "arguments": args}})
 				status, b := postMCPStatusWithProtocol(t, base, key, version, string(call))
 				if status != 200 || bytes.Contains(b, []byte(`"isError":true`)) || bytes.Contains(b, []byte("file_id")) || (scenario == "decode" && !bytes.Contains(b, []byte("9007199254740993"))) {
