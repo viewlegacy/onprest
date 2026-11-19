@@ -65,7 +65,7 @@ jobs:
           VERSION=${VERSION#v}
           export VERSION
           make release-artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-assets-${{ github.sha }}
           path: release-dist/*
@@ -82,7 +82,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets-${{ github.sha }}
           path: release-dist
@@ -137,7 +137,7 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets-${{ github.sha }}
           path: release-dist
@@ -154,7 +154,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: release-assets-${{ github.sha }}
           path: release-dist

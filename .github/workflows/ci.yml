@@ -16,7 +16,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: '**/go.sum'
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -27,7 +27,7 @@ jobs:
           packages=$(go list ./... | grep -Ev '/internal/(agent($|/wasmruntime$)|project$)')
           go run ./internal/citest -tags=schema_validator -log=test-results/unit.jsonl -- $packages
       - run: go vet -tags=schema_validator ./...
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
@@ -48,7 +48,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: '**/go.sum'
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -56,7 +56,7 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
       - name: Agent tests, excluding the separately run author workflow
         run: go run ./internal/citest -package=./internal/agent -tags=schema_validator -exclude='^TestCodeCLIRealAuthorWorkflow' -shard=${{ matrix.shard }} -shards=2 -log=test-results/agent.jsonl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
@@ -78,7 +78,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: '**/go.sum'
       - run: go run ./internal/citest -package=./internal/agent -include='^TestCodeCLIRealAuthorWorkflow' -shard=${{ matrix.shard }} -shards=3 -log=test-results/author-cli.jsonl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
@@ -100,7 +100,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: '**/go.sum'
       - run: go run ./internal/citest -package=./internal/agent/wasmruntime -shard=${{ matrix.shard }} -shards=6 -log=test-results/wasm.jsonl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
@@ -118,7 +118,7 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: '**/go.sum'
       - run: go run ./internal/citest -log=test-results/repository.jsonl -- ./internal/project
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
@@ -144,7 +144,7 @@ jobs:
           go vet ./...
           go mod verify
           GOOS=wasip1 GOARCH=wasm CGO_ENABLED=0 go build ./...
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
