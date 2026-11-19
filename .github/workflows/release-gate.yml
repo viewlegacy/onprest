@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -78,7 +78,7 @@ jobs:
           RELEASE_SHA: ${{ github.sha }}
           RELEASE_READY_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: make release-artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-candidate-${{ github.sha }}
           path: release-dist/*
@@ -99,13 +99,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: '**/go.sum'
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: internal/contract/testdata/schema-validator/package-lock.json
       - run: npm ci --ignore-scripts --no-audit --no-fund --prefix internal/contract/testdata/schema-validator
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           name: release-candidate-${{ github.sha }}
           path: release-dist
@@ -129,7 +129,7 @@ jobs:
             ONPREST_IT_DISTRIBUTION_VERSION=2.0.0 \
             ONPREST_IT_GATE_LOG_DIR="$PWD/test-results" \
             bash scripts/it_release_gate.sh '${{ matrix.suite }}'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
@@ -167,7 +167,7 @@ jobs:
       - name: Native OS boundary tests without skips
         shell: bash
         run: bash scripts/ci_native_tests.sh '${{ matrix.suite }}'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: logs-${{ github.job }}-${{ strategy.job-index || 0 }}
