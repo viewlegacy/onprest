@@ -53,7 +53,11 @@ capabilities:
           name: {type: string}
 ```
 
-`schema_version`, `gateway`, and at least one capability are required. The top-level `service`, `runtime`, `gateway`, and `logging` sections configure the agent itself; see [Agent configuration](/agent/configuration). `sources` names the databases, folders, and HTTP APIs that executors may use. `defaults` sets [policy defaults](/capabilities/policy-and-limits) for every capability.
+`schema_version`, `gateway`, and at least one capability are required. Besides `capabilities`:
+
+- `sources` names the databases, folders, and HTTP APIs that executors may use.
+- `defaults` sets [policy defaults](/capabilities/policy-and-limits) for every capability.
+- `service`, `gateway`, `runtime`, and `logging` configure the agent itself; see [Agent configuration](/agent/configuration).
 
 Capability names start with a letter and may contain letters, digits, `_`, `.`, and `-`, up to 128 characters. Names starting with `onprest_` are reserved.
 

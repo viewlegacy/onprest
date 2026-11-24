@@ -1,3 +1,5 @@
+import { Callout } from 'nextra/components'
+
 # Code (Wasm)
 
 A `wasm` capability runs a WebAssembly module you wrote. Use it when a capability needs logic the other executors cannot express: combining several files, transforming data, or calling an API in more than one step. The agent includes the runtime, so the agent host needs no compiler or extra software.
@@ -36,13 +38,15 @@ The module receives the validated input and returns data and files. As with ever
 | `sandbox` | `{enabled: false}` | What the code may access; see below |
 | `limits` | see below | Memory and I/O budgets |
 
-Modules must be built with `onprest-agent code build` (or carry the same metadata). At startup and in `validate`, the agent compiles the module and checks its metadata, imports, and size without running it.
+Modules must be built with `onprest-agent code build` (or carry the same metadata). At startup and in `validate`, the agent compiles each module and checks its metadata, imports, and size without running it.
 
-This check must finish within 60 seconds per module, a limit you cannot change. Otherwise the agent refuses to start, and `validate` and the `code` commands fail with `Wasm module validation did not finish within 1m0s`. Retry on a less busy host, give it more CPU, or make the module smaller, for example by removing dependencies it does not need.
+This check has a fixed limit of 60 seconds per module. If it fails with `Wasm module validation did not finish within 1m0s`, retry on a less busy host, give it more CPU, or make the module smaller by removing dependencies it does not need.
 
 ## Sandbox
 
-**The sandbox is off by default.** With `sandbox.enabled: false`, the code can read and write any file and reach any network address that the agent's operating-system user can, and it sees the agent's environment variables. Run the agent as a dedicated user with narrow permissions if you use code this way.
+<Callout type="warning">
+**The sandbox is off by default.** Without it, the code can read and write any file and reach any network address that the agent's operating-system user can, and it sees the agent's environment variables. Turn it on, or run the agent as a dedicated user with narrow permissions.
+</Callout>
 
 With `sandbox.enabled: true`, the code can access nothing except what `permissions` grants:
 

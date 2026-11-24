@@ -49,4 +49,8 @@ Gateway logs record the key's `name`, never the key itself, so choose names that
 
 ## Rotating a key
 
-To rotate a key, add a new entry under a new name, give the new key to the caller, restart, and remove the old entry once the caller has switched.
+To replace a key without interrupting its caller:
+
+1. Create a new key under a new name and add its entry next to the old one.
+2. Restart the gateway and give the new key to the caller.
+3. Once the caller has switched, remove the old entry and restart again.

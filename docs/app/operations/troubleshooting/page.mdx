@@ -1,5 +1,7 @@
 # Troubleshooting
 
+Every error response carries a `request_id`. The agent's [local log](/agent/local-logs) records the real cause of a failed call under the same ID.
+
 ## Agent fails at startup or validate
 
 The agent stops before connecting if `capability.yaml` is invalid or a source cannot be prepared. Run the same checks without touching a running agent:
