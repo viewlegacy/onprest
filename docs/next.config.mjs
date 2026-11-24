@@ -1,6 +1,8 @@
 import nextra from 'nextra'
 
-const withNextra = nextra({})
+const withNextra = nextra({
+  defaultShowCopyCode: true
+})
 
 const movedPages = [
   ['/agent/capability-yaml', '/capabilities'],
