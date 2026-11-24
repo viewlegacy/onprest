@@ -1,10 +1,14 @@
+import { Callout } from 'nextra/components'
+
 # Uncertain Outcomes
 
 When a call that changes something fails, its [`outcome`](/api/errors#outcome) tells you whether you can try again. `unknown` is the one that needs care.
 
 `unknown` happens when the agent cannot confirm the result: a database commit that lost its connection, a timeout after an HTTP request was sent, a file save that failed halfway, code that failed after writing something, or an agent that disconnected mid-call. The error code alone does not tell you; `EXECUTION_TIMEOUT` can mean either `not_started` or `unknown`.
 
-Onprest never retries a call by itself, and you should not retry an `unknown` call automatically either. Repeating it can create a second order or a second payment. Instead, look at the real state, then decide.
+<Callout type="important">
+Onprest never retries a call by itself. Do not retry an `unknown` call automatically either: repeating it can create a second order or a second payment. Look at the real state first, then decide.
+</Callout>
 
 ## Check before you retry
 

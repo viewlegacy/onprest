@@ -1,3 +1,5 @@
+import { Callout } from 'nextra/components'
+
 # Reverse Proxy
 
 The gateway serves plain HTTP. When agents on other hosts connect over `wss://` or download links use `https`, terminate TLS in front of the gateway with a reverse proxy, load balancer, or your platform; any product that supports WebSocket works.
@@ -22,7 +24,11 @@ Set `GATEWAY_PUBLIC_URL` and, if capabilities return files, `ONPREST_PUBLIC_BASE
 
 The IP allow list and per-IP rate limit use the client's address. Without a proxy, the gateway uses the TCP peer address, and you should leave `GATEWAY_TRUSTED_PROXY_CIDRS` empty.
 
-Behind a proxy, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy's own addresses only. For requests from those addresses, the gateway takes the client IP from the first entry of `X-Forwarded-For`, or from `X-Real-IP`. Configure the proxy to **replace** both headers with the address it saw, never to append to a value the client sent; otherwise a client could choose its own IP and bypass the allow list and rate limit.
+Behind a proxy, set `GATEWAY_TRUSTED_PROXY_CIDRS` to the proxy's own addresses only. For requests from those addresses, the gateway takes the client IP from the first entry of `X-Forwarded-For`, or from `X-Real-IP`.
+
+<Callout type="warning">
+Configure the proxy to **replace** both headers with the address it saw, never to append to a value the client sent. Otherwise a client can choose its own IP and bypass the allow list and rate limit.
+</Callout>
 
 ```env
 GATEWAY_TRUSTED_PROXY_CIDRS=172.16.0.0/12

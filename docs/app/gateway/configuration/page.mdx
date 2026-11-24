@@ -1,8 +1,10 @@
+import { Callout } from 'nextra/components'
+
 # Gateway Configuration
 
 The gateway reads its configuration from environment variables at startup. It does not read a file itself, so load `gateway.env` into the environment (or set the variables in your service manager) before starting it. Restart the gateway after any change.
 
-Run one gateway per customer, with its own variables, agent public key, and API keys.
+A gateway serves one agent. Each additional site or customer gets its own gateway, with its own variables, agent public key, and API keys.
 
 ```env
 # Required
@@ -21,7 +23,11 @@ The full list with defaults is in [Environment Variables](/reference/environment
 
 `GATEWAY_AGENT_PUBLIC_KEY` is the public half of the key pair from `onprest-gateway create-agent-secret`. The private half goes into the agent's `gateway` section.
 
-`GATEWAY_API_KEYS_JSON` lists the API keys as a JSON array of `name`, bcrypt `key_hash`, and `capabilities`; see [API Keys](/gateway/api-keys). Bcrypt hashes contain `$`, so wrap the whole value in single quotes when a shell loads the file. Otherwise the shell expands `$2a` and `$10` and corrupts the hash.
+`GATEWAY_API_KEYS_JSON` lists the API keys as a JSON array of `name`, bcrypt `key_hash`, and `capabilities`; see [API Keys](/gateway/api-keys).
+
+<Callout type="warning">
+Bcrypt hashes contain `$`. Wrap the whole value in single quotes when a shell loads the file, or the shell expands `$2a` and `$10` and corrupts the hash.
+</Callout>
 
 ## Public URLs
 
@@ -31,7 +37,12 @@ The full list with defaults is in [Environment Variables](/reference/environment
 
 `ONPREST_PUBLIC_BASE_URL` is the origin used in download links for returned files, for example `https://gateway.example.com`. It must be an origin only (no path) and use HTTPS, [terminated in front of the gateway](/gateway/reverse-proxy), except `http://localhost` or a loopback address for local testing. The gateway builds every link from this value and never from request headers.
 
-Set it whenever any capability uses `reference` delivery, the default for returned files. Until it is set, the gateway publishes none of the agent's capabilities: `/openapi.json` and MCP `tools/list` report `AGENT_OFFLINE`, and every capability call returns `DEPENDENCY_UNAVAILABLE`, while `/healthz` still reports the agent as connected. A configuration where every capability returns only JSON, or files with `delivery.rest: direct` and `delivery.mcp: inline`, does not need it. If a proxy is in front, route `/api/v1/files/` to the gateway as well.
+Set it whenever any capability returns files as download links, the default `reference` delivery. If it is missing, the gateway publishes none of the agent's capabilities, even though `/healthz` reports the agent as connected:
+
+- `/openapi.json` and MCP `tools/list` return `AGENT_OFFLINE`.
+- Every capability call returns `DEPENDENCY_UNAVAILABLE`.
+
+You can leave it out only when no capability returns files, or every one that does uses `delivery.rest: direct` and `delivery.mcp: inline`. If a proxy is in front, route `/api/v1/files/` to the gateway as well.
 
 ## Request size limits
 

@@ -82,9 +82,9 @@ A failed check is `failed` and the checks that depend on it are `skipped`. With 
 ./onprest-agent service uninstall
 ```
 
-The commands use systemd on Linux, launchd on macOS, and Windows Service on Windows. `install` without `--config` registers `capability.yaml` next to the binary, and does not enable start on boot. `remove` is an alias for `uninstall`. There is no `restart`; use the [change procedure](/operations/capability-changes), which validates first.
+The commands use systemd on Linux, launchd on macOS, and Windows Service on Windows. Run every command except `status` with administrator rights. `install` without `--config` registers `capability.yaml` next to the binary, and does not enable start on boot. `remove` is an alias for `uninstall`.
 
-Run every command except `status` with administrator rights; see [Capability Changes](/operations/capability-changes).
+There is no `restart`; use the [change procedure](/operations/capability-changes), which validates first. [Run the agent as a service](/operations/deployment#run-the-agent-as-a-service) covers installation.
 
 ### Author commands
 
@@ -116,14 +116,3 @@ onprest-agent code test --build --config FILE --capability NAME [--source DIR] [
 Without `--input-mime`, `code test` takes the MIME type from common extensions, ignoring case (`.txt`, `.csv`, `.json`, `.pdf`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.mp4`, `.zip`), and uses `application/octet-stream` for any other file. Use `--input-mime` with the same pointer to send a different type.
 
 `code build` needs Go 1.26.9 or later and keeps an existing module if the build fails. `code test` really performs whatever the capability does; its result goes to stdout and diagnostics to stderr. Exit codes: `0` success, `1` failure, `2` usage error.
-
-## Build from source
-
-Building is optional; release archives need no source or Go toolchain. With the Go version in `go.mod`:
-
-```bash
-make build        # dist/onprest-gateway, dist/onprest-agent
-make build-cross  # dist/<os>-<arch>/ for every supported platform
-```
-
-Set `VERSION=x.y.z` to embed a version in both binaries; otherwise they report `dev`. The binaries are built with `CGO_ENABLED=0`.
