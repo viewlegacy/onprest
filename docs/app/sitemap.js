@@ -4,6 +4,7 @@ const routes = [
   '',
   '/quick-start',
   '/architecture',
+  '/security',
   '/capabilities',
   '/capabilities/inputs-and-outputs',
   '/capabilities/policy-and-limits',
@@ -33,17 +34,14 @@ const routes = [
   '/agent/configuration',
   '/agent/local-logs',
   '/agent/key-rotation',
-  '/security',
   '/operations',
   '/operations/deployment',
   '/operations/capability-changes',
   '/operations/uncertain-outcomes',
   '/operations/troubleshooting',
-  '/operations/release-gate',
   '/reference',
   '/reference/cli',
-  '/reference/environment-variables',
-  '/reference/test-commands'
+  '/reference/environment-variables'
 ]
 
 export default function sitemap() {

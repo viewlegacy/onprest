@@ -105,19 +105,19 @@ Each entry in `write` takes:
 
 Set exactly one of `name` and `name_from`. With `name_from: input`, callers choose the file name, so the capability saves whatever name they send (path separators and reserved names are refused).
 
-All files in a call are checked first (names, sizes, free quota) and then saved.
-
-- Saved files, including ones that replace an existing file, are private to the agent: mode `0600` on Linux and macOS, and on Windows an ACL that grants access only to the agent's user, `SYSTEM`, and `Administrators`. The agent does not change these permissions afterwards; if other users need the files, grant them access after saving.
-- `overwrite: true` works on Linux and macOS. On Windows, a call that would replace an existing file fails before anything is saved.
-- The destination folders and the agent's `spool_dir` must be on a filesystem that supports atomic renames and can flush directory entries to disk. On Linux and macOS, saving on a filesystem without atomic renames fails instead of falling back to a copy; a filesystem that cannot flush directory entries makes the agent refuse to start with a capability that saves files.
-
 Choose what the call returns:
 
 - `read: {written: true}` returns the files just saved, in the order they were written.
 - `read: {source: ..., selector: ...}` reads from a folder after saving, as in the previous section.
 - No `read` and no `output.files`: the call only saves and returns `data: null` with no files.
 
-If saving fails after some files were already written, the error reports `outcome: unknown` and the completed files stay in place. See [Uncertain outcomes](/operations/uncertain-outcomes).
+All files in a call are checked first (names, sizes, free quota) and then saved. If saving fails after some files were already written, the error reports `outcome: unknown` and the completed files stay in place. See [Uncertain outcomes](/operations/uncertain-outcomes).
+
+### Permissions and filesystems
+
+- Saved files, including ones that replace an existing file, are private to the agent: mode `0600` on Linux and macOS, and on Windows an ACL that grants access only to the agent's user, `SYSTEM`, and `Administrators`. If other users need the files, grant them access after saving.
+- `overwrite: true` works on Linux and macOS. On Windows, a call that would replace an existing file fails before anything is saved.
+- The destination folders and the agent's `spool_dir` must be on a filesystem that supports atomic renames and can flush directory entries to disk. On Linux and macOS, saving on a filesystem without atomic renames fails instead of falling back to a copy. A filesystem that cannot flush directory entries makes the agent refuse to start with a capability that saves files there.
 
 ## Settings
 

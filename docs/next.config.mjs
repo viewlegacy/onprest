@@ -1,14 +1,17 @@
 import nextra from 'nextra'
 
-const withNextra = nextra({})
+const withNextra = nextra({
+  defaultShowCopyCode: true
+})
 
-// Pages that moved when the documentation was reorganized around executors.
 const movedPages = [
   ['/agent/capability-yaml', '/capabilities'],
   ['/databases', '/capabilities/databases'],
   ['/databases/:driver(postgres|mysql|sqlserver|oracle)', '/capabilities/databases/:driver'],
   ['/reference/logging', '/gateway/logs'],
-  ['/operations/mutation-reconciliation', '/operations/uncertain-outcomes']
+  ['/operations/mutation-reconciliation', '/operations/uncertain-outcomes'],
+  ['/operations/release-gate', '/operations/deployment'],
+  ['/reference/test-commands', 'https://github.com/viewlegacy/onprest/blob/main/CONTRIBUTING.md']
 ]
 
 export default withNextra({

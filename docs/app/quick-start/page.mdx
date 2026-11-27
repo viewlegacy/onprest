@@ -1,30 +1,37 @@
+import { Callout, Steps, Tabs } from 'nextra/components'
+
 # Quick Start
 
-This guide runs the released gateway and agent against a disposable PostgreSQL database, then calls a capability through REST and MCP. You need no source checkout or Go toolchain. Docker is used only for the example database.
+Run the released gateway and agent against a disposable PostgreSQL database, then call a capability through REST and MCP. You need Docker for the example database only; no source checkout or Go toolchain.
 
-## 1. Download
+<Steps>
 
-Download the binary archive for your host and the Quick Start files from the latest release:
+### Download
 
-| Host | Download |
+Download two archives from the latest release: the binaries for your host, and [`onprest-quickstart.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-quickstart.tar.gz) with the example files.
+
+| Host | Binaries |
 |---|---|
-| Linux x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-amd64.tar.gz) |
-| Linux ARM64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-arm64.tar.gz) |
-| macOS Intel | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-amd64.tar.gz) |
-| macOS Apple silicon | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-arm64.tar.gz) |
-| Windows x64 | [⬇ Binary archive](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-windows-amd64.zip) |
-| All hosts | [⬇ Quick Start files](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-quickstart.tar.gz) |
+| Linux x64 | [`onprest-linux-amd64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-amd64.tar.gz) |
+| Linux ARM64 | [`onprest-linux-arm64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-arm64.tar.gz) |
+| macOS Intel | [`onprest-darwin-amd64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-amd64.tar.gz) |
+| macOS Apple silicon | [`onprest-darwin-arm64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-arm64.tar.gz) |
+| Windows x64 | [`onprest-windows-amd64.zip`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-windows-amd64.zip) |
 
-Extract both into a working directory. Replace `linux-amd64` with your host:
+Extract both into a new working directory:
+
+<Tabs items={['macOS / Linux', 'Windows']} storageKey="os">
+<Tabs.Tab>
 
 ```bash
 mkdir -p onprest/examples
 cd onprest
-tar -xzf ../onprest-linux-amd64.tar.gz --strip-components=1
+tar -xzf ../onprest-linux-amd64.tar.gz --strip-components=1   # your host's archive
 tar -xzf ../onprest-quickstart.tar.gz --strip-components=1 -C examples
 ```
 
-On Windows PowerShell:
+</Tabs.Tab>
+<Tabs.Tab>
 
 ```powershell
 mkdir onprest\examples
@@ -33,29 +40,39 @@ tar -xf ..\onprest-windows-amd64.zip --strip-components=1
 tar -xzf ..\onprest-quickstart.tar.gz --strip-components=1 -C examples
 ```
 
-Run every remaining command from this directory. It now holds `onprest-gateway`, `onprest-agent`, and the example files under `examples/`, including a matching agent key pair and API key. These credentials are public: use them only on your own machine.
+</Tabs.Tab>
+</Tabs>
 
-## 2. Start the example database
+Run every remaining command from this directory. It now holds `onprest-gateway`, `onprest-agent`, and `examples/`, which includes a matching agent key pair and an API key.
+
+<Callout type="warning">
+The example credentials are public. Use them only on your own machine.
+</Callout>
+
+### Start the example database
 
 ```bash
 docker compose -f examples/postgres.compose.yml up -d --wait
 ```
 
-This starts PostgreSQL on `127.0.0.1:5432` with a `legacy` database, a `customers` table, and a `capability_user` role that can only `SELECT` from `customers` and update its `name` column. If port 5432 is taken, change it in both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml`.
+This starts PostgreSQL on `127.0.0.1:5432` with a `customers` table in a `legacy` database. The agent connects as `capability_user`, which can only `SELECT` from `customers` and update its `name` column.
 
-Without Docker, create an empty disposable `legacy` database on an existing PostgreSQL server, run `examples/postgres-init.sql` against it as an administrator, and adjust `sources.databases.primary` in `examples/capability.postgres.yaml`.
+If port 5432 is taken, change it in both `examples/postgres.compose.yml` and `examples/capability.postgres.yaml`. Without Docker, create an empty `legacy` database on a PostgreSQL server you can discard, run `examples/postgres-init.sql` against it as an administrator, and adjust `sources.databases.primary` in `examples/capability.postgres.yaml`.
 
-## 3. Validate the agent configuration
+### Validate the agent configuration
 
 ```bash
 ./onprest-agent validate --config ./examples/capability.postgres.yaml
 ```
 
-`validate` checks the YAML, connects to the database, and runs `EXPLAIN` for each capability's SQL. It does not execute anything or contact the gateway. If it fails, see [Troubleshooting](/operations/troubleshooting#agent-fails-at-startup-or-validate).
+`validate` checks the YAML, connects to the database, and runs `EXPLAIN` on each capability's SQL. It executes nothing and does not contact the gateway. If it fails, see [Troubleshooting](/operations/troubleshooting#agent-fails-at-startup-or-validate).
 
-## 4. Start the gateway and the agent
+### Start the gateway and the agent
 
-Start the gateway:
+<Tabs items={['macOS / Linux', 'Windows']} storageKey="os">
+<Tabs.Tab>
+
+Start the gateway with the example settings:
 
 ```bash
 set -a
@@ -70,9 +87,10 @@ In a second terminal, start the agent:
 ./onprest-agent --config ./examples/capability.postgres.yaml
 ```
 
-The agent creates private `identity` and `spool` directories next to its configuration, so it needs write permission there.
+</Tabs.Tab>
+<Tabs.Tab>
 
-On Windows, the gateway reads its settings from environment variables. Load them and start it, then start the agent in another PowerShell window:
+The gateway reads its settings from environment variables. Load the example settings and start it:
 
 ```powershell
 Get-Content .\examples\gateway.env |
@@ -84,39 +102,74 @@ Get-Content .\examples\gateway.env |
 .\onprest-gateway.exe
 ```
 
+In a second PowerShell window, start the agent:
+
 ```powershell
 .\onprest-agent.exe --config .\examples\capability.postgres.yaml
 ```
 
-Use `Invoke-RestMethod` or another HTTP client for the requests below.
+</Tabs.Tab>
+</Tabs>
 
-## 5. Check the connection
+The agent creates private `identity` and `spool` directories next to its configuration, so it needs write permission there.
+
+### Check the connection
+
+<Tabs items={['macOS / Linux', 'Windows']} storageKey="os">
+<Tabs.Tab>
 
 ```bash
 curl -s http://localhost:8080/healthz
 ```
 
+</Tabs.Tab>
+<Tabs.Tab>
+
+```powershell
+Invoke-RestMethod http://localhost:8080/healthz
+```
+
+</Tabs.Tab>
+</Tabs>
+
 ```json
 { "ok": true, "agent_connected": true }
 ```
 
-If `agent_connected` is `false`, wait a moment for the agent to finish connecting and try again. If it stays `false`, read the agent's terminal output and see [Troubleshooting](/operations/troubleshooting#agent-cannot-connect).
+If `agent_connected` is still `false` after a few seconds, read the agent's terminal output and see [Troubleshooting](/operations/troubleshooting#agent-cannot-connect).
 
-## 6. Call a capability
+### Call a capability
 
-Set the example API key in the terminal you will call from:
+Call `get_customer` with the example API key. The request body is the capability's input object itself.
+
+<Tabs items={['macOS / Linux', 'Windows']} storageKey="os">
+<Tabs.Tab>
 
 ```bash
 export ONPREST_API_KEY='orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
-```
 
-```bash
 curl -s \
   -X POST http://localhost:8080/api/v1/capabilities/get_customer \
   -H "Authorization: Bearer ${ONPREST_API_KEY}" \
   -H "Content-Type: application/json" \
   -d '{"customer_id":1}'
 ```
+
+</Tabs.Tab>
+<Tabs.Tab>
+
+```powershell
+$env:ONPREST_API_KEY = 'orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
+
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/capabilities/get_customer `
+  -Headers @{ Authorization = "Bearer $env:ONPREST_API_KEY" } `
+  -ContentType 'application/json' -Body '{"customer_id":1}' | ConvertTo-Json -Depth 10
+```
+
+The remaining steps use `curl`. On Windows, send the same requests with `Invoke-RestMethod` as above.
+
+</Tabs.Tab>
+</Tabs>
 
 ```json
 {
@@ -131,20 +184,9 @@ curl -s \
 }
 ```
 
-The request body is the capability's input object itself, not wrapped in `{"params": ...}`.
+### Change data through REST and MCP
 
-On Windows PowerShell:
-
-```powershell
-$env:ONPREST_API_KEY = 'orjrqqPeX8FXhsECOnrnOr6oa70pOYjyeUWmxTbaZrM'
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/v1/capabilities/get_customer `
-  -Headers @{ Authorization = "Bearer $env:ONPREST_API_KEY" } `
-  -ContentType 'application/json' -Body '{"customer_id":1}' | ConvertTo-Json -Depth 10
-```
-
-## 7. Change data and read it back
-
-`update_customer` is a mutation. Call it through REST:
+`update_customer` changes a customer's name. Call it through REST:
 
 ```bash
 curl -s \
@@ -180,21 +222,23 @@ docker compose -f examples/postgres.compose.yml exec -T postgres \
   psql -U onprest_admin -d legacy -Atc "SELECT name FROM customers WHERE id = 1"
 ```
 
-## 8. Look at the published contract
+### Look at the published contract
 
 ```bash
 curl -s -H "Authorization: Bearer ${ONPREST_API_KEY}" http://localhost:8080/openapi.json
 ```
 
-The OpenAPI document and the MCP `tools/list` result are generated from the agent's capability definitions and filtered to what the API key may call. They contain input and output schemas, not SQL or connection details.
+The OpenAPI document and the MCP `tools/list` result are generated from the agent's capability definitions and filtered to what the API key may call. They contain input and output schemas, never SQL or connection details.
 
-## 9. Clean up
+### Clean up
 
 Stop both binaries with Ctrl+C, then remove the example database:
 
 ```bash
 docker compose -f examples/postgres.compose.yml down -v
 ```
+
+</Steps>
 
 ## What you just ran
 
@@ -236,7 +280,12 @@ capabilities:
     output: {data: {}}
 ```
 
-`readonly: false` is what lets `update_customer` run an `UPDATE`; [Policy and Limits](/capabilities/policy-and-limits) covers the other settings. The example API key in `examples/gateway.env` may call only these two capabilities. [Capabilities](/capabilities) explains each section, and [Databases](/capabilities/databases) covers the DB executor.
+- `executor` is the SQL that runs. Callers can only supply `:customer_id` and `:name`.
+- `input` is the JSON Schema each call is validated against before anything runs.
+- `policy` sets limits. `readonly: false` is what allows the `UPDATE`.
+- `output` declares what is returned: only `id`, `name`, and `email`, whatever else the table holds.
+
+The example API key in `examples/gateway.env` may call only these two capabilities. [Capabilities](/capabilities) explains each section, and [Databases](/capabilities/databases) covers the DB executor.
 
 ## Try without a database
 
@@ -244,7 +293,7 @@ The same two binaries run every other executor. Each example has its own configu
 
 | Executor | Example | What it shows |
 |---|---|---|
-| CSV | [examples/csv](https://github.com/viewlegacy/onprest/tree/main/examples/csv) | Filter a CSV in a folder or an uploaded CSV, and download the selected rows as a new CSV |
+| CSV | [examples/csv](https://github.com/viewlegacy/onprest/tree/main/examples/csv) | Filter a CSV from a folder or an upload, and download the selected rows as a new CSV |
 | File | [examples/file-output](https://github.com/viewlegacy/onprest/tree/main/examples/file-output) | Download a completed report from a folder |
 | File | [examples/file-input](https://github.com/viewlegacy/onprest/tree/main/examples/file-input) | Upload a PDF and save it into a folder |
 | HTTP | [examples/http](https://github.com/viewlegacy/onprest/tree/main/examples/http) | Call an internal API with validated arguments and publish part of its response |
@@ -252,4 +301,4 @@ The same two binaries run every other executor. Each example has its own configu
 
 ## Next steps
 
-For a real deployment, generate your own agent key pair and API keys with `onprest-gateway create-agent-secret` and `onprest-gateway create-key`, and start from the templates and `INSTALL.md` in the binary archive. A gateway reachable from other hosts must use `wss://` for the agent connection. See [Deployment](/operations/deployment).
+For a real deployment, you generate your own keys, put TLS in front of the gateway, and run the agent as a service. [Deployment](/operations/deployment) walks through it.

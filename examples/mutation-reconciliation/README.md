@@ -320,5 +320,4 @@ ONPREST_IT_REQUIRE_CONTAINERS=1 go test -tags=integration ./it \
 
 Change `sqlserver` to `postgres`, `mysql`, `oracle`, or `all`. The test starts and
 cleans up its own containers independently of the manual example. See
-[Test Commands](https://docs.onprest.viewlegacy.com/reference/test-commands)
-for integration and release gates.
+[CONTRIBUTING.md](../../CONTRIBUTING.md#test) for the other integration suites.

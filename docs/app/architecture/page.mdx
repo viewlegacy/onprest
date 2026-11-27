@@ -63,9 +63,9 @@ Onprest assumes the gateway may be observed or compromised. An attacker who cont
 
 The agent is the trust boundary. What a capability can reach is limited by the agent's configuration and its operating-system permissions; [Security](/security#what-the-agent-may-touch) explains how to keep each executor narrow.
 
-## One gateway per customer
+## One gateway per agent
 
-Run a dedicated gateway process for each customer or trust domain. API keys, the agent public key, the cached contract, and logs then belong to one environment, and the operational unit matches the trust boundary. A gateway accepts one agent connection at a time.
+A gateway accepts one agent connection at a time. To connect several sites, or to serve several customers, run a separate gateway for each. API keys, the agent public key, the cached contract, and logs then belong to one environment, and the unit you operate matches the trust boundary.
 
 ## Network and TLS
 

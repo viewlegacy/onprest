@@ -1,3 +1,5 @@
+import { Callout } from 'nextra/components'
+
 # Inputs and Outputs
 
 Every capability declares what callers may send (`input`) and what may come back (`output`). The agent validates input before anything runs and builds the response only from the declared output. The same declarations generate the OpenAPI and MCP schemas callers see.
@@ -81,7 +83,9 @@ Callers send files as inline Base64 in JSON or MCP, or as multipart form data; s
 
 ## Output
 
-Without an `output` section a capability still runs, but returns `data: null` and no files. Add `data: {}` to publish data, and describe the shape you want to publish next to it:
+`output` decides what leaves the agent. Without it, a capability still runs but returns `data: null` and no files.
+
+To publish data, add `data: {}` and describe its shape next to it:
 
 ```yaml
 output:
@@ -92,22 +96,33 @@ output:
       name: {type: string}
 ```
 
-In an object with `properties`, only the listed fields are returned; extra fields from the query or API are dropped. Declared fields are also type-checked, and a mismatch fails the call with `OUTPUT_INVALID` instead of returning something unexpected. Values are never converted: a string stays a string even if it looks like a number.
-
 What `data` looks like depends on the executor:
 
 | Executor | `data` | Describe it with |
 |---|---|---|
 | DB `SELECT`, CSV | `{"rows": [...], "count": n}` | `items.properties` for each row |
-| DB `INSERT` / `UPDATE` / `DELETE` | `{"count": n}`, the affected row count | Usually nothing; `data: {}` is enough |
+| DB `INSERT` / `UPDATE` / `DELETE` | `{"count": n}`, the affected row count | Nothing; `data: {}` is enough |
 | HTTP, Wasm | The JSON value itself: object, array, or scalar | `properties`, `items`, or `type` |
 | File | Nothing; files are returned in `files` | — |
 
-Output schemas use the same keywords as input, without `default`. The differences:
+### What gets through
 
-- Fields are nullable by default. Set `nullable: false` on a field that must never be null. Requiring a field to be present (`required`) is a separate rule.
-- An object without `properties`, such as `{type: object}` or a field with no type (`{}`), is returned as it is. To return only fields that are safe to expose, declare `properties` for every object. On an object with `properties`, `additionalProperties: true` keeps the undeclared fields, and a schema keeps them after checking them against it.
-- To publish everything the executor returns, leave the schema out (`data: {}` alone), or set `mode: passthrough` to keep undeclared fields everywhere while still checking the declared ones. Use either only when every returned field is safe to expose.
+| Schema | Returned |
+|---|---|
+| None (`data: {}` alone) | Everything the executor returns |
+| An object with `properties` | Only the declared fields; the rest is dropped |
+| The same, with `additionalProperties: true` | Declared fields, plus undeclared ones unchecked |
+| The same, with `additionalProperties: {schema}` | Declared fields, plus undeclared ones checked against the schema |
+| An object without `properties`, such as `{type: object}` or `{}` | The whole value, unchecked |
+| Any schema, with `output.mode: passthrough` | Undeclared fields kept at every level; declared ones still checked |
+
+<Callout type="warning">
+Only declared `properties` filter fields. Declare them on every object that may hold something you do not want to expose, such as a column added to the table later.
+</Callout>
+
+Declared fields are type-checked, and a mismatch fails the call with `OUTPUT_INVALID` instead of returning something unexpected. Values are never converted: a string stays a string even if it looks like a number.
+
+Output schemas use the same keywords as input, without `default`. Fields are nullable by default; set `nullable: false` on a field that must never be null. Requiring a field to be present (`required`) is a separate rule.
 
 ### File outputs
 

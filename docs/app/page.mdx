@@ -1,18 +1,25 @@
 # Onprest
 
-Onprest lets external applications and AI agents call selected operations inside an on-premises or private network through REST and MCP. You define each operation, called a capability, in `capability.yaml` on the on-prem side. A capability can run a SQL statement, filter CSV files, read or save files in a folder, call an internal HTTP API, or run a WebAssembly module you wrote.
-
 > Expose capabilities, not your on-prem.
 
-The OSS core is two binaries. `onprest-gateway` is the public REST, MCP, and OpenAPI endpoint. `onprest-agent` runs next to your systems and connects out to the gateway, so the on-prem network needs no inbound port. The gateway decides who may call which capability; the agent holds the SQL, paths, credentials, and code, and decides what each call is allowed to return. [How it works](/architecture) explains the split.
+Onprest lets external applications and AI agents call selected operations inside an on-premises or private network through REST and MCP, without opening an inbound port.
+
+Each operation is a **capability** that you define in `capability.yaml` on the on-prem side: a SQL statement, a CSV filter, a folder read or save, a call to an internal HTTP API, or a WebAssembly module you wrote. Callers see its name and schema, never the SQL, paths, or credentials behind it.
+
+The OSS core is two binaries:
+
+| Binary | Runs | Decides |
+|---|---|---|
+| `onprest-gateway` | Where callers can reach it. Serves REST, MCP, and OpenAPI | Who may call which capability |
+| `onprest-agent` | Next to your systems. Connects out to the gateway and holds the SQL, paths, credentials, and code | What each call may do and return |
 
 ## Where to start
 
 | If you want to | Read |
 |---|---|
 | See it work in a few minutes | [Quick Start](/quick-start) |
-| Understand what the gateway and agent can and cannot see | [How it works](/architecture), [Security](/security) |
+| Understand what each side can see | [How It Works](/architecture), [Security](/security) |
 | Define your own capabilities | [Capabilities](/capabilities) |
 | Call capabilities from an application or AI agent | [REST](/api/rest), [MCP](/api/mcp), [Files](/api/files) |
-| Write custom logic in Go | [Writing code in Go](/capabilities/code/go) |
-| Run Onprest in production | [Deployment](/operations/deployment), [Gateway configuration](/gateway/configuration), [Agent configuration](/agent/configuration) |
+| Write custom logic in Go | [Writing Code in Go](/capabilities/code/go) |
+| Run Onprest in production | [Deployment](/operations/deployment) |

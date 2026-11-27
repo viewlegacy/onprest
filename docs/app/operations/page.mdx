@@ -1,9 +1,12 @@
 # Operations
 
-Running Onprest means running two binaries with one environment file and one YAML file. These pages cover the tasks around them:
+Running Onprest means running two binaries, configured by one environment file and one YAML file.
 
-- [Deployment](/operations/deployment): installing release binaries, service and container setups, timeouts, certificate rotation
-- [Capability Changes](/operations/capability-changes): applying a new `capability.yaml` to a running agent safely
-- [Uncertain Outcomes](/operations/uncertain-outcomes): what to do when a call that changes data fails with `outcome: unknown`
-- [Troubleshooting](/operations/troubleshooting): common startup, connection, and call failures
-- [Release Gate](/operations/release-gate): how releases are tested before publication
+| Task | Page |
+|---|---|
+| Install the binaries, run the agent as a service or in Docker, rotate database certificates | [Deployment](/operations/deployment) |
+| Apply a new `capability.yaml` to a running agent | [Capability Changes](/operations/capability-changes) |
+| Decide what to do after a call that changes data fails with `outcome: unknown` | [Uncertain Outcomes](/operations/uncertain-outcomes) |
+| Fix startup, connection, and call failures | [Troubleshooting](/operations/troubleshooting) |
+| Rotate the agent key | [Agent Key Rotation](/agent/key-rotation) |
+| Rotate an API key | [API Keys](/gateway/api-keys#rotating-a-key) |

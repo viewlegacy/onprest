@@ -78,9 +78,9 @@ After extracting the archive for production:
    Use the `.exe` commands and a Windows path on Windows. Confirm the Gateway
    `/healthz` reports `agent_connected: true` before testing REST or MCP.
 
-The Gateway and Agent must come from the same release. Release acceptance and
-provenance are documented at
-<https://docs.onprest.viewlegacy.com/operations/release-gate>.
+The Gateway and Agent must come from the same release. Download verification is
+described at
+<https://docs.onprest.viewlegacy.com/operations/deployment#install-from-a-release>.
 
 For code capabilities, build and test the Wasm module on the author's
 computer, then deploy the finished module with its YAML. The Agent includes the

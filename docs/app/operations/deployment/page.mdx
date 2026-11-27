@@ -1,11 +1,15 @@
+import { Steps, Tabs } from 'nextra/components'
+
 # Deployment
 
-A deployment is the gateway somewhere callers can reach and the agent inside the on-prem network. You copy two binaries; neither needs Docker, a Go toolchain, a source checkout, or database client libraries.
+A deployment is the gateway where callers can reach it and the agent inside the on-prem network. You copy two binaries; neither needs Docker, a Go toolchain, a source checkout, or database client libraries.
 
-| Unit | Runs | Needs |
+| Binary | Runs | Configured by |
 |---|---|---|
-| `onprest-gateway` | A public or private server reachable by callers and by the agent | Environment variables ([Gateway configuration](/gateway/configuration)) |
-| `onprest-agent` | On-prem, with network access to the gateway and to its sources | `capability.yaml`, plus any modules and secret files it references |
+| `onprest-gateway` | A server reachable by callers and by the agent | Environment variables; see [Gateway configuration](/gateway/configuration) |
+| `onprest-agent` | On-prem, with network access to the gateway and its sources | `capability.yaml`, plus the modules and secret files it references; see [Agent configuration](/agent/configuration) |
+
+A gateway serves one agent. To connect several sites or customers, run a separate gateway for each.
 
 ## Supported platforms
 
@@ -15,15 +19,13 @@ A deployment is the gateway somewhere callers can reach and the agent inside the
 | Windows | `amd64` | Windows 10 or Windows Server 2016 |
 | macOS | `amd64`, `arm64` | macOS 12 |
 
-Older versions may work but are not covered. Test the exact release on an older legacy host before relying on it.
-
-On Linux, folder sources, file saving, and code filesystem access need kernel 5.6 or later. Saving files also has [filesystem requirements](/capabilities/files#saving-uploaded-files).
+Older versions are not tested; try the exact release on such a host before relying on it. Saving files also has [filesystem requirements](/capabilities/files#saving-uploaded-files).
 
 ## Install from a release
 
-Each GitHub release has one archive per platform, all containing both binaries, `INSTALL.md`, and incomplete `gateway.env.example` and `capability.yaml.example` templates. The links download the latest release:
+Each GitHub release has one archive per platform with both binaries, `INSTALL.md`, and the templates `gateway.env.example` and `capability.yaml.example`. The links download the latest release:
 
-| Host | Asset |
+| Host | Archive |
 |---|---|
 | Linux x64 | [`onprest-linux-amd64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-amd64.tar.gz) |
 | Linux ARM64 | [`onprest-linux-arm64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-linux-arm64.tar.gz) |
@@ -31,30 +33,51 @@ Each GitHub release has one archive per platform, all containing both binaries, 
 | macOS Apple silicon | [`onprest-darwin-arm64.tar.gz`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-darwin-arm64.tar.gz) |
 | Windows x64 | [`onprest-windows-amd64.zip`](https://github.com/viewlegacy/onprest/releases/latest/download/onprest-windows-amd64.zip) |
 
-For a specific version, use `https://github.com/viewlegacy/onprest/releases/download/vX.Y.Z/<asset>` or pick one on the [GitHub Releases](https://github.com/viewlegacy/onprest/releases) page. The separate `onprest-quickstart.tar.gz` holds the [Quick Start](/quick-start) files with public credentials and is not for production.
+For a specific version, use `https://github.com/viewlegacy/onprest/releases/download/vX.Y.Z/<archive>` or the [Releases](https://github.com/viewlegacy/onprest/releases) page. Always run the gateway and agent from the same release. Do not deploy `onprest-quickstart.tar.gz`; its credentials are public. To build the binaries yourself, see [`CONTRIBUTING.md`](https://github.com/viewlegacy/onprest/blob/main/CONTRIBUTING.md#build).
 
 To verify a download, save `SHA256SUMS` from the same release next to it:
+
+<Tabs items={['macOS / Linux', 'Windows']} storageKey="os">
+<Tabs.Tab>
 
 ```bash
 sha256sum --check --ignore-missing SHA256SUMS   # macOS: shasum -a 256 --check --ignore-missing SHA256SUMS
 gh attestation verify onprest-linux-amd64.tar.gz --repo viewlegacy/onprest
 ```
 
-On Windows, compare `(Get-FileHash onprest-windows-amd64.zip).Hash` with the line in `SHA256SUMS`.
+</Tabs.Tab>
+<Tabs.Tab>
 
-Then follow the bundled [`INSTALL.md`](https://github.com/viewlegacy/onprest/blob/main/release/INSTALL.md). Always deploy the gateway and agent from the same release.
+Compare the output of this command with the archive's line in `SHA256SUMS`:
 
-## Set up a new customer
+```powershell
+(Get-FileHash onprest-windows-amd64.zip).Hash
+```
 
-1. Generate an agent key pair with `onprest-gateway create-agent-secret`.
-2. Generate API keys with `onprest-gateway create-key`.
-3. Write the customer's `gateway.env`, start a dedicated gateway, and [terminate TLS in front of it](/gateway/reverse-proxy).
-4. Put `onprest-agent` and a `capability.yaml` on the on-prem host. Fill in the gateway URL (`wss://.../ws/agent`), the agent private key, the sources, and the capabilities.
-5. Run `onprest-agent validate --config PATH`.
-6. Start the agent, or install it as a service.
-7. Check `/healthz`, `/openapi.json`, and one REST and one MCP call.
+</Tabs.Tab>
+</Tabs>
 
-## Run the binaries
+## First deployment
+
+<Steps>
+
+### Create the keys
+
+On any machine with the gateway binary:
+
+```bash
+./onprest-gateway create-agent-secret
+./onprest-gateway create-key --name partner-a --capabilities "get_customer"
+```
+
+`create-agent-secret` prints a key pair: the public key for the gateway, the private key for the agent. `create-key` prints an API key once, with the bcrypt hash the gateway stores. See [API Keys](/gateway/api-keys).
+
+### Start the gateway
+
+Copy `gateway.env.example` to `gateway.env`, fill in the agent public key and the API key hash, and start the gateway:
+
+<Tabs items={['macOS / Linux', 'Windows']} storageKey="os">
+<Tabs.Tab>
 
 ```bash
 set -a
@@ -63,30 +86,71 @@ set +a
 ./onprest-gateway
 ```
 
-```bash
-./onprest-agent --config ./capability.yaml
-```
+</Tabs.Tab>
+<Tabs.Tab>
 
-On Windows, set the gateway's variables in the process or service environment:
+Set the variables in the process or service environment:
 
 ```powershell
-$env:GATEWAY_AGENT_PUBLIC_KEY = '<generated-agent-public-key>'
-$env:GATEWAY_API_KEYS_JSON = '[{"name":"operator","key_hash":"<generated-key-hash>","capabilities":["get_customer"]}]'
+$env:GATEWAY_AGENT_PUBLIC_KEY = '<agent-public-key>'
+$env:GATEWAY_API_KEYS_JSON = '[{"name":"partner-a","key_hash":"<key-hash>","capabilities":["get_customer"]}]'
 .\onprest-gateway.exe
 ```
 
-```powershell
-.\onprest-agent.exe validate --config .\capability.yaml
-.\onprest-agent.exe --config .\capability.yaml
+</Tabs.Tab>
+</Tabs>
+
+The gateway serves plain HTTP. Unless the agent runs on the same host, [terminate TLS in front of it](/gateway/reverse-proxy).
+
+### Configure the agent
+
+On the on-prem host, copy `capability.yaml.example` to `capability.yaml`. Set `gateway.url` to `wss://<gateway-host>/ws/agent`, add the agent private key, and define your [sources and capabilities](/capabilities).
+
+Create the folders that folder sources use, with the permissions their `access` needs. Keep them outside the agent's spool and identity directories.
+
+### Validate and start the agent
+
+```bash
+./onprest-agent validate --config ./capability.yaml
+./onprest-agent --config ./capability.yaml
 ```
 
-To run the agent as a systemd, launchd, or Windows service, follow [Capability Changes](/operations/capability-changes#install-a-new-service). Service installation does not enable start on boot; configure that with the host OS if you need it. Under a service manager, the agent's stdout and stderr go where the manager sends them (on macOS, `/var/log/onprest-agent.stdout.log` and `/var/log/onprest-agent.stderr.log`); the detailed log stays in `onprest-agent.log` next to the binary.
+To keep it running, [install it as a service](#run-the-agent-as-a-service).
+
+### Check end to end
+
+`/healthz` should report `agent_connected: true`. Then fetch `/openapi.json` and make one REST and one MCP call; [Capability Changes](/operations/capability-changes#check-the-result) has a script for this.
+
+</Steps>
+
+## Run the agent as a service
+
+`service install` registers the agent with systemd on Linux, launchd on macOS, or Windows Service. Validate first, so a broken file is never installed:
+
+```bash
+CAPABILITY_FILE=/absolute/path/capability.yaml
+
+onprest-agent validate --config "$CAPABILITY_FILE" &&
+  onprest-agent service install --config "$CAPABILITY_FILE" &&
+  onprest-agent service start &&
+  onprest-agent service status
+```
+
+Run these commands, including `validate`, as an administrator. The service runs as root (LocalSystem on Windows), so the spool and identity directories and the secret files must be owned by that user.
+
+Installation does not enable start on boot; configure that with the host OS. The service manager receives the agent's stdout and stderr (on macOS, `/var/log/onprest-agent.stdout.log` and `/var/log/onprest-agent.stderr.log`), while the detailed log stays in `onprest-agent.log` next to the binary.
+
+To apply a changed `capability.yaml` later, follow [Capability Changes](/operations/capability-changes).
 
 ## Timeouts and uploads
 
-A call with uploads or downloads has up to three phases: receiving input (`runtime.transfer_timeout`, default 60s), running (`policy.timeout`), and sending a direct or inline file (`runtime.transfer_timeout` again). Set client and proxy timeouts to cover all three, and let a proxy pass multipart bodies through unchanged and up to `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES`.
+A call with uploads or downloads has up to three phases, each with its own limit:
 
-For capabilities that read or save files, create the folders with the permissions their `access` setting needs before starting the agent. Keep them separate from the agent's spool and identity directories.
+1. Receiving the uploads: `runtime.transfer_timeout` (default 60s).
+2. Running the capability: `policy.timeout`.
+3. Sending a direct or inline file: `runtime.transfer_timeout` again.
+
+Set client and proxy timeouts to cover all three. A proxy must also pass multipart bodies through unchanged, up to `GATEWAY_MAX_FILE_REQUEST_BODY_BYTES`.
 
 ## Docker
 
@@ -116,15 +180,17 @@ docker run --rm \
   onprest-agent --config /config/capability.yaml
 ```
 
-Keep the identity volume when you recreate the container. Use one spool per agent container. Addresses in `capability.yaml` must be reachable from inside the container, and `onprest-agent service install` does not apply in containers. When an env file is passed to Docker, make sure `GATEWAY_API_KEYS_JSON` keeps its `$` characters.
-
-The agent's detailed log is `/app/onprest.log` inside the container and is deleted with it; to keep it, run without `--rm` and copy it out with `docker cp`.
+- Keep the identity volume when you recreate the container, and use one spool per container.
+- Addresses in `capability.yaml` must be reachable from inside the container.
+- `onprest-agent service` commands do not apply in containers.
+- When you pass an env file to Docker, make sure `GATEWAY_API_KEYS_JSON` keeps its `$` characters.
+- The agent's detailed log is `/app/onprest.log` inside the container and is deleted with it. To keep it, run without `--rm` and copy it out with `docker cp`.
 
 ## Database TLS certificate rotation
 
-The agent reads database CA and client certificate files when it starts. Rotate with an overlap so both old and new material work until the new connection is confirmed:
+The agent reads database CA and client certificate files when it starts. Rotate with an overlap, so the old and new material both work until a capability call succeeds on the new one:
 
 - **New private CA**: deploy a CA bundle with both the old and new CA, validate, and restart the agent. Switch the database server certificate, confirm a capability call, then remove the old CA, validate, and restart again.
 - **New client certificate**: make the database accept both the old and new certificate (or CA), replace the agent's certificate and key together, validate and restart, confirm a capability call, then revoke the old one.
 
-Retire the old material only after a capability call succeeds on the new one. If the database cannot accept both at once, schedule a maintenance window.
+If the database cannot accept both at once, schedule a maintenance window.

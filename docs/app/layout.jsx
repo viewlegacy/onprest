@@ -82,6 +82,7 @@ export default async function RootLayout({ children }) {
           navbar={navbar}
           pageMap={await getPageMap()}
           docsRepositoryBase="https://github.com/viewlegacy/onprest/tree/main/docs"
+          sidebar={{ defaultMenuCollapseLevel: 1 }}
           footer={footer}
         >
           {children}
